@@ -298,7 +298,8 @@ td{letter-spacing:-.01em}
         <div class="card-head"><h2>账号</h2><div class="sp"></div>
           <button class="btn sm" onclick="openAccModal()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>添加账号</button>
         </div>
-        <p class="card-sub">每个账号独立保存登录凭证，互不干扰，也不会影响你自己浏览器里的登录状态。</p>
+        <p class="card-sub">每个账号独立存储、互不干扰，也不影响你自己浏览器里的登录状态。<br>
+          <b>用法：</b>点右上角「添加账号」只填<b>名称</b> → 保存 → 回列表点该账号的<b>「浏览器登录」</b>，在弹出的内置浏览器里登录 DeepSeek 即可，凭证会<b>自动抓取</b>。</p>
         <table id="accTable"><thead><tr><th>名称</th><th>平台</th><th>凭证</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
       </div>
     </div>
@@ -359,14 +360,20 @@ td{letter-spacing:-.01em}
 <div id="accModal" class="modal-bg">
   <div class="modal">
     <h2 id="accModalTitle">添加账号</h2>
-    <p class="hint" style="margin:-12px 0 18px">填好名称保存后，回到列表点「浏览器登录」即可自动抓取凭证；也可以在此手动粘贴。</p>
+    <div class="hint" style="margin:-10px 0 16px;line-height:1.9">
+      <div><b>推荐做法：</b>只填「名称」→ 保存 → 回列表点<b>「浏览器登录」</b>，在弹出的内置浏览器里登录 DeepSeek，凭证会<b>自动抓取</b>，下面四项<b>留空即可</b>。</div>
+      <div class="muted" style="margin-top:6px">下面四项是手动兜底，仅当内置浏览器不可用时才需要填：在 chat.deepseek.com 按 F12 → Application → Local Storage 取
+        <code>userToken</code>（→auth_token）/ <code>deepseek-device-id:chat</code>（→device_id）/ <code>settingsJwt</code>（→settings_token），
+        cookie 取任意请求的 Cookie 请求头整串。</div>
+    </div>
     <input type="hidden" id="accId">
     <label class="fld"><span>名称</span><input id="accName" placeholder="例如：我的 DeepSeek"></label>
     <label class="fld"><span>平台</span><select id="accProvider"><option value="deepseek">DeepSeek 网页版</option></select></label>
-    <label class="fld"><span>auth_token</span><input id="accToken"></label>
-    <label class="fld"><span>device_id</span><input id="accDevice"></label>
-    <label class="fld"><span>settings_token</span><textarea id="accSettings" rows="3"></textarea></label>
-    <label class="fld"><span>cookie</span><textarea id="accCookie" rows="3"></textarea></label>
+    <div class="hint" style="margin:4px 0 2px">以下凭证（可选 · 浏览器登录后自动填充）</div>
+    <label class="fld"><span>auth_token</span><input id="accToken" placeholder="留空即可"></label>
+    <label class="fld"><span>device_id</span><input id="accDevice" placeholder="留空即可"></label>
+    <label class="fld"><span>settings_token</span><textarea id="accSettings" rows="3" placeholder="留空即可"></textarea></label>
+    <label class="fld"><span>cookie</span><textarea id="accCookie" rows="3" placeholder="留空即可"></textarea></label>
     <div class="row">
       <button class="btn" onclick="saveAccount()">保存</button>
       <button class="btn gray fixed" onclick="closeModal('accModal')">取消</button>

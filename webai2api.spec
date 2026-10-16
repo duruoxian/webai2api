@@ -29,6 +29,11 @@ datas += wt_datas
 # deepseek_pow 内置 wasm
 datas += collect_data_files("deepseek_pow")
 
+# pywebview 原生窗口（Windows 走 WebView2 + pythonnet）
+wv_datas, wv_bins, wv_hidden = collect_all("webview")
+datas += wv_datas
+wt_bins = wt_bins + wv_bins
+
 hiddenimports = [
     "webai2api",
     "uvicorn.logging",
@@ -36,7 +41,11 @@ hiddenimports = [
     "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan.on",
-] + wt_hidden
+    "webview",
+    "webview.platforms.edgechromium",
+    "clr_loader",
+    "pythonnet",
+] + wt_hidden + wv_hidden
 
 a = Analysis(
     ["run.py"],

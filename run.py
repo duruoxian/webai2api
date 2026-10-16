@@ -1,4 +1,9 @@
-"""exe 入口：启动 webai2api 服务，并自动打开管理面板。"""
+"""exe 入口：启动 webai2api 服务，并用原生窗口打开管理面板。
+
+- 服务（uvicorn）跑在后台线程；
+- 主线程用 pywebview 打开原生窗口（Windows 走 WebView2）；
+- 若原生窗口不可用，回退到系统默认浏览器。
+"""
 from __future__ import annotations
 
 import logging
@@ -7,10 +12,10 @@ import socket
 import sys
 import threading
 import time
-import webbrowser
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = int(os.environ.get("WEBAI2API_PORT", "8800"))
+WINDOW_TITLE = "webai2api 控制台"
 
 
 def _find_free_port(preferred: int) -> int:
@@ -28,6 +33,18 @@ def _find_free_port(preferred: int) -> int:
         return s.getsockname()[1]
 
 
+def _wait_port(port: int, timeout: float = 20.0) -> bool:
+    """轮询等待服务端口可连接。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            if s.connect_ex((HOST, port)) == 0:
+                return True
+        time.sleep(0.2)
+    return False
+
+
 def main() -> None:
     log_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__)
     log_path = os.path.join(log_dir, "webai2api.log")
@@ -43,6 +60,13 @@ def main() -> None:
     root.setLevel(logging.INFO)
     root.handlers = [logging.StreamHandler(log_file)]
 
+    # 内置浏览器登录辅助模式：<exe> --login <account_id>
+    if len(sys.argv) >= 3 and sys.argv[1] == "--login":
+        from webai2api.login_webview import run_webview_login
+
+        run_webview_login(sys.argv[2])
+        return
+
     logger = logging.getLogger("webai2api")
     port = _find_free_port(DEFAULT_PORT)
     logger.info("启动 webai2api (frozen=%s) 端口=%s", getattr(sys, "frozen", False), port)
@@ -51,6 +75,7 @@ def main() -> None:
     app = create_default_app()
 
     base_url = f"http://{HOST}:{port}/v1"
+    admin_url = f"http://{HOST}:{port}/admin"
 
     # 把实际端口写到 exe 同级文件，方便用户/脚本查看
     try:
@@ -59,29 +84,47 @@ def main() -> None:
     except Exception:
         pass
 
-    def _open_browser() -> None:
-        time.sleep(2.5)
-        try:
-            webbrowser.open(f"http://{HOST}:{port}/admin")
-        except Exception:
-            pass
-
-    threading.Thread(target=_open_browser, daemon=True).start()
-
     import asyncio
 
     import uvicorn
 
-    try:
-        config = uvicorn.Config(app, host=HOST, port=port, log_level="info", loop="asyncio")
-        server = uvicorn.Server(config)
+    config = uvicorn.Config(app, host=HOST, port=port, log_level="info", loop="asyncio")
+    server = uvicorn.Server(config)
+
+    def _run_server() -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        logger.info("服务地址 %s", base_url)
-        loop.run_until_complete(server.serve())
+        try:
+            loop.run_until_complete(server.serve())
+        except Exception as exc:  # noqa: BLE001
+            logger.error("服务启动异常: %s", exc, exc_info=True)
+
+    threading.Thread(target=_run_server, name="uvicorn", daemon=True).start()
+    logger.info("服务地址 %s", base_url)
+
+    if not _wait_port(port):
+        logger.error("服务在超时时间内未就绪")
+
+    # 主线程打开原生窗口
+    try:
+        import webview
+
+        webview.create_window(WINDOW_TITLE, admin_url, width=1180, height=800, min_size=(900, 600))
+        webview.start()
+        logger.info("窗口已关闭，退出")
+        os._exit(0)
     except Exception as exc:  # noqa: BLE001
-        logger.error("服务启动异常: %s", exc, exc_info=True)
-        raise
+        logger.error("原生窗口启动失败，回退浏览器: %s", exc, exc_info=True)
+
+    # 回退：系统默认浏览器 + 主线程常驻
+    import webbrowser
+
+    try:
+        webbrowser.open(admin_url)
+    except Exception:
+        pass
+    while True:
+        time.sleep(3600)
 
 
 if __name__ == "__main__":
