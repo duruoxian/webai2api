@@ -9,6 +9,10 @@
 
 > 仅供个人学习与本地自用，请勿公开分发或对外提供服务。
 
+## 下载（Windows）
+
+不想折腾环境？直接到 **[Releases](https://github.com/duruoxian/webai2api/releases)** 下载 `webai2api-win64.zip`，解压后双击 `webai2api.exe` 即可（无需安装 Python）。详见下方「打包成 exe」。
+
 ## 特点
 
 | 功能 | 说明 |
@@ -38,22 +42,14 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-### 2. 准备 PoW 文件（DeepSeek 必需）
-
-DeepSeek 网页端有 PoW 反爬，需要一个 WASM 文件。
-
-1. 打开 https://chat.deepseek.com ，按 F12 → Network，刷新页面
-2. 找到 `sha3_wasm_bg.xxxxxxxx.wasm`，下载
-3. 重命名为 **`sha3_wasm_bg.wasm`**，放到项目根目录
-
-### 3. 启动
+### 2. 启动
 
 ```bash
 python -m webai2api            # 默认 http://127.0.0.1:8800
 python -m webai2api --port 8800
 ```
 
-### 4. 打开面板并添加账号
+### 3. 打开面板并添加账号
 
 浏览器打开 **http://127.0.0.1:8800/admin**，默认密码 `admin`。
 
@@ -150,13 +146,13 @@ webai2api/
 │   ├── __main__.py       # 启动入口
 │   ├── gateway.py        # OpenAI 兼容网关（鉴权 + 路由 + 用量）
 │   ├── admin_api.py      # 面板后端 API
-│   ├── login.py          # 内置浏览器登录（Playwright，独立 profile）
+│   ├── login.py          # 内置浏览器登录（调用系统 Edge + CDP，独立 profile）
 │   ├── store.py          # SQLite 存储（账号/Key/用量）
 │   ├── web/index.html    # 中文面板（单文件）
 │   └── adapters/
 │       └── deepseek/     # DeepSeek 适配内核（基于 deepseek2api，MIT）
-├── data/                 # 数据库（运行时生成，已 gitignore）
-└── sha3_wasm_bg.wasm     # PoW 文件（自行放置，已 gitignore）
+├── data/                 # 数据库 / 浏览器 profile（运行时生成，已 gitignore）
+└── webai2api.spec        # PyInstaller 打包配置
 ```
 
 ## 路线图
