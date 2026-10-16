@@ -2,11 +2,11 @@
 
 流程：
   1. 校验客户端 API Key（sk-...）
-  2. 选一个可用账号（或请求头指定 account_id）
-  3. 调 DeepSeek 客户端（流式/非流式）
+  2. 按 model 选对应 provider 的可用账号（或请求头指定 account_id）
+  3. 调对应客户端（流式/非流式）
   4. 从结果提取 token 用量，写库
 
-注意：DeepSeek 客户端是同步阻塞实现，必须放到线程里执行，
+注意：客户端是同步阻塞实现，必须放到线程里执行，
 否则会阻塞 asyncio 事件循环，导致并发请求全部卡住。
 """
 from __future__ import annotations
@@ -18,15 +18,10 @@ from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .adapters.deepseek.pool import ClientPool
+from .providers import DEFAULT_MODEL, MODELS, ProviderRegistry
 from .store import Store
 
 router = APIRouter()
-
-MODELS = [
-    {"id": "deepseek-chat", "object": "model", "owned_by": "deepseek-web"},
-    {"id": "deepseek-reasoner", "object": "model", "owned_by": "deepseek-web"},
-]
 
 
 def _extract_api_key(request: Request) -> str:
@@ -51,7 +46,7 @@ def _usage_from_openai(resp: dict) -> tuple[int, int, int]:
     return p, c, t
 
 
-def create_gateway_router(store: Store, pool: ClientPool, logger: Logger) -> APIRouter:
+def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logger) -> APIRouter:
     @router.get("/v1/models")
     async def list_models(request: Request):
         key = _extract_api_key(request)
@@ -78,11 +73,11 @@ def create_gateway_router(store: Store, pool: ClientPool, logger: Logger) -> API
         if not payload.get("messages"):
             return _error(400, "缺少 messages 字段")
 
-        model = payload.get("model") or "deepseek-chat"
+        model = payload.get("model") or DEFAULT_MODEL
         stream = bool(payload.get("stream"))
 
         want_acc = request.headers.get("x-account-id", "").strip()
-        ac = pool.pick_by_id(want_acc) if want_acc else pool.pick()
+        ac = registry.pick_by_id(want_acc) if want_acc else registry.pick(model)
         if ac is None:
             return _error(503, "没有可用的账号，请先在面板添加并启用账号", "unavailable")
 
@@ -107,7 +102,7 @@ def create_gateway_router(store: Store, pool: ClientPool, logger: Logger) -> API
                     logger.warning("非流式请求失败(账号 %s): %s", ac.account["name"], exc)
                     if want_acc:
                         break
-                    nxt = pool.pick(exclude={ac.account["id"]})
+                    nxt = registry.pick(model, exclude={ac.account["id"]})
                     if nxt is None:
                         break
                     ac = nxt
@@ -128,39 +123,35 @@ def create_gateway_router(store: Store, pool: ClientPool, logger: Logger) -> API
         # ── 流式 ──
         async def gen():
             import asyncio
-            import queue as _queue
+            import threading
 
             prompt_t = completion_t = total_t = 0
             status = "ok"
-            q: "_queue.Queue" = _queue.Queue(maxsize=256)
+            aq: "asyncio.Queue" = asyncio.Queue()
+            loop = asyncio.get_event_loop()
             _DONE = object()
 
             def _producer():
-                # 独立线程里跑同步生成器，逐块塞进队列
+                # 独立线程里跑同步生成器；用 call_soon_threadsafe 推入 asyncio 队列，
+                # 避免每块都占用默认线程池（run_in_executor）。
                 try:
                     for chunk in ac.client.stream_chat_completion(payload):
-                        q.put(("data", chunk))
+                        loop.call_soon_threadsafe(aq.put_nowait, chunk)
                 except Exception as exc:  # noqa: BLE001
-                    q.put(("error", exc))
+                    loop.call_soon_threadsafe(aq.put_nowait, ("error", exc))
                 finally:
-                    q.put(("done", _DONE))
+                    loop.call_soon_threadsafe(aq.put_nowait, _DONE)
 
-            import threading
             threading.Thread(target=_producer, daemon=True).start()
-
-            loop = asyncio.get_event_loop()
             try:
                 while True:
-                    try:
-                        kind, item = await loop.run_in_executor(None, q.get)
-                    except Exception:
+                    item = await aq.get()
+                    if item is _DONE:
                         break
-                    if kind == "done":
-                        break
-                    if kind == "error":
-                        status = f"error:{type(item).__name__}"
-                        logger.warning("流式请求失败: %s", item)
-                        err = {"error": {"message": f"上游错误: {item}",
+                    if isinstance(item, tuple):
+                        status = f"error:{type(item[1]).__name__}"
+                        logger.warning("流式请求失败: %s", item[1])
+                        err = {"error": {"message": f"上游错误: {item[1]}",
                                          "type": "upstream_error"}}
                         yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"

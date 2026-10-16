@@ -216,12 +216,19 @@ class Store:
                 "SELECT COUNT(*) n, COALESCE(SUM(total_tokens),0) t FROM usage_log WHERE ts>=?",
                 (since,),
             ).fetchone()
+            daily = c.execute(
+                "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, "
+                "COUNT(*) n, COALESCE(SUM(total_tokens),0) t "
+                "FROM usage_log WHERE ts>=? GROUP BY d ORDER BY d",
+                (_now() - 86400 * 182,),
+            ).fetchall()
         return {
             "total": dict(total),
             "by_model": [dict(r) for r in by_model],
             "by_account": [dict(r) for r in by_account],
             "by_key": [dict(r) for r in by_key],
             "last24h": dict(last24),
+            "daily": [dict(r) for r in daily],
         }
 
     def recent_usage(self, limit: int = 100) -> list[dict]:

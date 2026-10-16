@@ -1,6 +1,6 @@
 """内置浏览器登录（WebView2 版）。
 
-用一个**内嵌的 WebView2 窗口**（pywebview）打开 DeepSeek 登录页，
+用一个**内嵌的 WebView2 窗口**（pywebview）打开对应平台的登录页，
 完全在 app 内部运行，独立 storage_path（每账号一套），
 **不调用系统 Edge / Chrome**，因此与用户日常浏览器零冲突。
 
@@ -18,7 +18,10 @@ from pathlib import Path
 from .paths import user_data_dir
 from .store import Store
 
-EXTRACT_JS = r"""
+DEEPSEEK_URL = "https://chat.deepseek.com/"
+CHATGLM_URL = "https://chatglm.cn/main/alltoolsdetail?lang=zh"
+
+DEEPSEEK_EXTRACT_JS = r"""
 (function(){
   const raw = {
     t: localStorage.getItem('userToken'),
@@ -35,6 +38,26 @@ EXTRACT_JS = r"""
   return JSON.stringify({
     auth_token: typeof token==='string'?token:'',
     device_id: raw.d||'', settings_token: settings||'', cookie: raw.c||''
+  });
+})()
+"""
+
+# 智谱清言：refresh_token 在 cookie 里（chatglm_refresh_token）
+CHATGLM_EXTRACT_JS = r"""
+(function(){
+  function getCookie(name){
+    const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+  let refresh = getCookie('chatglm_refresh_token');
+  if(!refresh){
+    try{
+      const v = localStorage.getItem('chatglm_refresh_token');
+      if(v){ refresh = JSON.parse(v); if(refresh && refresh.value) refresh = refresh.value; }
+    }catch(e){}
+  }
+  return JSON.stringify({
+    auth_token: refresh||'', device_id: '', settings_token: '', cookie: document.cookie||''
   });
 })()
 """
@@ -67,6 +90,12 @@ def run_webview_login(acc_id: str) -> None:
         write_state(acc_id, "error", "账号不存在")
         return
 
+    provider = acc.get("provider", "deepseek")
+    if provider == "chatglm":
+        start_url, extract_js, title = CHATGLM_URL, CHATGLM_EXTRACT_JS, "登录 智谱清言"
+    else:
+        start_url, extract_js, title = DEEPSEEK_URL, DEEPSEEK_EXTRACT_JS, "登录 DeepSeek"
+
     write_state(acc_id, "opening", "正在打开内置浏览器…")
 
     # 每个账号一套独立 storage，互不干扰，也不碰系统浏览器
@@ -74,8 +103,8 @@ def run_webview_login(acc_id: str) -> None:
     storage.mkdir(parents=True, exist_ok=True)
 
     window = webview.create_window(
-        f"登录 DeepSeek · {acc.get('name', '')}",
-        "https://chat.deepseek.com/",
+        f"{title} · {acc.get('name', '')}",
+        start_url,
         width=1000,
         height=760,
         text_select=True,
@@ -89,12 +118,12 @@ def run_webview_login(acc_id: str) -> None:
         while time.time() < deadline and not done["v"]:
             time.sleep(2)
             try:
-                val = window.evaluate_js(EXTRACT_JS)
+                val = window.evaluate_js(extract_js)
             except Exception:
                 continue
             if not announced:
                 announced = True
-                write_state(acc_id, "waiting", "请在内置浏览器里完成 DeepSeek 登录…")
+                write_state(acc_id, "waiting", f"请在内置浏览器里完成 {provider} 登录…")
             if not val:
                 continue
             try:

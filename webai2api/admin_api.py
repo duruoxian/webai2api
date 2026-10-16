@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from .adapters.deepseek.pool import ClientPool
+from .providers import ProviderRegistry
 from .store import Store
 
 router = APIRouter(prefix="/admin/api")
@@ -64,7 +64,7 @@ class _TokenStore:
         self._fails.clear()
 
 
-def create_admin_router(store: Store, pool: ClientPool, login_mgr, logger: Logger) -> APIRouter:
+def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, logger: Logger) -> APIRouter:
     toks = _TokenStore()
 
     def _guard(request: Request):
@@ -115,6 +115,24 @@ def create_admin_router(store: Store, pool: ClientPool, login_mgr, logger: Logge
             "settings": {
                 "deepseek_wasm_path": await run_in_threadpool(
                     store.get_setting, "deepseek_wasm_path", ""),
+                "deepseek_session_cache": await run_in_threadpool(
+                    store.get_setting, "deepseek_session_cache", "true"),
+                "deepseek_anti_min": await run_in_threadpool(
+                    store.get_setting, "deepseek_anti_min", "1.5"),
+                "deepseek_anti_max": await run_in_threadpool(
+                    store.get_setting, "deepseek_anti_max", "3.0"),
+                "glm_base_url": await run_in_threadpool(
+                    store.get_setting, "glm_base_url", "https://chatglm.cn"),
+                "glm_default_model": await run_in_threadpool(
+                    store.get_setting, "glm_default_model", "GLM-5.3"),
+                "glm_assistant_id": await run_in_threadpool(
+                    store.get_setting, "glm_assistant_id", ""),
+                "glm_anti_min": await run_in_threadpool(
+                    store.get_setting, "glm_anti_min", "1.5"),
+                "glm_anti_max": await run_in_threadpool(
+                    store.get_setting, "glm_anti_max", "3.0"),
+                "glm_search": await run_in_threadpool(
+                    store.get_setting, "glm_search", "false"),
                 "admin_password": "******",
             },
         }
@@ -140,7 +158,7 @@ def create_admin_router(store: Store, pool: ClientPool, login_mgr, logger: Logge
             },
             b.get("note", ""),
         )
-        pool.refresh()
+        registry.refresh()
         return {"ok": True, "account": _safe_account(acc)}
 
     @router.put("/accounts/{account_id}")
@@ -157,7 +175,7 @@ def create_admin_router(store: Store, pool: ClientPool, login_mgr, logger: Logge
         if "enabled" in fields:
             fields["enabled"] = 1 if fields["enabled"] else 0
         await run_in_threadpool(store.update_account, account_id, **fields)
-        pool.refresh()
+        registry.refresh()
         return {"ok": True}
 
     @router.delete("/accounts/{account_id}")
@@ -166,7 +184,7 @@ def create_admin_router(store: Store, pool: ClientPool, login_mgr, logger: Logge
         if g:
             return g
         await run_in_threadpool(store.delete_account, account_id)
-        pool.refresh()
+        registry.refresh()
         return {"ok": True}
 
     # ── 浏览器登录 ──
@@ -221,9 +239,24 @@ def create_admin_router(store: Store, pool: ClientPool, login_mgr, logger: Logge
         b = await _json(request)
         if b is None:
             return {"ok": False, "error": "请求格式错误"}
-        for k in ("deepseek_wasm_path", "admin_password"):
+        for k in ("deepseek_wasm_path", "admin_password",
+                  "deepseek_anti_min", "deepseek_anti_max",
+                  "glm_base_url", "glm_default_model", "glm_assistant_id",
+                  "glm_anti_min", "glm_anti_max"):
             if k in b and str(b[k]).strip():
                 await run_in_threadpool(store.set_setting, k, str(b[k]).strip())
+        if "deepseek_session_cache" in b:
+            v = b["deepseek_session_cache"]
+            s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+            await run_in_threadpool(store.set_setting, "deepseek_session_cache", s)
+        if "glm_search" in b:
+            v = b["glm_search"]
+            s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+            await run_in_threadpool(store.set_setting, "glm_search", s)
+        try:
+            registry.refresh()
+        except Exception:
+            pass
         return {"ok": True}
 
     return router
@@ -244,3 +277,4 @@ def _safe_account(a: dict) -> dict:
 
 def _safe_accounts(items: list[dict]) -> list[dict]:
     return [_safe_account(a) for a in items]
+

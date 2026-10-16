@@ -7,17 +7,20 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 <style>
 :root{
-  --bg:#f5f5f7;
+  --bg:#eceef1;
   --card:rgba(255,255,255,.72);
   --card-border:rgba(0,0,0,.06);
-  --text:#1d1d1f;
-  --text2:#6e6e73;
-  --text3:#86868b;
-  --accent:#0071e3;
-  --accent-hover:#0077ed;
-  --green:#30d158;
-  --red:#ff3b30;
-  --amber:#ff9f0a;
+  --text:#16181d;
+  --text2:#5c626b;
+  --text3:#8b9099;
+  --accent:#2b2f36;
+  --accent-hover:#3a3f47;
+  --grid:#dfe2e7;
+  --heat0:#e7e9ed;
+  --heat1:#c9cdd4;
+  --heat2:#9aa0a9;
+  --heat3:#5f6670;
+  --heat4:#2b2f36;
   --radius:18px;
   --shadow:0 1px 3px rgba(0,0,0,.04),0 8px 28px rgba(0,0,0,.06);
   --shadow-lg:0 4px 12px rgba(0,0,0,.06),0 24px 60px rgba(0,0,0,.12);
@@ -33,13 +36,12 @@ body{
   letter-spacing:-.01em;
   min-height:100vh;
 }
-/* 背景柔光 */
 body::before{
   content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   background:
-    radial-gradient(900px 500px at 12% -8%, rgba(0,113,227,.10), transparent 60%),
-    radial-gradient(800px 500px at 100% 0%, rgba(175,82,222,.08), transparent 55%),
-    radial-gradient(900px 600px at 50% 120%, rgba(48,209,88,.06), transparent 60%);
+    radial-gradient(900px 500px at 12% -8%, rgba(90,98,110,.07), transparent 60%),
+    radial-gradient(800px 500px at 100% 0%, rgba(120,128,140,.06), transparent 55%),
+    radial-gradient(900px 600px at 50% 120%, rgba(60,66,74,.05), transparent 60%);
 }
 button{font-family:inherit;cursor:pointer;border:none;background:none}
 input,textarea,select{
@@ -52,17 +54,16 @@ input,textarea,select{
 }
 input:focus,textarea:focus,select:focus{
   outline:none;border-color:var(--accent);
-  box-shadow:0 0 0 4px rgba(0,113,227,.14);
+  box-shadow:0 0 0 4px rgba(43,47,54,.12);
   background:#fff;
 }
-::selection{background:rgba(0,113,227,.2)}
+::selection{background:rgba(43,47,54,.16)}
 
-/* 顶栏 */
 .nav{
   position:sticky;top:0;z-index:50;
   height:56px;display:flex;align-items:center;gap:14px;
   padding:0 26px;
-  background:rgba(245,245,247,.72);
+  background:rgba(236,238,241,.72);
   backdrop-filter:saturate(180%) blur(20px);
   -webkit-backdrop-filter:saturate(180%) blur(20px);
   border-bottom:1px solid rgba(0,0,0,.06);
@@ -76,10 +77,8 @@ input:focus,textarea:focus,select:focus{
 .nav-pill b{color:var(--text);font-weight:600}
 .nav-spacer{flex:1}
 
-/* 容器 */
 .wrap{max-width:1040px;margin:0 auto;padding:34px 26px 80px}
 
-/* 分段控件（Apple 风格 tab） */
 .seg{
   display:inline-flex;gap:2px;padding:3px;border-radius:13px;
   background:rgba(0,0,0,.05);margin-bottom:28px;
@@ -96,7 +95,6 @@ input:focus,textarea:focus,select:focus{
 }
 .seg button.active .ic{opacity:1}
 
-/* 卡片 */
 .card{
   background:var(--card);
   backdrop-filter:blur(24px) saturate(180%);
@@ -111,7 +109,6 @@ input:focus,textarea:focus,select:focus{
 .card-head .sp{flex:1}
 .card-sub{font-size:13px;color:var(--text3);margin-top:-12px;margin-bottom:18px;line-height:1.6}
 
-/* 统计卡 */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
 .stat{
   background:rgba(255,255,255,.6);border:1px solid rgba(0,0,0,.05);
@@ -120,9 +117,9 @@ input:focus,textarea:focus,select:focus{
 }
 .stat:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.07)}
 .stat .num{font-size:27px;font-weight:600;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.stat .num small{font-size:15px;font-weight:500;color:var(--text3);margin-left:2px}
 .stat .lbl{font-size:12.5px;color:var(--text3);margin-top:3px}
 
-/* 表格 */
 table{width:100%;border-collapse:separate;border-spacing:0;font-size:14px}
 th,td{text-align:left;padding:13px 14px;border-bottom:1px solid rgba(0,0,0,.055)}
 th{color:var(--text3);font-weight:500;font-size:12.5px;letter-spacing:.01em;text-transform:none}
@@ -131,47 +128,65 @@ tbody tr:hover{background:rgba(0,0,0,.025)}
 tbody tr:last-child td{border-bottom:none}
 td{letter-spacing:-.01em}
 
-/* 按钮 */
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:7px;
   background:var(--accent);color:#fff;font-size:14px;font-weight:500;
   padding:9px 18px;border-radius:11px;letter-spacing:-.01em;
   transition:all .18s cubic-bezier(.4,0,.2,1);
 }
-.btn:hover{background:var(--accent-hover);transform:translateY(-1px);box-shadow:0 6px 16px rgba(0,113,227,.28)}
+.btn:hover{background:var(--accent-hover);transform:translateY(-1px);box-shadow:0 6px 16px rgba(43,47,54,.22)}
 .btn:active{transform:translateY(0)}
 .btn .ic{width:15px;height:15px}
 .btn.gray{background:rgba(0,0,0,.05);color:var(--text)}
 .btn.gray:hover{background:rgba(0,0,0,.09);box-shadow:none}
-.btn.danger{background:transparent;color:var(--red);border:1px solid rgba(255,59,48,.3)}
-.btn.danger:hover{background:rgba(255,59,48,.08);box-shadow:none}
+.btn.danger{background:transparent;color:#4b515a;border:1px solid rgba(0,0,0,.16)}
+.btn.danger:hover{background:rgba(0,0,0,.05);box-shadow:none}
 .btn.sm{padding:6px 13px;font-size:13px;border-radius:9px}
 .btn.block{width:100%}
 
-/* 徽标 */
 .tag{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:999px;
   font-size:12.5px;font-weight:500}
 .tag::before{content:"";width:6px;height:6px;border-radius:50%}
-.tag.on{background:rgba(48,209,88,.14);color:#1a8f3c}
-.tag.on::before{background:var(--green)}
+.tag.on{background:rgba(43,47,54,.10);color:#2b2f36}
+.tag.on::before{background:#4b515a}
 .tag.off{background:rgba(0,0,0,.06);color:var(--text3)}
 .tag.off::before{background:var(--text3)}
-.tag.err{background:rgba(255,59,48,.12);color:#c92a20}
-.tag.err::before{background:var(--red)}
+.tag.err{background:rgba(0,0,0,.10);color:#3a3f47;border:1px solid rgba(0,0,0,.14)}
+.tag.err::before{background:#5c626b}
 
 .mono{font-family:"SF Mono",ui-monospace,Consolas,monospace;font-size:12.5px;letter-spacing:-.02em}
 .muted{color:var(--text3)}
 .num-t{font-variant-numeric:tabular-nums}
 
-/* 表单 */
+.donut-wrap{display:flex;align-items:center;gap:30px;flex-wrap:wrap}
+.donut{width:180px;height:180px;flex:0 0 auto}
+.donut-num{font-size:19px;font-weight:600;fill:var(--text);font-variant-numeric:tabular-nums}
+.donut-lbl{font-size:10.5px;fill:var(--text3)}
+.donut-legend{flex:1;min-width:220px;display:flex;flex-direction:column;gap:11px}
+.lg-item{display:flex;align-items:center;gap:10px;font-size:13.5px}
+.lg-dot{width:10px;height:10px;border-radius:3px;flex:0 0 auto}
+.lg-name{flex:1;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lg-val{font-variant-numeric:tabular-nums;font-weight:600}
+
+.heatmap{display:flex;gap:3px;overflow-x:auto;padding-bottom:4px;min-height:99px}
+.hm-col{display:flex;flex-direction:column;gap:3px}
+.hm-cell{width:11px;height:11px;border-radius:2.5px;background:var(--heat0);flex:0 0 auto}
+.hm-cell.l1{background:var(--heat1)}
+.hm-cell.l2{background:var(--heat2)}
+.hm-cell.l3{background:var(--heat3)}
+.hm-cell.l4{background:var(--heat4)}
+.hm-legend{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text3);margin-top:12px;justify-content:flex-end}
+.hm-legend .hm-cell{width:10px;height:10px;display:inline-block}
+
 .fld{display:block;margin-bottom:16px}
 .fld>span{display:block;font-size:13px;color:var(--text2);margin-bottom:7px;font-weight:500}
+.chk{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:400;color:var(--text)}
+.chk input{width:auto;height:auto;margin:0}
 .hint{font-size:13px;color:var(--text3);line-height:1.7}
 .row{display:flex;gap:10px;align-items:center}
 .row>*{flex:1}
 .row .fixed{flex:0 0 auto}
 
-/* 弹窗 */
 .modal-bg{
   position:fixed;inset:0;z-index:100;
   background:rgba(0,0,0,.28);
@@ -197,21 +212,18 @@ td{letter-spacing:-.01em}
 .copy{
   background:rgba(0,0,0,.04);border-radius:12px;padding:14px 16px;
   word-break:break-all;font-family:"SF Mono",ui-monospace,monospace;font-size:13.5px;
-  color:#1a8f3c;margin:14px 0;user-select:all;
+  color:#2b2f36;margin:14px 0;user-select:all;
 }
 
-/* 登录 */
 .login-wrap{max-width:340px;margin:14vh auto;padding:0 24px;text-align:center}
 .login-wrap .brand-logo{width:56px;height:56px;border-radius:16px;margin:0 auto 20px}
 .login-wrap .brand-logo svg{width:30px;height:30px}
 .login-wrap h1{font-size:24px;font-weight:600;letter-spacing:-.03em;margin-bottom:6px}
 .login-wrap p{color:var(--text3);font-size:14px;margin-bottom:26px}
 
-/* 空状态 */
 .empty{text-align:center;padding:44px 20px;color:var(--text3);font-size:14px}
 .empty svg{width:40px;height:40px;opacity:.25;margin-bottom:12px}
 
-/* 过渡 */
 .fade{animation:fade .35s cubic-bezier(.4,0,.2,1)}
 @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .tabpane{display:none}
@@ -228,7 +240,6 @@ td{letter-spacing:-.01em}
 </head>
 <body>
 
-<!-- 登录 -->
 <div id="loginView" class="login-wrap">
   <div class="brand-logo"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18 L12 5 L19 18" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
   <h1>webai2api</h1>
@@ -242,7 +253,6 @@ td{letter-spacing:-.01em}
   <p class="hint" style="margin-top:16px">首次使用默认密码 admin，登录后请尽快修改</p>
 </div>
 
-<!-- 主体 -->
 <div id="mainView" style="display:none">
   <div class="nav">
     <div class="brand">
@@ -273,7 +283,6 @@ td{letter-spacing:-.01em}
         设置</button>
     </div>
 
-    <!-- 总览 -->
     <div id="tab-overview" class="tabpane active">
       <div class="card">
         <div class="card-head"><h2>用量总览</h2></div>
@@ -282,9 +291,21 @@ td{letter-spacing:-.01em}
           <div class="stat"><div class="num" id="ovPrompt">0</div><div class="lbl">输入 Token</div></div>
           <div class="stat"><div class="num" id="ovComp">0</div><div class="lbl">输出 Token</div></div>
           <div class="stat"><div class="num" id="ovReqs">0</div><div class="lbl">请求数</div></div>
-          <div class="stat"><div class="num" id="ov24">0</div><div class="lbl">近 24h</div></div>
+          <div class="stat"><div class="num" id="ov24">0</div><div class="lbl">近 24h Token</div></div>
           <div class="stat"><div class="num" id="ovAcc">0</div><div class="lbl">可用账号</div></div>
         </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>模型占比</h2></div>
+        <div class="donut-wrap">
+          <svg id="donut" viewBox="0 0 140 140" class="donut"></svg>
+          <div id="donutLegend" class="donut-legend"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>每日 Token 消耗</h2></div>
+        <div id="heatmap" class="heatmap"></div>
+        <div id="hmLegend" class="hm-legend"></div>
       </div>
       <div class="card">
         <div class="card-head"><h2>各模型用量</h2></div>
@@ -292,7 +313,6 @@ td{letter-spacing:-.01em}
       </div>
     </div>
 
-    <!-- 账号 -->
     <div id="tab-accounts" class="tabpane">
       <div class="card">
         <div class="card-head"><h2>账号</h2><div class="sp"></div>
@@ -304,7 +324,6 @@ td{letter-spacing:-.01em}
       </div>
     </div>
 
-    <!-- Key -->
     <div id="tab-keys" class="tabpane">
       <div class="card">
         <div class="card-head"><h2>API Key</h2><div class="sp"></div>
@@ -315,7 +334,6 @@ td{letter-spacing:-.01em}
       </div>
     </div>
 
-    <!-- 用量 -->
     <div id="tab-usage" class="tabpane">
       <div class="card">
         <div class="card-head"><h2>按账号</h2></div>
@@ -331,21 +349,43 @@ td{letter-spacing:-.01em}
       </div>
     </div>
 
-    <!-- 设置 -->
     <div id="tab-settings" class="tabpane">
       <div class="card">
         <div class="card-head"><h2>全局设置</h2></div>
+        <div class="fld"><span>性能</span>
+          <label class="chk"><input type="checkbox" id="setCache"> 启用会话缓存（推荐）：多轮只发增量，更快、更不易被上游限流</label></div>
         <label class="fld"><span>PoW WASM 文件路径</span>
           <input id="setWasm" placeholder="./sha3_wasm_bg.wasm"></label>
+        <label class="fld"><span>防风控延迟下限 / 上限（秒）</span>
+          <div style="display:flex;gap:10px">
+            <input id="setAntiMin" placeholder="1.5" style="flex:1">
+            <input id="setAntiMax" placeholder="3.0" style="flex:1">
+          </div></label>
         <label class="fld"><span>管理员密码</span>
           <input id="setPw" type="password" placeholder="留空则不修改"></label>
         <button class="btn" onclick="saveSettings()">保存</button>
       </div>
       <div class="card">
+        <div class="card-head"><h2>智谱清言（chatglm.cn）</h2></div>
+        <label class="fld"><span>默认模型</span>
+          <input id="setGlmModel" placeholder="GLM-5.3"></label>
+        <label class="fld"><span>智能体 ID（可选，留空用默认 GLM）</span>
+          <input id="setGlmAssistant" placeholder="24 位 ID，留空即可"></label>
+        <label class="fld"><span>防风控延迟下限 / 上限（秒）</span>
+          <div style="display:flex;gap:10px">
+            <input id="setGlmAntiMin" placeholder="1.5" style="flex:1">
+            <input id="setGlmAntiMax" placeholder="3.0" style="flex:1">
+          </div></label>
+        <label class="chk"><input type="checkbox" id="setGlmSearch"> 联网搜索（is_networking）</label>
+        <p class="hint" style="margin-top:10px">思考强度在客户端里选（Default / Low / Medium / High / Max），本网关会自动转成智谱的思考档位。</p>
+        <div style="height:14px"></div>
+        <button class="btn" onclick="saveGlmSettings()">保存</button>
+      </div>
+      <div class="card">
         <div class="card-head"><h2>快速接入</h2></div>
         <div class="hint" style="line-height:2;margin-bottom:14px">
           <div>接口地址&nbsp;&nbsp;<b id="baseHint2">http://127.0.0.1:8800/v1</b></div>
-          <div>可用模型&nbsp;&nbsp;<b>deepseek-chat</b> / <b>deepseek-reasoner</b></div>
+          <div>可用模型&nbsp;&nbsp;<b>deepseek-chat</b> / <b>deepseek-reasoner</b> / <b>GLM-5.3</b> / <b>GLM-5.3-Flash</b></div>
           <div>API Key&nbsp;&nbsp;在「API Key」页生成</div>
         </div>
         <p class="hint" style="margin-bottom:8px">填进 opencode（<code>~/.config/opencode/opencode.jsonc</code> 的 provider 里）：</p>
@@ -356,7 +396,6 @@ td{letter-spacing:-.01em}
   </div>
 </div>
 
-<!-- 账号弹窗 -->
 <div id="accModal" class="modal-bg">
   <div class="modal">
     <h2 id="accModalTitle">添加账号</h2>
@@ -368,9 +407,9 @@ td{letter-spacing:-.01em}
     </div>
     <input type="hidden" id="accId">
     <label class="fld"><span>名称</span><input id="accName" placeholder="例如：我的 DeepSeek"></label>
-    <label class="fld"><span>平台</span><select id="accProvider"><option value="deepseek">DeepSeek 网页版</option></select></label>
-    <div class="hint" style="margin:4px 0 2px">以下凭证（可选 · 浏览器登录后自动填充）</div>
-    <label class="fld"><span>auth_token</span><input id="accToken" placeholder="留空即可"></label>
+    <label class="fld"><span>平台</span><select id="accProvider" onchange="onProviderChange()"><option value="deepseek">DeepSeek 网页版</option><option value="chatglm">智谱清言（chatglm.cn）</option></select></label>
+    <div class="hint" id="accCredHint" style="margin:4px 0 2px">DeepSeek：浏览器登录后会自动抓取，下面四项留空即可。</div>
+    <label class="fld"><span>auth_token / refresh_token</span><input id="accToken" placeholder="留空即可"></label>
     <label class="fld"><span>device_id</span><input id="accDevice" placeholder="留空即可"></label>
     <label class="fld"><span>settings_token</span><textarea id="accSettings" rows="3" placeholder="留空即可"></textarea></label>
     <label class="fld"><span>cookie</span><textarea id="accCookie" rows="3" placeholder="留空即可"></textarea></label>
@@ -381,7 +420,6 @@ td{letter-spacing:-.01em}
   </div>
 </div>
 
-<!-- Key 弹窗 -->
 <div id="keyModal" class="modal-bg">
   <div class="modal">
     <h2>生成 API Key</h2>
@@ -430,6 +468,12 @@ function switchTab(name){
   document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active',p.id==='tab-'+name));
 }
 function fmt(n){n=Number(n)||0;return n.toLocaleString('zh-CN');}
+function fmtTok(n){
+  n=Number(n)||0;
+  if(n>=1e8)return (n/1e8).toFixed(2)+' 亿';
+  if(n>=1e4)return (n/1e4).toFixed(2)+' 万';
+  return n.toLocaleString('zh-CN');
+}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function fmtTime(ts){if(!ts)return '–';const d=new Date(ts*1000);
   return d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
@@ -444,19 +488,76 @@ function empty(msg){return `<tr><td colspan="9" class="empty">${msg}</td></tr>`;
 
 function renderOverview(s){
   const t=s.usage.total||{};
-  document.getElementById('ovTotal').textContent=fmt(t.t);
-  document.getElementById('ovPrompt').textContent=fmt(t.p);
-  document.getElementById('ovComp').textContent=fmt(t.c);
+  document.getElementById('ovTotal').textContent=fmtTok(t.t);
+  document.getElementById('ovPrompt').textContent=fmtTok(t.p);
+  document.getElementById('ovComp').textContent=fmtTok(t.c);
   document.getElementById('ovReqs').textContent=fmt(t.n);
-  document.getElementById('ov24').textContent=fmt((s.usage.last24h||{}).t);
+  document.getElementById('ov24').textContent=fmtTok((s.usage.last24h||{}).t);
   document.getElementById('ovAcc').textContent=s.accounts.filter(a=>a.enabled).length;
   const tb=document.querySelector('#modelTable tbody');tb.innerHTML='';
   (s.usage.by_model||[]).forEach(m=>{
     tb.innerHTML+=`<tr><td><b>${esc(m.model)}</b></td><td class="num-t">${fmt(m.n)}</td>
-      <td class="num-t">${fmt(m.p)}</td><td class="num-t">${fmt(m.c)}</td>
-      <td class="num-t"><b>${fmt(m.t)}</b></td></tr>`;});
+      <td class="num-t">${fmtTok(m.p)}</td><td class="num-t">${fmtTok(m.c)}</td>
+      <td class="num-t"><b>${fmtTok(m.t)}</b></td></tr>`;});
   if(!(s.usage.by_model||[]).length)tb.innerHTML=empty('暂无数据');
+  renderDonut(s.usage.by_model||[]);
+  renderHeatmap(s.usage.daily||[]);
 }
+
+function renderDonut(models){
+  const svg=document.getElementById('donut'); if(!svg)return;
+  const data=(models||[]).map(m=>({model:m.model,t:Number(m.t)||0})).filter(m=>m.t>0).sort((a,b)=>b.t-a.t);
+  const tot=data.reduce((a,b)=>a+b.t,0);
+  const shades=['#2b2f36','#4b515a','#6b7280','#9aa0a9','#c9cdd4','#8b9099'];
+  const legend=document.getElementById('donutLegend');
+  if(!tot){
+    svg.innerHTML=`<circle cx="70" cy="70" r="54" fill="none" stroke="var(--heat0)" stroke-width="16"/>
+      <text x="70" y="68" text-anchor="middle" class="donut-num">0</text>
+      <text x="70" y="86" text-anchor="middle" class="donut-lbl">Token</text>`;
+    if(legend)legend.innerHTML='<div class="muted" style="font-size:13px">暂无数据</div>';
+    return;
+  }
+  const R=54,C=2*Math.PI*R; let off=0,segs='';
+  data.forEach((m,i)=>{
+    const len=(m.t/tot)*C;
+    segs+=`<circle r="${R}" cx="70" cy="70" fill="none" stroke="${shades[i%shades.length]}"
+      stroke-width="16" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"
+      transform="rotate(-90 70 70)"/>`;
+    off+=len;
+  });
+  svg.innerHTML=segs+`<text x="70" y="68" text-anchor="middle" class="donut-num">${fmtTok(tot)}</text>
+    <text x="70" y="86" text-anchor="middle" class="donut-lbl">总 Token</text>`;
+  if(legend)legend.innerHTML=data.map((m,i)=>
+    `<div class="lg-item"><span class="lg-dot" style="background:${shades[i%shades.length]}"></span>
+      <span class="lg-name">${esc(m.model)}</span><span class="lg-val">${fmtTok(m.t)}</span></div>`).join('');
+}
+
+function ymdLocal(dt){
+  const y=dt.getFullYear(),m=String(dt.getMonth()+1).padStart(2,'0'),d=String(dt.getDate()).padStart(2,'0');
+  return y+'-'+m+'-'+d;
+}
+function renderHeatmap(daily){
+  const el=document.getElementById('heatmap'); if(!el)return;
+  const map={}; (daily||[]).forEach(x=>{map[x.d]=Number(x.t)||0;});
+  const today=new Date(); today.setHours(0,0,0,0);
+  const start=new Date(today); start.setDate(start.getDate()-181);
+  start.setDate(start.getDate()-start.getDay());
+  const max=Math.max(1,...Object.values(map),1);
+  const lvl=v=>{ if(!v)return 0; const r=v/max; if(r>0.7)return 4; if(r>0.45)return 3; if(r>0.2)return 2; return 1; };
+  let html='',open=false; const d=new Date(start);
+  while(d<=today){
+    if(d.getDay()===0){html+='<div class="hm-col">';open=true;}
+    const key=ymdLocal(d); const v=map[key]||0;
+    html+=`<div class="hm-cell l${lvl(v)}" title="${key} · ${fmtTok(v)} Token"></div>`;
+    if(d.getDay()===6){html+='</div>';open=false;}
+    d.setDate(d.getDate()+1);
+  }
+  if(open)html+='</div>';
+  el.innerHTML=html;
+  const lg=document.getElementById('hmLegend');
+  if(lg)lg.innerHTML='<span>少</span><span class="hm-cell l0"></span><span class="hm-cell l1"></span><span class="hm-cell l2"></span><span class="hm-cell l3"></span><span class="hm-cell l4"></span><span>多</span>';
+}
+
 function renderAccounts(s){
   const tb=document.querySelector('#accTable tbody');tb.innerHTML='';
   s.accounts.forEach(a=>{
@@ -487,7 +588,7 @@ function renderKeys(s){
   const tb=document.querySelector('#keyTable tbody');tb.innerHTML='';
   s.keys.forEach(k=>{
     tb.innerHTML+=`<tr><td><b>${esc(k.name)}</b></td>
-      <td class="mono" style="color:var(--green)">${esc(k.key)}</td>
+      <td class="mono" style="color:var(--text2)">${esc(k.key)}</td>
       <td><span class="tag ${k.enabled?'on':'off'}">${k.enabled?'启用':'停用'}</span></td>
       <td class="muted">${fmtTime(k.last_used_at)}</td>
       <td style="text-align:right;white-space:nowrap">
@@ -499,21 +600,39 @@ function renderKeys(s){
 function renderUsage(s){
   let tb=document.querySelector('#accUsageTable tbody');tb.innerHTML='';
   (s.usage.by_account||[]).forEach(a=>{tb.innerHTML+=`<tr><td><b>${esc(a.account_name||'–')}</b></td>
-    <td class="muted">${esc(a.provider||'')}</td><td class="num-t">${fmt(a.n)}</td><td class="num-t"><b>${fmt(a.t)}</b></td></tr>`;});
+    <td class="muted">${esc(a.provider||'')}</td><td class="num-t">${fmt(a.n)}</td><td class="num-t"><b>${fmtTok(a.t)}</b></td></tr>`;});
   if(!(s.usage.by_account||[]).length)tb.innerHTML=empty('暂无数据');
   tb=document.querySelector('#keyUsageTable tbody');tb.innerHTML='';
   (s.usage.by_key||[]).forEach(k=>{tb.innerHTML+=`<tr><td><b>${esc(k.api_key_name||'–')}</b></td>
-    <td class="num-t">${fmt(k.n)}</td><td class="num-t"><b>${fmt(k.t)}</b></td></tr>`;});
+    <td class="num-t">${fmt(k.n)}</td><td class="num-t"><b>${fmtTok(k.t)}</b></td></tr>`;});
   if(!(s.usage.by_key||[]).length)tb.innerHTML=empty('暂无数据');
   tb=document.querySelector('#recentTable tbody');tb.innerHTML='';
   (s.recent||[]).forEach(r=>{tb.innerHTML+=`<tr><td class="muted">${fmtTime(r.ts)}</td>
     <td>${esc(r.api_key_name||'–')}</td><td>${esc(r.account_name||'–')}</td>
-    <td class="mono">${esc(r.model)}</td><td class="num-t">${fmt(r.prompt_tokens)}</td>
-    <td class="num-t">${fmt(r.completion_tokens)}</td><td class="num-t"><b>${fmt(r.total_tokens)}</b></td>
+    <td class="mono">${esc(r.model)}</td><td class="num-t">${fmtTok(r.prompt_tokens)}</td>
+    <td class="num-t">${fmtTok(r.completion_tokens)}</td><td class="num-t"><b>${fmtTok(r.total_tokens)}</b></td>
     <td>${r.status==='ok'?'<span class="tag on">成功</span>':'<span class="tag err">'+esc(r.status)+'</span>'}</td></tr>`;});
   if(!(s.recent||[]).length)tb.innerHTML=empty('暂无记录');
 }
-function renderSettings(s){document.getElementById('setWasm').value=s.settings.deepseek_wasm_path||'';}
+function renderSettings(s){
+  document.getElementById('setWasm').value=s.settings.deepseek_wasm_path||'';
+  document.getElementById('setCache').checked=(s.settings.deepseek_session_cache||'true')!=='false';
+  document.getElementById('setAntiMin').value=s.settings.deepseek_anti_min||'1.5';
+  document.getElementById('setAntiMax').value=s.settings.deepseek_anti_max||'3.0';
+  const gm=document.getElementById('setGlmModel'); if(gm) gm.value=s.settings.glm_default_model||'GLM-5.3';
+  const ga=document.getElementById('setGlmAssistant'); if(ga) ga.value=s.settings.glm_assistant_id||'';
+  const gn=document.getElementById('setGlmAntiMin'); if(gn) gn.value=s.settings.glm_anti_min||'1.5';
+  const gx=document.getElementById('setGlmAntiMax'); if(gx) gx.value=s.settings.glm_anti_max||'3.0';
+  const gs=document.getElementById('setGlmSearch'); if(gs) gs.checked=(s.settings.glm_search||'false')==='true';
+}
+async function saveGlmSettings(){
+  const body={glm_default_model:document.getElementById('setGlmModel').value.trim()||'GLM-5.3',
+    glm_assistant_id:document.getElementById('setGlmAssistant').value.trim(),
+    glm_anti_min:document.getElementById('setGlmAntiMin').value.trim(),
+    glm_anti_max:document.getElementById('setGlmAntiMax').value.trim(),
+    glm_search:document.getElementById('setGlmSearch').checked};
+  await api('/settings','POST',body);toast('已保存并应用');refresh();
+}
 
 function openAccModal(acc){
   document.getElementById('accModalTitle').textContent=acc?'编辑账号':'添加账号';
@@ -521,9 +640,17 @@ function openAccModal(acc){
   document.getElementById('accName').value=acc?acc.name:'';
   document.getElementById('accProvider').value=acc?acc.provider:'deepseek';
   ['accToken','accDevice','accSettings','accCookie'].forEach(i=>document.getElementById(i).value='');
+  onProviderChange();
   document.getElementById('accModal').classList.add('show');
 }
 function editAcc(a){openAccModal(a);}
+function onProviderChange(){
+  const p=document.getElementById('accProvider').value;
+  const t=document.getElementById('accCredHint');
+  if(t) t.textContent = p==='chatglm'
+    ? '智谱清言：浏览器登录后会自动抓取 refresh_token（也可手动粘贴）。'
+    : 'DeepSeek：浏览器登录后会自动抓取，下面四项留空即可。';
+}
 function closeModal(id){document.getElementById(id).classList.remove('show');}
 async function saveAccount(){
   const id=document.getElementById('accId').value;
@@ -550,10 +677,13 @@ async function createKey(){
 async function toggleKey(id,en){await api('/keys/'+id,'PUT',{enabled:en});refresh();}
 async function delKey(id){if(confirm('确定删除该 Key？')){await api('/keys/'+id,'DELETE');refresh();toast('已删除');}}
 async function saveSettings(){
-  const body={deepseek_wasm_path:document.getElementById('setWasm').value.trim()};
+  const body={deepseek_wasm_path:document.getElementById('setWasm').value.trim(),
+    deepseek_session_cache:document.getElementById('setCache').checked,
+    deepseek_anti_min:document.getElementById('setAntiMin').value.trim(),
+    deepseek_anti_max:document.getElementById('setAntiMax').value.trim()};
   const pw=document.getElementById('setPw').value.trim();
   if(pw)body.admin_password=pw;
-  await api('/settings','POST',body);toast('已保存');refresh();
+  await api('/settings','POST',body);toast('已保存并应用');refresh();
 }
 function copyText(t){navigator.clipboard.writeText(t).then(()=>toast('已复制'));}
 
@@ -582,7 +712,7 @@ function copyText(t){navigator.clipboard.writeText(t).then(()=>toast('已复制'
   const el = document.getElementById('ocSnippet');
   if(el) el.textContent = snip;
   if(TOKEN){try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
-  setInterval(()=>{if(document.getElementById('mainView').style.display!=='none')refresh();},4000);
+  setInterval(()=>{if(document.getElementById('mainView').style.display!=='none')refresh();},5000);
 })();
 </script>
 </body>

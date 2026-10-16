@@ -18,6 +18,7 @@
 | 功能 | 说明 |
 |---|---|
 | 多账号 | 每个账号一套独立登录凭证，轮询调度，互不冲突 |
+| 多平台 | 支持 DeepSeek 网页版、智谱清言（chatglm.cn） |
 | 多 Key | 给不同的人/用途发不同的 Key，可随时启用/停用/删除 |
 | 用量统计 | 每个模型、每个账号、每个 Key 的输入/输出 token 明细 |
 | 中文面板 | 浏览器打开 `/admin` 可视化操作 |
@@ -91,7 +92,7 @@ copy(JSON.stringify({
 
 - **Base URL**：`http://127.0.0.1:8800/v1`
 - **API Key**：你生成的 `sk-...`
-- **模型**：`deepseek-chat` 或 `deepseek-reasoner`
+- **模型**：`deepseek-chat` / `deepseek-reasoner` / `GLM-5.3` / `GLM-5.3-Flash`
 
 ## opencode 接入示例
 
@@ -188,9 +189,19 @@ webai2api/
 - [x] 内置浏览器登录（**内嵌 WebView2**，不调用系统浏览器，独立 profile，免手动抓凭证）
 - [x] 打包成 Windows exe（PyInstaller）
 - [x] 原生桌面窗口（pywebview + 系统 WebView2，关闭窗口即退出）
-- [ ] 接入更多平台：GLM / Kimi / Qwen …
+- [x] 接入智谱清言（chatglm.cn）：GLM-5.3 / GLM-5.3-Flash
+- [ ] 接入更多平台：Kimi / Qwen …
 
 ## 更新记录
+
+**v0.1.4（新增智谱清言模型）**
+- **新增平台：智谱清言（chatglm.cn）反代**，新增两个模型：
+  - **`GLM-5.3`**：旗舰模型
+  - **`GLM-5.3-Flash`**：快速模型，回复更快
+- **思考强度**：在客户端里选（`Default` / `Low` / `Medium` / `High` / `Max`），网关自动转成智谱的思考档位，无需改模型名。
+- 账号添加支持选「智谱清言」；内置浏览器登录会自动抓取 `chatglm_refresh_token`，与 DeepSeek 账号独立、互不影响。
+- 网关按模型名自动路由：`GLM-*` 走智谱账号池，`deepseek-*` 走 DeepSeek 账号池。
+- 设置页新增智谱分组（默认模型 / 智能体 ID / 防风控延迟 / 联网搜索）。
 
 **v0.1.3（应用图标）**
 - 新增应用图标（深色圆角方块 + 白色 ∧，与面板 logo 一致）：同时作为 **exe 文件图标**和**运行窗口 / 任务栏图标**，不再是默认的 Python 图标。

@@ -22,6 +22,10 @@ PROVIDER = "deepseek"
 COOLDOWN_SECONDS = 120
 
 
+def _truthy(v: str) -> bool:
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _base_defaults(store: Store) -> dict:
     """从 settings 读取全局默认（可被面板修改）。"""
     return {
@@ -32,6 +36,8 @@ def _base_defaults(store: Store) -> dict:
         "anti_max": float(store.get_setting("deepseek_anti_max", "3.0")),
         "max_concurrency": int(store.get_setting("deepseek_max_concurrency", "1")),
         "timeout": int(store.get_setting("deepseek_timeout", "180")),
+        "session_cache": store.get_setting("deepseek_session_cache", "true"),
+        "cache_ttl": int(store.get_setting("deepseek_cache_ttl", "7200")),
     }
 
 
@@ -55,15 +61,20 @@ def build_config(store: Store, account: dict) -> ds_config.AppConfig:
         base_url=d["base_url"],
         wasm_path=d["wasm_path"],
         default_model=d["default_model"],
-        delete_conversation=True,
+        delete_conversation=not _truthy(d["session_cache"]),
         max_concurrency=d["max_concurrency"],
         queue_wait_timeout=60,
         admin_password="",
         anti_rate_limit_enabled=True,
         anti_rate_limit_min_delay=d["anti_min"],
         anti_rate_limit_max_delay=d["anti_max"],
-        session_cache_enabled=False,
+        session_cache_enabled=_truthy(d["session_cache"]),
+        session_cache_ttl=d["cache_ttl"],
     )
+
+
+def build_pool(store: Store, logger: Logger) -> "ClientPool":
+    return ClientPool(store, logger)
 
 
 class AccountClient:

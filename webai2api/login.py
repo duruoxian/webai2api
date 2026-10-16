@@ -15,7 +15,6 @@ import threading
 from logging import Logger
 from pathlib import Path
 
-from .adapters.deepseek.pool import ClientPool
 from .paths import resource_path, user_data_dir
 from .store import Store
 
@@ -48,9 +47,9 @@ def write_state(acc_id: str, status: str, message: str = "") -> None:
 
 
 class LoginManager:
-    def __init__(self, store: Store, pool: ClientPool, logger: Logger) -> None:
+    def __init__(self, store: Store, registry, logger: Logger) -> None:
         self.store = store
-        self.pool = pool
+        self.registry = registry
         self.logger = logger
         self._lock = threading.Lock()
         self._procs: dict[str, subprocess.Popen] = {}
@@ -59,7 +58,7 @@ class LoginManager:
         st = read_state(acc_id)
         if st.get("status") == "success":
             try:
-                self.pool.refresh()
+                self.registry.refresh()
             except Exception:
                 pass
         return st

@@ -334,6 +334,9 @@ class DeepSeekWebClient:
     def __init__(self, config: AppConfig, logger: Logger) -> None:
         self.config = config
         self.logger = logger
+        # 可复用的上游 HTTPS 连接（keep-alive，省去重复 TLS 握手）
+        self._http_conn = None
+        self._http_host = None
         # 工具调用解析行为：严格工具名匹配默认开，JSON 碰运气解析默认关。
         configure_tool_parsing(
             strict_names=config.tool_name_strict,
@@ -378,6 +381,92 @@ class DeepSeekWebClient:
                 config.anti_rate_limit_min_delay,
                 config.anti_rate_limit_max_delay,
             )
+
+    # ═══════════════════════════════════════════════════════
+    # 可复用的 HTTPS 连接（keep-alive，省去重复 TLS 握手）
+    # ═══════════════════════════════════════════════════════
+
+    def _get_http_conn(self, host: str, timeout: int):
+        conn = self._http_conn
+        if conn is None or self._http_host != host:
+            conn = http.client.HTTPSConnection(host, timeout=max(int(timeout), 30))
+            self._http_conn = conn
+            self._http_host = host
+        return conn
+
+    def _drop_http_conn(self) -> None:
+        conn = self._http_conn
+        self._http_conn = None
+        self._http_host = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _urlopen(self, request: urllib.request.Request, timeout: int = 15):
+        """用可复用连接发起请求，读完响应体后返回与 urllib 兼容的响应对象。
+
+        立刻把 body 读干净，连接随即回到空闲态可复用；返回的对象与连接解耦，
+        with 退出时不会关闭连接。出错时抛 urllib.error.HTTPError / URLError。
+        """
+        import io
+        from urllib.parse import urlsplit
+
+        class _BufferedResponse:
+            def __init__(self, url, status, reason, headers, body):
+                self.url = url
+                self.status = status
+                self.reason = reason
+                self.headers = headers
+                self._body = body
+
+            def read(self, *args):
+                return self._body
+
+            def getcode(self):
+                return self.status
+
+            def geturl(self):
+                return self.url
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        url = request.full_url
+        parts = urlsplit(url)
+        host = parts.hostname or "chat.deepseek.com"
+        path = parts.path or "/"
+        if parts.query:
+            path = f"{path}?{parts.query}"
+        method = request.get_method()
+        headers = {k: v for k, v in request.header_items()}
+        data = request.data
+
+        last_exc: Exception | None = None
+        for _ in range(2):
+            conn = self._get_http_conn(host, timeout)
+            try:
+                conn.request(method, path, body=data, headers=headers)
+                resp = conn.getresponse()
+                status = resp.status
+                reason = resp.reason
+                resp_headers = resp.headers
+                raw = resp.read()
+            except Exception as exc:  # noqa: BLE001  连接层故障 → 丢弃后重连一次
+                last_exc = exc
+                self._drop_http_conn()
+                continue
+            if status >= 400:
+                self._drop_http_conn()
+                raise urllib.error.HTTPError(
+                    url, status, reason, resp_headers, io.BytesIO(raw)
+                )
+            return _BufferedResponse(url, status, reason, resp_headers, raw)
+        raise urllib.error.URLError(str(last_exc))
 
     # ═══════════════════════════════════════════════════════
     # SSE 事件公共处理（流式 / 非流式两条路径共用，避免逻辑分叉）
@@ -1449,7 +1538,7 @@ class DeepSeekWebClient:
                 method="POST",
                 headers=headers,
             )
-            with urllib.request.urlopen(request, timeout=15) as response:
+            with self._urlopen(request, timeout=15) as response:
                 self.auth.absorb_response_cookies(response)
                 payload = self.auth._read_json_response(response)
         except urllib.error.HTTPError as exc:
@@ -1500,7 +1589,7 @@ class DeepSeekWebClient:
                 method="POST",
                 headers=headers,
             )
-            with urllib.request.urlopen(request, timeout=15) as response:
+            with self._urlopen(request, timeout=15) as response:
                 self.auth.absorb_response_cookies(response)
                 payload = self.auth._read_json_response(response)
         except urllib.error.HTTPError as exc:
@@ -1553,8 +1642,9 @@ class DeepSeekWebClient:
                 method="POST",
                 headers=headers,
             )
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with self._urlopen(request, timeout=10) as response:
                 self.auth.absorb_response_cookies(response)
+                response.read()  # 读空响应体，保证连接可复用
 
             with self._proxy_sessions_lock:
                 self._proxy_sessions.discard(session_id)
