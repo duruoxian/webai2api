@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "webai2api"
+version = "0.1.1"
+description = "把多家 AI 网页版反向代理成统一的 OpenAI 兼容 API，带中文管理面板"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "websockets>=12",
+    "deepseek-pow",
+    "wasmtime",
+]
+
+[project.scripts]
+webai2api = "webai2api.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["webai2api*"]
+
+[tool.setuptools.package-data]
+webai2api = ["web/*"]

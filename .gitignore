@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 打包产物
+build/
+dist/
+*.spec.bak
+
+# 运行时/敏感文件
+data/
+*.db
+.env
+*.log
+current_port.txt
+.test_state
+
+# PoW 文件：需自行从 DeepSeek 网页端提取（见 README），不随仓库分发
+sha3_wasm_bg.wasm
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
