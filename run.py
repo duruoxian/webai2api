@@ -109,8 +109,11 @@ def main() -> None:
     try:
         import webview
 
+        from webai2api.paths import resource_path
+
         webview.create_window(WINDOW_TITLE, admin_url, width=1180, height=800, min_size=(900, 600))
-        webview.start()
+        icon = resource_path("assets", "webai2api.ico")
+        webview.start(icon=str(icon) if icon.exists() else None)
         logger.info("窗口已关闭，退出")
         os._exit(0)
     except Exception as exc:  # noqa: BLE001

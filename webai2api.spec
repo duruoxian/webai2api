@@ -17,6 +17,11 @@ import os
 if os.path.exists("sha3_wasm_bg.wasm"):
     datas.append(("sha3_wasm_bg.wasm", "."))
 
+# 应用图标：既作为 exe 文件图标，也供运行期窗口图标使用
+APP_ICON = "assets/webai2api.ico"
+if os.path.exists(APP_ICON):
+    datas.append((APP_ICON, "assets"))
+
 # 收集 uvicorn / fastapi / starlette 全部子模块，避免冻结后缺模块
 for pkg in ("uvicorn", "fastapi", "starlette", "anyio", "click", "h11", "websockets"):
     d, b, h = collect_all(pkg)
@@ -66,6 +71,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="webai2api",
+    icon=APP_ICON if os.path.exists(APP_ICON) else None,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
