@@ -235,26 +235,25 @@ class ChatGlmWebClient:
 
     @staticmethod
     def _resolve_mode(model: str, effort: str) -> tuple[str, str]:
-        """把思考强度映射成 (chat_mode, reasoning_effort)。
+        """把客户端的 reasoning_effort 收敛成智谱官网的三档。
 
-        挡位来自客户端下拉（OpenAI 的 reasoning_effort）：
-          Default(空) → 快速；Low → 轻度；Medium/High → 深度；Max → 极致。
+        智谱官网只有三档：快速 / 深度 / 极致。
+        客户端可能给五档（Default/Low/Medium/High/Max），映射如下：
+          Default / Low        → 快速（不进入思考模式，不带 effort）
+          Medium / High        → 深度（chat_mode=zero + effort=high）
+          Max                  → 极致（chat_mode=zero + effort=max）
         """
         m = (model or "").lower()
         if "deepresearch" in m:
-            return "deep_research", (effort or "max")
+            return "deep_research", "max"
         e = (effort or "").strip().lower()
-        if e in ("", "default", "none", "off", "auto"):
+        if e in ("", "default", "none", "off", "auto", "low", "minimal"):
             return "", ""
-        if e in ("low", "minimal"):
-            return "", "low"
-        if e == "medium":
-            return "zero", "medium"
-        if e == "high":
+        if e in ("medium", "high"):
             return "zero", "high"
-        if e == "max":
+        if e in ("max", "highest", "extreme"):
             return "zero", "max"
-        return "zero", e
+        return "zero", "high"
 
     def _body(self, content: str, model: str, conv_id: str = "", effort: str = "") -> dict:
         chat_mode, effort = self._resolve_mode(model, effort)

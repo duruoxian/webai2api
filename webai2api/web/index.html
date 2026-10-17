@@ -377,7 +377,10 @@ td{letter-spacing:-.01em}
             <input id="setGlmAntiMax" placeholder="3.0" style="flex:1">
           </div></label>
         <label class="chk"><input type="checkbox" id="setGlmSearch"> 联网搜索（is_networking）</label>
-        <p class="hint" style="margin-top:10px">思考强度在客户端里选（Default / Low / Medium / High / Max），本网关会自动转成智谱的思考档位。</p>
+        <div class="hint" style="margin-top:10px;line-height:1.9">
+          智谱只有三档思考强度，客户端下拉会自动收敛：<br>
+          <b>Low</b>（或不选）→ 快速&nbsp;·&nbsp;<b>Medium / High</b> → 深度&nbsp;·&nbsp;<b>Max</b> → 极致
+        </div>
         <div style="height:14px"></div>
         <button class="btn" onclick="saveGlmSettings()">保存</button>
       </div>
