@@ -35,7 +35,9 @@ body{
   line-height:1.5;
   letter-spacing:-.01em;
   min-height:100vh;
+  overflow-y:auto;
 }
+body.no-scroll{overflow:hidden}
 body::before{
   content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
   background:
@@ -61,24 +63,54 @@ input:focus,textarea:focus,select:focus{
 
 .nav{
   position:sticky;top:0;z-index:50;
-  height:56px;display:flex;align-items:center;gap:14px;
-  padding:0 26px;
+  height:48px;display:flex;align-items:center;gap:12px;
+  padding:0 22px;
   background:rgba(236,238,241,.72);
   backdrop-filter:saturate(180%) blur(20px);
   -webkit-backdrop-filter:saturate(180%) blur(20px);
   border-bottom:1px solid rgba(0,0,0,.06);
 }
-.brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:17px;letter-spacing:-.02em}
-.brand-logo{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;
+.brand{display:flex;align-items:center;gap:9px;font-weight:600;font-size:15.5px;letter-spacing:-.02em}
+.brand-logo{width:23px;height:23px;border-radius:7px;display:grid;place-items:center;
   background:linear-gradient(145deg,#1d1d1f,#3a3a3c);box-shadow:0 2px 8px rgba(0,0,0,.18)}
-.brand-logo svg{width:15px;height:15px}
+.brand-logo svg{width:13px;height:13px}
 .nav-pill{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);
   background:rgba(0,0,0,.04);padding:5px 12px;border-radius:999px}
 .nav-pill b{color:var(--text);font-weight:600}
 .nav-spacer{flex:1}
 
-.wrap{max-width:1040px;margin:0 auto;padding:34px 26px 80px}
+.wrap{max-width:1240px;margin:0 auto;padding:0 28px 80px}
+@media (max-width:1500px){.wrap{max-width:1100px}}
 
+/* 吸顶标签栏 */
+.tabs-bar{
+  position:sticky;top:0;z-index:40;
+  margin:0 -26px 18px;padding:8px 22px;
+  display:flex;align-items:center;gap:16px;
+  background:rgba(236,238,241,.86);
+  backdrop-filter:blur(20px) saturate(180%);
+  -webkit-backdrop-filter:blur(20px) saturate(180%);
+  border-bottom:1px solid rgba(0,0,0,.05);
+}
+.tabs-bar .seg{margin-bottom:0;flex:0 0 auto}
+.tabs-bar .brand{margin-right:4px}
+.brand-name{font-size:15px}
+/* pywebview 用这个类名识别可拖动区域 */
+.pywebview-drag-region{cursor:default;user-select:none}
+.win-ctrl{display:flex;align-items:center;gap:2px;margin-left:6px}
+.win-btn{
+  width:30px;height:28px;border-radius:7px;display:grid;place-items:center;
+  color:var(--text2);transition:background .15s,color .15s;
+}
+.win-btn svg{width:12px;height:12px;fill:none}
+.win-btn:hover{background:rgba(0,0,0,.07);color:var(--text)}
+.win-btn.close:hover{background:#e81123;color:#fff}
+.tabs-right{display:flex;align-items:center;gap:8px;margin-left:auto}
+.stat-pill{
+  font-size:12.5px;color:var(--text3);white-space:nowrap;
+  background:rgba(0,0,0,.04);padding:5px 11px;border-radius:999px;
+}
+.stat-pill b{color:var(--text);font-weight:600}
 .seg{
   display:inline-flex;gap:2px;padding:3px;border-radius:13px;
   background:rgba(0,0,0,.05);margin-bottom:28px;
@@ -112,12 +144,19 @@ input:focus,textarea:focus,select:focus{
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
 .stat{
   background:rgba(255,255,255,.6);border:1px solid rgba(0,0,0,.05);
-  border-radius:15px;padding:18px 18px 16px;
+  border-radius:15px;padding:16px 18px 14px;
   transition:transform .25s cubic-bezier(.4,0,.2,1),box-shadow .25s;
 }
 .stat:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.07)}
-.stat .num{font-size:27px;font-weight:600;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
-.stat .num small{font-size:15px;font-weight:500;color:var(--text3);margin-left:2px}
+.stat .lbl{font-size:13px;color:var(--text2);margin:0 0 8px;font-weight:400}
+.stat .foot{font-size:12px;color:var(--text3);margin-top:6px}
+.stat .num{font-size:27px;font-weight:600;letter-spacing:-.03em;font-variant-numeric:tabular-nums;
+  display:flex;align-items:baseline;gap:1px;line-height:1.15}
+.stat .num small{
+  font-size:.52em;font-weight:600;letter-spacing:0;
+  color:var(--text2);margin-left:1px;
+  font-variant-numeric:tabular-nums;
+}
 .stat .lbl{font-size:12.5px;color:var(--text3);margin-top:3px}
 
 table{width:100%;border-collapse:separate;border-spacing:0;font-size:14px}
@@ -143,6 +182,18 @@ td{letter-spacing:-.01em}
 .btn.danger:hover{background:rgba(0,0,0,.05);box-shadow:none}
 .btn.sm{padding:6px 13px;font-size:13px;border-radius:9px}
 .btn.block{width:100%}
+.btn-row{display:flex;gap:10px;align-items:center}
+
+/* 设置分组 */
+.set-group{padding:16px 0;border-top:1px solid rgba(0,0,0,.055)}
+.set-group:first-of-type{border-top:none;padding-top:0}
+.set-group-title{font-size:12.5px;font-weight:600;color:var(--text3);
+  letter-spacing:.02em;margin-bottom:12px}
+.set-group .chk{margin-bottom:10px}
+.set-group .chk:last-child{margin-bottom:0}
+.fld-row{display:flex;gap:12px}
+.fld-row .fld{flex:1;min-width:0;margin-bottom:0}
+.set-group .fld:last-child{margin-bottom:0}
 
 .tag{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:999px;
   font-size:12.5px;font-weight:500}
@@ -159,24 +210,154 @@ td{letter-spacing:-.01em}
 .num-t{font-variant-numeric:tabular-nums}
 
 .donut-wrap{display:flex;align-items:center;gap:30px;flex-wrap:wrap}
+
+/* 模型用量：左环图 + 右明细 */
+.model-split{display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap}
+.model-donut{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:14px;width:200px}
+.m-dot{display:inline-block;width:9px;height:9px;border-radius:2.5px;margin-right:7px;vertical-align:1px}
+.model-table{flex:1 1 380px;min-width:320px}
+.tbl-scroll{max-height:340px;overflow:auto;border-radius:10px}
+.tbl-scroll.tall{max-height:520px}
+.tbl-scroll thead th{
+  position:sticky;top:0;z-index:2;
+  background:rgba(246,247,249,.96);
+  backdrop-filter:blur(8px);
+  border-bottom:1px solid rgba(0,0,0,.07);
+}
+.model-table table th:not(:first-child),
+.model-table table td:not(:first-child){text-align:right}
+@media (max-width:760px){
+  .model-donut{width:100%}
+  .model-table{min-width:0}
+}
+.donut-box{position:relative;flex:0 0 auto}
+.donut-tip{
+  position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-120%);
+  background:rgba(29,29,31,.94);color:#fff;padding:8px 12px;border-radius:10px;
+  font-size:12.5px;line-height:1.6;white-space:nowrap;transition:opacity .12s;
+  box-shadow:0 6px 20px rgba(0,0,0,.25);z-index:5;
+}
+.donut-tip.show{opacity:1}
+.donut-tip b{font-weight:600}
+.donut-seg{cursor:pointer;transition:opacity .15s}
+.donut-seg:hover{opacity:.78}
+.seg-sm{margin-bottom:0;padding:2px}
+.seg-sm button{padding:5px 12px;font-size:13px;border-radius:9px}
+
+/* 自定义时间：macOS 风格内联面板 */
+.range-pop{
+  display:none;
+  margin:0 0 20px;
+  padding:18px 20px 16px;
+  border-radius:16px;
+  background:rgba(255,255,255,.72);
+  border:1px solid rgba(0,0,0,.06);
+  box-shadow:0 1px 2px rgba(0,0,0,.04),0 10px 30px rgba(0,0,0,.06);
+  backdrop-filter:blur(30px) saturate(180%);
+  -webkit-backdrop-filter:blur(30px) saturate(180%);
+  animation:popIn .22s cubic-bezier(.32,.72,0,1);
+}
+.range-pop.show{display:block}
+@keyframes popIn{from{opacity:0;transform:translateY(-6px) scale(.985)}to{opacity:1;transform:none}}
+.range-pop-row{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.range-field{flex:1 1 190px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.range-field span{font-size:12px;color:var(--text3);font-weight:500;letter-spacing:.01em}
+.range-arrow{color:var(--text3);font-size:15px;padding-bottom:9px;flex:0 0 auto}
+.range-pop-foot{display:flex;align-items:center;gap:8px;margin-top:14px}
+.range-pop-foot .sp{flex:1}
+
+/* 自绘日历（避免原生 date 控件在 WebView2 里卡顿） */
+.date-btn{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  width:100%;padding:9px 12px;font-size:14px;border-radius:10px;
+  background:rgba(255,255,255,.9);border:1px solid rgba(0,0,0,.1);
+  color:var(--text);font-variant-numeric:tabular-nums;min-height:38px;
+  transition:border-color .15s,box-shadow .15s;
+}
+.date-btn:hover{border-color:rgba(0,0,0,.18)}
+.date-btn svg{width:15px;height:15px;color:var(--text3);flex:0 0 auto}
+.date-btn.empty span{color:var(--text3)}
+
+.dp{
+  position:fixed;z-index:300;display:none;
+  width:268px;padding:14px 14px 8px;
+  border-radius:16px;
+  background:rgba(250,250,252,.92);
+  border:1px solid rgba(0,0,0,.08);
+  box-shadow:0 2px 6px rgba(0,0,0,.06),0 18px 44px rgba(0,0,0,.18);
+  backdrop-filter:blur(30px) saturate(180%);
+  -webkit-backdrop-filter:blur(30px) saturate(180%);
+  transform-origin:top center;
+  animation:dpIn .16s cubic-bezier(.32,.72,0,1);
+}
+.dp.show{display:block}
+@keyframes dpIn{from{opacity:0;transform:scale(.97) translateY(-4px)}to{opacity:1;transform:none}}
+.dp-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;padding:0 2px}
+.dp-head span{font-size:14px;font-weight:600;letter-spacing:-.01em}
+.dp-nav{
+  width:26px;height:26px;border-radius:7px;display:grid;place-items:center;
+  font-size:17px;line-height:1;color:var(--text2);
+}
+.dp-nav:hover{background:rgba(0,0,0,.06);color:var(--text)}
+.dp-week{display:grid;grid-template-columns:repeat(7,1fr);margin-bottom:4px}
+.dp-week span{text-align:center;font-size:11px;color:var(--text3);padding:3px 0}
+.dp-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px}
+.dp-day{
+  height:32px;border-radius:8px;font-size:13px;
+  display:grid;place-items:center;color:var(--text);
+  font-variant-numeric:tabular-nums;
+  transition:background .12s,color .12s;
+}
+.dp-day:hover{background:rgba(0,0,0,.06)}
+.dp-day.other{color:#c4c8ce}
+.dp-day.today{font-weight:700;color:#0a84ff}
+.dp-day.sel{background:var(--accent);color:#fff;font-weight:600}
+.dp-day.sel:hover{background:var(--accent-hover)}
+.dp-foot{display:flex;justify-content:space-between;padding:8px 4px 2px;margin-top:6px;border-top:1px solid rgba(0,0,0,.06)}
+.dp-link{font-size:13px;color:#0a84ff;padding:4px 6px;border-radius:6px}
+.dp-link:hover{background:rgba(10,132,255,.08)}
 .donut{width:180px;height:180px;flex:0 0 auto}
 .donut-num{font-size:19px;font-weight:600;fill:var(--text);font-variant-numeric:tabular-nums}
 .donut-lbl{font-size:10.5px;fill:var(--text3)}
-.donut-legend{flex:1;min-width:220px;display:flex;flex-direction:column;gap:11px}
-.lg-item{display:flex;align-items:center;gap:10px;font-size:13.5px}
-.lg-dot{width:10px;height:10px;border-radius:3px;flex:0 0 auto}
-.lg-name{flex:1;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lg-val{font-variant-numeric:tabular-nums;font-weight:600}
 
-.heatmap{display:flex;gap:3px;overflow-x:auto;padding-bottom:4px;min-height:99px}
-.hm-col{display:flex;flex-direction:column;gap:3px}
-.hm-cell{width:11px;height:11px;border-radius:2.5px;background:var(--heat0);flex:0 0 auto}
-.hm-cell.l1{background:var(--heat1)}
-.hm-cell.l2{background:var(--heat2)}
-.hm-cell.l3{background:var(--heat3)}
-.hm-cell.l4{background:var(--heat4)}
-.hm-legend{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text3);margin-top:12px;justify-content:flex-end}
-.hm-legend .hm-cell{width:10px;height:10px;display:inline-block}
+/* 每日 Token 柱状图 */
+.barchart{
+  display:flex;align-items:flex-end;gap:6px;
+  height:200px;padding:10px 4px 0;
+  overflow-x:auto;overflow-y:hidden;
+  border-bottom:1px solid rgba(0,0,0,.07);
+}
+.bar-item{
+  flex:1 0 auto;min-width:26px;display:flex;flex-direction:column;
+  align-items:center;justify-content:flex-end;height:100%;gap:4px;
+  position:relative;cursor:default;
+}
+.bar-val{font-size:10.5px;color:var(--text3);white-space:nowrap;
+  font-variant-numeric:tabular-nums;opacity:0;transition:opacity .15s}
+.bar-item:hover .bar-val{opacity:1}
+.bar-fill{
+  width:100%;max-width:44px;min-height:2px;border-radius:5px 5px 2px 2px;
+  background:linear-gradient(180deg,#4b515a,#2b2f36);
+  transition:filter .15s,transform .15s;
+}
+.bar-item:hover .bar-fill{filter:brightness(1.25);transform:scaleY(1.02);transform-origin:bottom}
+.bar-fill.zero{background:var(--heat0)}
+.bar-x{font-size:10.5px;color:var(--text3);white-space:nowrap;
+  font-variant-numeric:tabular-nums;height:14px;line-height:14px}
+.bar-slider{margin-top:14px;display:flex;flex-direction:column;gap:8px}
+.bar-range-label{font-size:12px;color:var(--text3);text-align:right;
+  font-variant-numeric:tabular-nums}
+.bar-slider input[type=range]{
+  -webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:2px;
+  background:rgba(0,0,0,.10);outline:none;padding:0;border:none;
+}
+.bar-slider input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;appearance:none;width:16px;height:16px;border-radius:50%;
+  background:#fff;border:1px solid rgba(0,0,0,.12);
+  box-shadow:0 1px 3px rgba(0,0,0,.22);cursor:pointer;
+  transition:transform .12s;
+}
+.bar-slider input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.12)}
 
 .fld{display:block;margin-bottom:16px}
 .fld>span{display:block;font-size:13px;color:var(--text2);margin-bottom:7px;font-weight:500}
@@ -215,7 +396,7 @@ td{letter-spacing:-.01em}
   color:#2b2f36;margin:14px 0;user-select:all;
 }
 
-.login-wrap{max-width:340px;margin:14vh auto;padding:0 24px;text-align:center}
+.login-wrap{max-width:340px;margin:0 auto;padding:10vh 24px 40px;text-align:center;min-height:100vh;display:flex;flex-direction:column;justify-content:center}
 .login-wrap .brand-logo{width:56px;height:56px;border-radius:16px;margin:0 auto 20px}
 .login-wrap .brand-logo svg{width:30px;height:30px}
 .login-wrap h1{font-size:24px;font-weight:600;letter-spacing:-.03em;margin-bottom:6px}
@@ -254,18 +435,13 @@ td{letter-spacing:-.01em}
 </div>
 
 <div id="mainView" style="display:none">
-  <div class="nav">
-    <div class="brand">
-      <div class="brand-logo"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18 L12 5 L19 18" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-      webai2api
-    </div>
-    <div class="nav-pill" id="navStat">–</div>
-    <div class="nav-spacer"></div>
-    <button class="btn gray sm" onclick="logout()">退出</button>
-  </div>
-
   <div class="wrap">
-    <div class="seg">
+    <div class="tabs-bar">
+      <div class="brand">
+        <div class="brand-logo"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18 L12 5 L19 18" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <span class="brand-name">webai2api</span>
+      </div>
+      <div class="seg">
       <button class="active" data-tab="overview" onclick="switchTab('overview')">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
         总览</button>
@@ -281,37 +457,113 @@ td{letter-spacing:-.01em}
       <button data-tab="settings" onclick="switchTab('settings')">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.2 4.2l2.1 2.1m11.4 11.4 2.1 2.1M2 12h3m14 0h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
         设置</button>
+      </div>
+      <div class="tabs-right">
+        <span class="stat-pill" id="navAcc">可用账号 <b>0</b></span>
+        <span class="stat-pill" id="navKey">Key <b>0</b></span>
+        <button class="btn gray sm" onclick="logout()">退出</button>
+      </div>
     </div>
 
     <div id="tab-overview" class="tabpane active">
       <div class="card">
-        <div class="card-head"><h2>用量总览</h2></div>
+        <div class="card-head"><h2>用量总览</h2><div class="sp"></div>
+          <div class="seg seg-sm" id="rangeSeg">
+            <button data-range="today" onclick="setRange('today')">今天</button>
+            <button data-range="7d" onclick="setRange('7d')">7 天</button>
+            <button data-range="30d" onclick="setRange('30d')">30 天</button>
+            <button data-range="month" onclick="setRange('month')">本月</button>
+            <button class="active" data-range="all" onclick="setRange('all')">全部</button>
+            <button data-range="custom" onclick="setRange('custom')">自定义</button>
+          </div>
+        </div>
+        <div id="customRange" class="range-pop">
+          <div class="range-pop-row">
+            <div class="range-field">
+              <span>开始日期</span>
+              <button type="button" class="date-btn" id="rangeStartBtn" onclick="openDatePicker('start',this)">
+                <span id="rangeStartText">选择日期</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 11h18"/></svg>
+              </button>
+            </div>
+            <div class="range-arrow">→</div>
+            <div class="range-field">
+              <span>结束日期</span>
+              <button type="button" class="date-btn" id="rangeEndBtn" onclick="openDatePicker('end',this)">
+                <span id="rangeEndText">选择日期</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 11h18"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="range-pop-foot">
+            <span class="muted" id="rangeHint">结束日期留空表示到现在</span>
+            <div class="sp"></div>
+            <button class="btn gray sm" onclick="cancelCustomRange()">取消</button>
+            <button class="btn sm" onclick="applyCustomRange()">应用</button>
+          </div>
+        </div>
         <div class="stats">
-          <div class="stat"><div class="num" id="ovTotal">0</div><div class="lbl">总 Token</div></div>
-          <div class="stat"><div class="num" id="ovPrompt">0</div><div class="lbl">输入 Token</div></div>
-          <div class="stat"><div class="num" id="ovComp">0</div><div class="lbl">输出 Token</div></div>
-          <div class="stat"><div class="num" id="ovReqs">0</div><div class="lbl">请求数</div></div>
-          <div class="stat"><div class="num" id="ov24">0</div><div class="lbl">近 24h Token</div></div>
-          <div class="stat"><div class="num" id="ovAcc">0</div><div class="lbl">可用账号</div></div>
+          <div class="stat"><div class="lbl">总请求数</div>
+            <div class="num" id="ovReqs">0</div>
+            <div class="foot" id="ovReqsFoot">近 30 天</div></div>
+          <div class="stat"><div class="lbl">成功请求数</div>
+            <div class="num" id="ovOk">0</div>
+            <div class="foot" id="ovOkFoot">成功率 –</div></div>
+          <div class="stat"><div class="lbl">总 Token（估算）</div>
+            <div class="num" id="ovTotal">0</div>
+            <div class="foot">全部模型合计</div></div>
+          <div class="stat"><div class="lbl">输入 Token（估算）</div>
+            <div class="num" id="ovPrompt">0</div>
+            <div class="foot">含上下文</div></div>
+          <div class="stat"><div class="lbl">输出 Token（估算）</div>
+            <div class="num" id="ovComp">0</div>
+            <div class="foot">模型生成</div></div>
+          <div class="stat"><div class="lbl">近 24h Token</div>
+            <div class="num" id="ov24">0</div>
+            <div class="foot">不受时间筛选影响</div></div>
+          <div class="stat"><div class="lbl">可用账号</div>
+            <div class="num" id="ovAcc">0</div>
+            <div class="foot">已启用</div></div>
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>模型占比</h2></div>
-        <div class="donut-wrap">
-          <svg id="donut" viewBox="0 0 140 140" class="donut"></svg>
-          <div id="donutLegend" class="donut-legend"></div>
+        <div class="card-head"><h2>模型用量</h2><div class="sp"></div>
+          <div class="seg seg-sm" id="modelSortSeg">
+            <button class="active" data-sort="token" onclick="setModelSort('token')">按用量</button>
+            <button data-sort="req" onclick="setModelSort('req')">按请求数</button>
+          </div>
+        </div>
+        <div class="model-split">
+          <div class="model-donut">
+            <div class="donut-box">
+              <svg id="donut" viewBox="0 0 140 140" class="donut"></svg>
+              <div id="donutTip" class="donut-tip"></div>
+            </div>
+          </div>
+          <div class="model-table">
+            <div class="tbl-scroll">
+              <table id="modelTable"><thead><tr><th>模型</th><th>请求数</th><th>输入</th><th>输出</th><th>合计</th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>每日 Token 消耗</h2></div>
-        <div id="heatmap" class="heatmap"></div>
-        <div id="hmLegend" class="hm-legend"></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>各模型用量</h2></div>
-        <table id="modelTable"><thead><tr><th>模型</th><th>请求数</th><th>输入</th><th>输出</th><th>合计</th></tr></thead><tbody></tbody></table>
+        <div class="card-head"><h2>每日 Token 消耗</h2><div class="sp"></div>
+          <div class="seg seg-sm" id="barWinSeg">
+            <button data-win="7" onclick="setBarWindow(7)">7 天</button>
+            <button class="active" data-win="14" onclick="setBarWindow(14)">14 天</button>
+            <button data-win="30" onclick="setBarWindow(30)">30 天</button>
+            <button data-win="90" onclick="setBarWindow(90)">90 天</button>
+          </div>
+        </div>
+        <div id="barchart" class="barchart"></div>
+        <div class="bar-slider">
+          <div class="bar-range-label" id="barRangeLabel"></div>
+          <input type="range" id="barSlider" min="0" max="0" value="0" oninput="onBarSlide(this.value)">
+        </div>
       </div>
     </div>
+
 
     <div id="tab-accounts" class="tabpane">
       <div class="card">
@@ -320,7 +572,9 @@ td{letter-spacing:-.01em}
         </div>
         <p class="card-sub">每个账号独立存储、互不干扰，也不影响你自己浏览器里的登录状态。<br>
           <b>用法：</b>点右上角「添加账号」只填<b>名称</b> → 保存 → 回列表点该账号的<b>「浏览器登录」</b>，在弹出的内置浏览器里登录 DeepSeek 即可，凭证会<b>自动抓取</b>。</p>
-        <table id="accTable"><thead><tr><th>名称</th><th>平台</th><th>凭证</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
+        <div class="tbl-scroll tall">
+          <table id="accTable"><thead><tr><th>名称</th><th>平台</th><th>凭证</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
+        </div>
       </div>
     </div>
 
@@ -330,70 +584,151 @@ td{letter-spacing:-.01em}
           <button class="btn sm" onclick="openKeyModal()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>生成 Key</button>
         </div>
         <p class="card-sub">把 Key 发给朋友，填进 opencode 等客户端即可。接口地址：<b id="baseHint">http://127.0.0.1:8800/v1</b></p>
-        <table id="keyTable"><thead><tr><th>名称</th><th>Key</th><th>状态</th><th>最近使用</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
+        <div class="tbl-scroll tall">
+          <table id="keyTable"><thead><tr><th>名称</th><th>Key</th><th>状态</th><th>最近使用</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>快速接入</h2></div>
+        <div class="hint" style="line-height:2;margin-bottom:14px">
+          <div>接口地址&nbsp;&nbsp;<b id="baseHint2">http://127.0.0.1:8800/v1</b></div>
+          <div>可用模型&nbsp;&nbsp;<b id="modelHint">deepseek-chat</b></div>
+          <div>API Key&nbsp;&nbsp;在上方生成</div>
+        </div>
+        <p class="hint" style="margin-bottom:8px">填进 opencode（<code>~/.config/opencode/opencode.jsonc</code> 的 provider 里）：</p>
+        <pre id="ocSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
+        <button class="btn sm" onclick="copyText(document.getElementById('ocSnippet').textContent)" style="margin-top:10px">复制配置片段</button>
       </div>
     </div>
 
     <div id="tab-usage" class="tabpane">
       <div class="card">
         <div class="card-head"><h2>按账号</h2></div>
-        <table id="accUsageTable"><thead><tr><th>账号</th><th>平台</th><th>请求数</th><th>Token 合计</th></tr></thead><tbody></tbody></table>
+        <div class="tbl-scroll">
+          <table id="accUsageTable"><thead><tr><th>账号</th><th>平台</th><th>请求数</th><th>Token 合计</th></tr></thead><tbody></tbody></table>
+        </div>
       </div>
       <div class="card">
         <div class="card-head"><h2>按 Key</h2></div>
-        <table id="keyUsageTable"><thead><tr><th>API Key</th><th>请求数</th><th>Token 合计</th></tr></thead><tbody></tbody></table>
+        <div class="tbl-scroll">
+          <table id="keyUsageTable"><thead><tr><th>API Key</th><th>请求数</th><th>Token 合计</th></tr></thead><tbody></tbody></table>
+        </div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>最近请求</h2></div>
-        <table id="recentTable"><thead><tr><th>时间</th><th>Key</th><th>账号</th><th>模型</th><th>输入</th><th>输出</th><th>合计</th><th>状态</th></tr></thead><tbody></tbody></table>
+        <div class="card-head"><h2>最近请求</h2><div class="sp"></div>
+          <span class="muted" id="recentInfo" style="font-size:12.5px"></span>
+          <button class="btn gray sm" onclick="recentPage(-1)">上一页</button>
+          <button class="btn gray sm" onclick="recentPage(1)">下一页</button>
+        </div>
+        <div class="tbl-scroll tall">
+          <table id="recentTable"><thead><tr><th>时间</th><th>Key</th><th>账号</th><th>模型</th><th>输入</th><th>输出</th><th>合计</th><th>状态</th></tr></thead><tbody></tbody></table>
+        </div>
       </div>
     </div>
 
     <div id="tab-settings" class="tabpane">
       <div class="card">
-        <div class="card-head"><h2>全局设置</h2></div>
-        <div class="fld"><span>性能</span>
-          <label class="chk"><input type="checkbox" id="setCache"> 启用会话缓存（推荐）：多轮只发增量，更快、更不易被上游限流</label></div>
-        <label class="fld"><span>PoW WASM 文件路径</span>
-          <input id="setWasm" placeholder="./sha3_wasm_bg.wasm"></label>
-        <label class="fld"><span>防风控延迟下限 / 上限（秒）</span>
-          <div style="display:flex;gap:10px">
-            <input id="setAntiMin" placeholder="1.5" style="flex:1">
-            <input id="setAntiMax" placeholder="3.0" style="flex:1">
-          </div></label>
+        <div class="card-head"><h2>DeepSeek（chat.deepseek.com）</h2></div>
+
+        <div class="set-group">
+          <div class="set-group-title">模型</div>
+          <label class="fld"><span>默认模型</span>
+            <input id="setDsModel" placeholder="deepseek-chat"></label>
+        </div>
+
+        <div class="set-group">
+          <div class="set-group-title">额度</div>
+          <div class="fld-row">
+            <label class="fld"><span>上下文长度（tokens，上限 1,000,000）</span>
+              <input id="setDsContext" inputmode="numeric" placeholder="1000000" max="1000000" data-cap="1000000"></label>
+            <label class="fld"><span>最大输出（tokens，上限 384,000）</span>
+              <input id="setDsOutput" inputmode="numeric" placeholder="384000" max="384000" data-cap="384000"></label>
+          </div>
+        </div>
+
+        <div class="set-group">
+          <div class="set-group-title">性能</div>
+          <label class="chk"><input type="checkbox" id="setCache"> 启用会话缓存：多轮只发增量，更快、更不易被限流</label>
+          <label class="chk"><input type="checkbox" id="setSearch"> 联网搜索：模型按需检索，不是每次都搜</label>
+        </div>
+
+        <div class="set-group">
+          <div class="set-group-title">风控 / 高级</div>
+          <div class="fld-row">
+            <label class="fld"><span>防风控延迟下限（秒）</span>
+              <input id="setAntiMin" placeholder="1.5"></label>
+            <label class="fld"><span>防风控延迟上限（秒）</span>
+              <input id="setAntiMax" placeholder="3.0"></label>
+          </div>
+          <label class="fld"><span>PoW WASM 文件路径</span>
+            <input id="setWasm" placeholder="./sha3_wasm_bg.wasm"></label>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn" onclick="saveSettings()">保存</button>
+          <button class="btn gray" onclick="resetDeepSeekSettings()">恢复默认</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>智谱清言（chatglm.cn）</h2></div>
+
+        <div class="set-group">
+          <div class="set-group-title">模型</div>
+          <label class="fld"><span>默认模型</span>
+            <select id="setGlmModel">
+              <option value="GLM-5.3">GLM-5.3</option>
+              <option value="GLM-5.3-Flash">GLM-5.3-Flash</option>
+            </select></label>
+          <span class="hint" style="display:block;margin-top:8px">
+            思考强度在客户端里选（opencode 的推理强度下拉）：<br>
+            low → 快速，medium/high → 深度，max → 极致。
+          </span>
+        </div>
+
+        <div class="set-group">
+          <div class="set-group-title">额度</div>
+          <div class="fld-row">
+            <label class="fld"><span>上下文长度（tokens，上限 1,000,000）</span>
+              <input id="setGlmContext" inputmode="numeric" placeholder="1000000" max="1000000" data-cap="1000000"></label>
+            <label class="fld"><span>最大输出（tokens，上限 128,000）</span>
+              <input id="setGlmOutput" inputmode="numeric" placeholder="128000" max="128000" data-cap="128000"></label>
+          </div>
+        </div>
+
+        <div class="set-group">
+          <div class="set-group-title">性能</div>
+          <label class="chk"><input type="checkbox" id="setGlmCache"> 启用会话缓存：多轮复用同一会话，更快、更省</label>
+          <label class="chk"><input type="checkbox" id="setGlmSearch"> 联网搜索：模型按需检索</label>
+          <div class="hint" style="margin-top:10px;line-height:1.9">
+            智谱只有三档思考强度，客户端下拉会自动收敛：<br>
+            <b>Low</b>（或不选）→ 快速&nbsp;·&nbsp;<b>Medium / High</b> → 深度&nbsp;·&nbsp;<b>Max</b> → 极致
+          </div>
+        </div>
+
+        <div class="set-group">
+          <div class="set-group-title">风控</div>
+          <div class="fld-row">
+            <label class="fld"><span>防风控延迟下限（秒）</span>
+              <input id="setGlmAntiMin" placeholder="1.5"></label>
+            <label class="fld"><span>防风控延迟上限（秒）</span>
+              <input id="setGlmAntiMax" placeholder="3.0"></label>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn" onclick="saveGlmSettings()">保存</button>
+          <button class="btn gray" onclick="resetGlmSettings()">恢复默认</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>通用 / 数据</h2></div>
+        <label class="fld"><span>用量数据保留天数（0 = 永久保留）</span>
+          <input id="setRetain" placeholder="0" inputmode="numeric">
+          <span class="hint" style="display:block;margin-top:6px">启动时自动清理超过该天数的历史记录，避免数据库无限增长。</span></label>
         <label class="fld"><span>管理员密码</span>
           <input id="setPw" type="password" placeholder="留空则不修改"></label>
         <button class="btn" onclick="saveSettings()">保存</button>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>智谱清言（chatglm.cn）</h2></div>
-        <label class="fld"><span>默认模型</span>
-          <input id="setGlmModel" placeholder="GLM-5.3"></label>
-        <label class="fld"><span>智能体 ID（可选，留空用默认 GLM）</span>
-          <input id="setGlmAssistant" placeholder="24 位 ID，留空即可"></label>
-        <label class="fld"><span>防风控延迟下限 / 上限（秒）</span>
-          <div style="display:flex;gap:10px">
-            <input id="setGlmAntiMin" placeholder="1.5" style="flex:1">
-            <input id="setGlmAntiMax" placeholder="3.0" style="flex:1">
-          </div></label>
-        <label class="chk"><input type="checkbox" id="setGlmSearch"> 联网搜索（is_networking）</label>
-        <div class="hint" style="margin-top:10px;line-height:1.9">
-          智谱只有三档思考强度，客户端下拉会自动收敛：<br>
-          <b>Low</b>（或不选）→ 快速&nbsp;·&nbsp;<b>Medium / High</b> → 深度&nbsp;·&nbsp;<b>Max</b> → 极致
-        </div>
-        <div style="height:14px"></div>
-        <button class="btn" onclick="saveGlmSettings()">保存</button>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>快速接入</h2></div>
-        <div class="hint" style="line-height:2;margin-bottom:14px">
-          <div>接口地址&nbsp;&nbsp;<b id="baseHint2">http://127.0.0.1:8800/v1</b></div>
-          <div>可用模型&nbsp;&nbsp;<b>deepseek-chat</b> / <b>deepseek-reasoner</b> / <b>GLM-5.3</b> / <b>GLM-5.3-Flash</b></div>
-          <div>API Key&nbsp;&nbsp;在「API Key」页生成</div>
-        </div>
-        <p class="hint" style="margin-bottom:8px">填进 opencode（<code>~/.config/opencode/opencode.jsonc</code> 的 provider 里）：</p>
-        <pre id="ocSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
-        <button class="btn sm" onclick="copyText(document.getElementById('ocSnippet').textContent)" style="margin-top:10px">复制配置片段</button>
       </div>
     </div>
   </div>
@@ -441,6 +776,20 @@ td{letter-spacing:-.01em}
 
 <div id="toast" class="toast"></div>
 
+<div id="datePicker" class="dp">
+  <div class="dp-head">
+    <button type="button" class="dp-nav" onclick="dpMove(-1)">‹</button>
+    <span id="dpTitle">2026年9月</span>
+    <button type="button" class="dp-nav" onclick="dpMove(1)">›</button>
+  </div>
+  <div class="dp-week"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+  <div id="dpGrid" class="dp-grid"></div>
+  <div class="dp-foot">
+    <button type="button" class="dp-link" onclick="dpClear()">清除</button>
+    <button type="button" class="dp-link" onclick="dpToday()">今天</button>
+  </div>
+</div>
+
 <script>
 let TOKEN = localStorage.getItem('wapi_token') || '';
 
@@ -453,9 +802,9 @@ async function api(path,method='GET',body=null){
   if(r.status===401){showLogin();throw new Error('未登录');}
   return r.json();
 }
-function showLogin(){document.getElementById('loginView').style.display='block';
+function showLogin(){document.body.classList.add('no-scroll');document.getElementById('loginView').style.display='flex';
   document.getElementById('mainView').style.display='none';}
-function showMain(){document.getElementById('loginView').style.display='none';
+function showMain(){document.body.classList.remove('no-scroll');document.getElementById('loginView').style.display='none';
   document.getElementById('mainView').style.display='block';}
 async function doLogin(){
   const pw=document.getElementById('loginPw').value;
@@ -469,96 +818,389 @@ async function logout(){try{await api('/logout','POST')}catch(e){}TOKEN='';local
 function switchTab(name){
   document.querySelectorAll('.seg button').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active',p.id==='tab-'+name));
+  // 切页回到顶部，避免停在上一页的滚动位置
+  try{ window.scrollTo({top:0, behavior:'auto'}); }catch(e){ window.scrollTo(0,0); }
 }
 function fmt(n){n=Number(n)||0;return n.toLocaleString('zh-CN');}
-function fmtTok(n){
+
+/* Token 数字：带单位的紧凑写法，最高支持到万亿级。
+   返回 HTML：数值 + 小号单位，保证单位与数字同一字重体系、视觉统一。 */
+function fmtTokHTML(n){
   n=Number(n)||0;
-  if(n>=1e8)return (n/1e8).toFixed(2)+' 亿';
-  if(n>=1e4)return (n/1e4).toFixed(2)+' 万';
+  const units=[[1e12,'万亿'],[1e8,'亿'],[1e4,'万']];
+  for(const [base,unit] of units){
+    if(n>=base){
+      let v=n/base;
+      let s = v>=100 ? v.toFixed(0) : v>=10 ? v.toFixed(1) : v.toFixed(2);
+      s = s.replace(/\.0+$/,'').replace(/(\.\d)0$/,'$1');
+      return `${s}<small>${unit}</small>`;
+    }
+  }
   return n.toLocaleString('zh-CN');
+}
+function fmtTok(n){
+  return fmtTokHTML(n).replace(/<[^>]+>/g,'');
 }
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function fmtTime(ts){if(!ts)return '–';const d=new Date(ts*1000);
   return d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
 
+let RANGE='all', RANGE_START='', RANGE_END='';
+let LAST_STATE=null;
+
+/* ── 自绘日历 ── */
+let DP_TARGET='start', DP_VIEW=null;
+
+function dpInit(){
+  if(DP_VIEW) return;
+  const d=new Date();
+  DP_VIEW={y:d.getFullYear(),m:d.getMonth()};
+}
+function openDatePicker(target, anchor){
+  dpInit();
+  DP_TARGET=target;
+  const cur = target==='start'?RANGE_START:RANGE_END;
+  if(cur){
+    const [y,m]=cur.split('-').map(Number);
+    DP_VIEW={y, m:m-1};
+  }
+  dpRender();
+  const dp=document.getElementById('datePicker');
+  dp.classList.add('show');
+  const r=anchor.getBoundingClientRect();
+  const w=268, h=dp.offsetHeight||330;
+  let left=r.left, top=r.bottom+8;
+  if(left+w>window.innerWidth-12) left=window.innerWidth-w-12;
+  if(top+h>window.innerHeight-12) top=r.top-h-8;
+  dp.style.left=Math.max(12,left)+'px';
+  dp.style.top=Math.max(12,top)+'px';
+}
+function closeDatePicker(){
+  document.getElementById('datePicker').classList.remove('show');
+}
+function dpMove(delta){
+  let m=DP_VIEW.m+delta, y=DP_VIEW.y;
+  if(m<0){m=11;y--;} if(m>11){m=0;y++;}
+  DP_VIEW={y,m}; dpRender();
+}
+function dpRender(){
+  const {y,m}=DP_VIEW;
+  document.getElementById('dpTitle').textContent=`${y}年${m+1}月`;
+  const first=new Date(y,m,1);
+  const startPad=first.getDay();
+  const daysInMonth=new Date(y,m+1,0).getDate();
+  const prevDays=new Date(y,m,0).getDate();
+  const today=new Date(); const todayKey=ymdLocal(today);
+  const sel = DP_TARGET==='start'?RANGE_START:RANGE_END;
+  let cells=[];
+  for(let i=startPad-1;i>=0;i--) cells.push({d:prevDays-i,other:true,date:new Date(y,m-1,prevDays-i)});
+  for(let i=1;i<=daysInMonth;i++) cells.push({d:i,other:false,date:new Date(y,m,i)});
+  while(cells.length%7!==0 || cells.length<42){
+    const n=cells.length-startPad-daysInMonth+1;
+    cells.push({d:n,other:true,date:new Date(y,m+1,n)});
+    if(cells.length>=42) break;
+  }
+  const grid=document.getElementById('dpGrid');
+  grid.innerHTML=cells.map(c=>{
+    const key=ymdLocal(c.date);
+    const cls=['dp-day'];
+    if(c.other)cls.push('other');
+    if(key===todayKey)cls.push('today');
+    if(key===sel)cls.push('sel');
+    return `<button type="button" class="${cls.join(' ')}" onclick="dpPick('${key}')">${c.d}</button>`;
+  }).join('');
+}
+function dpPick(key){
+  if(DP_TARGET==='start'){
+    RANGE_START=key;
+    document.getElementById('rangeStartText').textContent=key;
+    document.getElementById('rangeStartBtn').classList.remove('empty');
+    if(RANGE_END && RANGE_END<key){ RANGE_END=''; document.getElementById('rangeEndText').textContent='选择日期';
+      document.getElementById('rangeEndBtn').classList.add('empty'); }
+  }else{
+    RANGE_END=key;
+    document.getElementById('rangeEndText').textContent=key;
+    document.getElementById('rangeEndBtn').classList.remove('empty');
+  }
+  closeDatePicker();
+}
+function dpClear(){
+  if(DP_TARGET==='start'){
+    RANGE_START='';
+    document.getElementById('rangeStartText').textContent='选择日期';
+    document.getElementById('rangeStartBtn').classList.add('empty');
+  }else{
+    RANGE_END='';
+    document.getElementById('rangeEndText').textContent='选择日期';
+    document.getElementById('rangeEndBtn').classList.add('empty');
+  }
+  closeDatePicker();
+}
+function dpToday(){ dpPick(ymdLocal(new Date())); }
+
+document.addEventListener('mousedown', e=>{
+  const dp=document.getElementById('datePicker');
+  if(!dp.classList.contains('show')) return;
+  if(dp.contains(e.target)) return;
+  if(e.target.closest('.date-btn')) return;
+  closeDatePicker();
+});
+
+function setRange(r){
+  RANGE=r;
+  document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range===r));
+  const box=document.getElementById('customRange');
+  box.classList.toggle('show', r==='custom');
+  if(r==='custom'){
+    if(!RANGE_START){
+      const d=new Date(); d.setDate(d.getDate()-30);
+      RANGE_START=ymdLocal(d);
+      document.getElementById('rangeStartText').textContent=RANGE_START;
+      document.getElementById('rangeStartBtn').classList.remove('empty');
+    }
+    return;
+  }
+  RANGE_START=''; RANGE_END='';
+  document.getElementById('rangeStartText').textContent='选择日期';
+  document.getElementById('rangeEndText').textContent='选择日期';
+  document.getElementById('rangeStartBtn').classList.add('empty');
+  document.getElementById('rangeEndBtn').classList.add('empty');
+  refresh();
+}
+function cancelCustomRange(){
+  closeDatePicker();
+  document.getElementById('customRange').classList.remove('show');
+  RANGE='all'; RANGE_START=''; RANGE_END='';
+  document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range==='all'));
+  refresh();
+}
+function applyCustomRange(){
+  if(!RANGE_START){ toast('请选择开始日期'); return; }
+  if(RANGE_END && RANGE_END<RANGE_START){ toast('结束日期不能早于开始日期'); return; }
+  RANGE='custom';
+  closeDatePicker();
+  document.getElementById('customRange').classList.remove('show');
+  document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range==='custom'));
+  refresh();
+}
+
 async function refresh(){
-  const s=await api('/state'); if(!s||!s.ok)return;
-  document.getElementById('navStat').innerHTML =
-    `可用账号 <b>${s.accounts.filter(a=>a.enabled).length}</b> · Key <b>${s.keys.length}</b>`;
+  let qs='';
+  if(RANGE!=='all'){
+    qs='?range='+encodeURIComponent(RANGE)
+      +'&start='+encodeURIComponent(RANGE_START)
+      +'&end='+encodeURIComponent(RANGE_END);
+  }
+  const sep = qs ? '&' : '?';
+  qs += `${sep}limit=${RECENT_LIMIT}&offset=${RECENT_OFFSET}`;
+  const s=await api('/state'+qs); if(!s||!s.ok)return;
+  LAST_STATE=s;
+  document.getElementById('navAcc').innerHTML =
+    `可用账号 <b>${s.accounts.filter(a=>a.enabled).length}</b>`;
+  document.getElementById('navKey').innerHTML =
+    `Key <b>${s.keys.length}</b>`;
   renderOverview(s);renderAccounts(s);renderKeys(s);renderUsage(s);renderSettings(s);
+  bindLimitInputs();
+  if(window.__setLimits) window.__setLimits(s.settings||{});
+  try{
+    const key=(s.keys||[]).find(k=>k.enabled);
+    if(key && window.__setSnippet){
+      const r=await fetch('/v1/models',{headers:{'Authorization':'Bearer '+key.key}});
+      const j=await r.json();
+      if(j&&j.data) window.__setSnippet(j.data.map(m=>m.id));
+    }
+  }catch(e){}
 }
 function empty(msg){return `<tr><td colspan="9" class="empty">${msg}</td></tr>`;}
 
+function RANGE_LABEL(){
+  if(RANGE==='today') return '今天';
+  if(RANGE==='7d') return '近 7 天';
+  if(RANGE==='30d') return '近 30 天';
+  if(RANGE==='month') return '本月';
+  if(RANGE==='custom'){
+    if(RANGE_END) return `${RANGE_START} ~ ${RANGE_END}`;
+    return `${RANGE_START} 至今`;
+  }
+  return '全部时间';
+}
+
 function renderOverview(s){
   const t=s.usage.total||{};
-  document.getElementById('ovTotal').textContent=fmtTok(t.t);
-  document.getElementById('ovPrompt').textContent=fmtTok(t.p);
-  document.getElementById('ovComp').textContent=fmtTok(t.c);
+  document.getElementById('ovTotal').innerHTML=fmtTokHTML(t.t);
+  document.getElementById('ovPrompt').innerHTML=fmtTokHTML(t.p);
+  document.getElementById('ovComp').innerHTML=fmtTokHTML(t.c);
   document.getElementById('ovReqs').textContent=fmt(t.n);
-  document.getElementById('ov24').textContent=fmtTok((s.usage.last24h||{}).t);
+  const ok=Number(t.ok)||0;
+  document.getElementById('ovOk').textContent=fmt(ok);
+  const rate = t.n ? (ok/t.n*100) : 0;
+  document.getElementById('ovOkFoot').textContent = t.n ? `成功率 ${rate.toFixed(1)}%` : '成功率 –';
+  document.getElementById('ovReqsFoot').textContent = RANGE_LABEL();
+  document.getElementById('ov24').innerHTML=fmtTokHTML((s.usage.last24h||{}).t);
   document.getElementById('ovAcc').textContent=s.accounts.filter(a=>a.enabled).length;
   const tb=document.querySelector('#modelTable tbody');tb.innerHTML='';
-  (s.usage.by_model||[]).forEach(m=>{
-    tb.innerHTML+=`<tr><td><b>${esc(m.model)}</b></td><td class="num-t">${fmt(m.n)}</td>
+  const rows=(s.usage.by_model||[]).slice().sort((a,b)=>{
+    if(MODEL_SORT==='req') return (Number(b.n)||0)-(Number(a.n)||0);
+    return (Number(b.t)||0)-(Number(a.t)||0);
+  });
+  // 颜色按「用量排名」分配，和环形图一致
+  const byToken=(s.usage.by_model||[]).slice().sort((a,b)=>(Number(b.t)||0)-(Number(a.t)||0));
+  const colorMap=new Map();
+  const MAX_SEG=8;
+  byToken.forEach((m,i)=>{
+    if(i<MAX_SEG) colorMap.set(m.model, DONUT_COLORS[i%DONUT_COLORS.length]);
+    else colorMap.set(m.model, '#d6d9de');
+  });
+  rows.forEach(m=>{
+    const c=colorMap.get(m.model)||'#c9cdd4';
+    tb.innerHTML+=`<tr><td><span class="m-dot" style="background:${c}"></span><b>${esc(m.model)}</b></td>
+      <td class="num-t">${fmt(m.n)}</td>
       <td class="num-t">${fmtTok(m.p)}</td><td class="num-t">${fmtTok(m.c)}</td>
       <td class="num-t"><b>${fmtTok(m.t)}</b></td></tr>`;});
-  if(!(s.usage.by_model||[]).length)tb.innerHTML=empty('暂无数据');
+  if(!rows.length)tb.innerHTML='<tr><td colspan="5" class="empty">暂无数据</td></tr>';
   renderDonut(s.usage.by_model||[]);
   renderHeatmap(s.usage.daily||[]);
 }
+let MODEL_SORT='token';
+function setModelSort(k){
+  MODEL_SORT=k;
+  document.querySelectorAll('#modelSortSeg button').forEach(b=>b.classList.toggle('active',b.dataset.sort===k));
+  if(LAST_STATE) renderOverview(LAST_STATE);
+}
+
+const DONUT_COLORS=[
+  '#2b2f36','#4b515a','#6b7280','#9aa0a9','#c9cdd4','#8b9099',
+  '#3a3f47','#5f6670','#a8aeb8','#d6d9de','#767d87','#b9bec6'
+];
 
 function renderDonut(models){
   const svg=document.getElementById('donut'); if(!svg)return;
-  const data=(models||[]).map(m=>({model:m.model,t:Number(m.t)||0})).filter(m=>m.t>0).sort((a,b)=>b.t-a.t);
-  const tot=data.reduce((a,b)=>a+b.t,0);
-  const shades=['#2b2f36','#4b515a','#6b7280','#9aa0a9','#c9cdd4','#8b9099'];
-  const legend=document.getElementById('donutLegend');
+  const tip=document.getElementById('donutTip');
+  const all=(models||[]).map(m=>({model:m.model,t:Number(m.t)||0})).filter(m=>m.t>0).sort((a,b)=>b.t-a.t);
+  const tot=all.reduce((a,b)=>a+b.t,0);
+  if(tip) tip.classList.remove('show');
   if(!tot){
     svg.innerHTML=`<circle cx="70" cy="70" r="54" fill="none" stroke="var(--heat0)" stroke-width="16"/>
       <text x="70" y="68" text-anchor="middle" class="donut-num">0</text>
       <text x="70" y="86" text-anchor="middle" class="donut-lbl">Token</text>`;
-    if(legend)legend.innerHTML='<div class="muted" style="font-size:13px">暂无数据</div>';
     return;
   }
+
+  // 模型过多时：只显示前 N 个，其余合并为「其他」，避免色块循环、图例爆炸
+  const MAX_SEG = 8;
+  let data = all.slice(0, MAX_SEG);
+  if(all.length > MAX_SEG){
+    const rest = all.slice(MAX_SEG).reduce((a,b)=>a+b.t,0);
+    data = data.concat([{model:`其他 ${all.length-MAX_SEG} 个模型`, t:rest, other:true}]);
+  }
+
   const R=54,C=2*Math.PI*R; let off=0,segs='';
   data.forEach((m,i)=>{
     const len=(m.t/tot)*C;
-    segs+=`<circle r="${R}" cx="70" cy="70" fill="none" stroke="${shades[i%shades.length]}"
-      stroke-width="16" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"
-      transform="rotate(-90 70 70)"/>`;
+    const pct=(m.t/tot*100).toFixed(1);
+    const color = m.other ? '#d6d9de' : DONUT_COLORS[i%DONUT_COLORS.length];
+    segs+=`<circle class="donut-seg" r="${R}" cx="70" cy="70" fill="none"
+      stroke="${color}" stroke-width="16"
+      stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"
+      transform="rotate(-90 70 70)"
+      data-name="${esc(m.model)}" data-val="${fmtTok(m.t)}" data-pct="${pct}"/>`;
     off+=len;
   });
   svg.innerHTML=segs+`<text x="70" y="68" text-anchor="middle" class="donut-num">${fmtTok(tot)}</text>
     <text x="70" y="86" text-anchor="middle" class="donut-lbl">总 Token</text>`;
-  if(legend)legend.innerHTML=data.map((m,i)=>
-    `<div class="lg-item"><span class="lg-dot" style="background:${shades[i%shades.length]}"></span>
-      <span class="lg-name">${esc(m.model)}</span><span class="lg-val">${fmtTok(m.t)}</span></div>`).join('');
+
+  // 悬停提示：显示模型、用量、占比
+  if(!tip) return;
+  svg.querySelectorAll('.donut-seg').forEach(seg=>{
+    seg.addEventListener('mouseenter', ev=>{
+      tip.innerHTML=`<b>${seg.dataset.name}</b><br>用量 ${seg.dataset.val} Token<br>占比 ${seg.dataset.pct}%`;
+      tip.classList.add('show');
+      const box=svg.getBoundingClientRect();
+      const parent=svg.parentElement.getBoundingClientRect();
+      tip.style.left=(box.left-parent.left+box.width/2)+'px';
+      tip.style.top=(box.top-parent.top+18)+'px';
+    });
+    seg.addEventListener('mouseleave', ()=>tip.classList.remove('show'));
+  });
 }
 
 function ymdLocal(dt){
   const y=dt.getFullYear(),m=String(dt.getMonth()+1).padStart(2,'0'),d=String(dt.getDate()).padStart(2,'0');
   return y+'-'+m+'-'+d;
 }
-function renderHeatmap(daily){
-  const el=document.getElementById('heatmap'); if(!el)return;
-  const map={}; (daily||[]).forEach(x=>{map[x.d]=Number(x.t)||0;});
+/* ── 每日 Token 柱状图（带滑动条） ── */
+let BAR_DATA=[], BAR_WIN=14, BAR_OFFSET=0;
+
+function setBarWindow(days){
+  BAR_WIN=days;
+  document.querySelectorAll('#barWinSeg button').forEach(b=>b.classList.toggle('active',Number(b.dataset.win)===days));
+  BAR_OFFSET=0;
+  renderBars();
+}
+function onBarSlide(v){
+  BAR_OFFSET=Number(v)||0;
+  renderBars();
+}
+function renderBars(){
+  const el=document.getElementById('barchart'); if(!el)return;
+  const map={};
+  BAR_DATA.forEach(x=>{map[x.d]=Number(x.t)||0;});
   const today=new Date(); today.setHours(0,0,0,0);
-  const start=new Date(today); start.setDate(start.getDate()-181);
-  start.setDate(start.getDate()-start.getDay());
-  const max=Math.max(1,...Object.values(map),1);
-  const lvl=v=>{ if(!v)return 0; const r=v/max; if(r>0.7)return 4; if(r>0.45)return 3; if(r>0.2)return 2; return 1; };
-  let html='',open=false; const d=new Date(start);
-  while(d<=today){
-    if(d.getDay()===0){html+='<div class="hm-col">';open=true;}
-    const key=ymdLocal(d); const v=map[key]||0;
-    html+=`<div class="hm-cell l${lvl(v)}" title="${key} · ${fmtTok(v)} Token"></div>`;
-    if(d.getDay()===6){html+='</div>';open=false;}
-    d.setDate(d.getDate()+1);
+
+  // 用全部有数据的天数范围作为滑动轨道
+  const keys=Object.keys(map).sort();
+  let firstKey=today;
+  if(keys.length){
+    const f=new Date(keys[0]+'T00:00:00');
+    if(!isNaN(f)&&f<firstKey) firstKey=f;
   }
-  if(open)html+='</div>';
-  el.innerHTML=html;
-  const lg=document.getElementById('hmLegend');
-  if(lg)lg.innerHTML='<span>少</span><span class="hm-cell l0"></span><span class="hm-cell l1"></span><span class="hm-cell l2"></span><span class="hm-cell l3"></span><span class="hm-cell l4"></span><span>多</span>';
+  const totalDays=Math.max(1, Math.floor((today-firstKey)/86400000)+1);
+  const maxOffset=Math.max(0, totalDays-BAR_WIN);
+
+  const slider=document.getElementById('barSlider');
+  if(slider){
+    slider.max=String(maxOffset);
+    slider.value=String(Math.min(BAR_OFFSET,maxOffset));
+    BAR_OFFSET=Number(slider.value)||0;
+  }
+
+  const end=new Date(today); end.setDate(end.getDate()-BAR_OFFSET);
+  const start=new Date(end); start.setDate(start.getDate()-(BAR_WIN-1));
+
+  const days=[];
+  for(let d=new Date(start); d<=end; d.setDate(d.getDate()+1)){
+    days.push({key:ymdLocal(d), v:map[ymdLocal(d)]||0, date:new Date(d)});
+  }
+  const max=Math.max(1,...days.map(x=>x.v));
+
+  el.innerHTML=days.map(x=>{
+    const h=x.v?Math.max(2, Math.round(x.v/max*100)):0;
+    const label=x.key.slice(5).replace('-','/');
+    return `<div class="bar-item" title="${x.key} · ${fmtTok(x.v)} Token">
+      <div class="bar-val">${x.v?fmtTok(x.v):''}</div>
+      <div class="bar-fill${x.v?'':' zero'}" style="height:${h}%"></div>
+      <div class="bar-x">${label}</div>
+    </div>`;
+  }).join('');
+
+  const lab=document.getElementById('barRangeLabel');
+  if(lab){
+    const fmtD=d=>`${d.getMonth()+1}/${d.getDate()}`;
+    lab.textContent=`${fmtD(start)} — ${fmtD(end)}（共 ${BAR_WIN} 天）`;
+  }
+}
+
+function renderHeatmap(daily){
+  BAR_DATA=daily||[];
+  const slider=document.getElementById('barSlider');
+  const keys=BAR_DATA.map(x=>x.d).sort();
+  const today=new Date(); today.setHours(0,0,0,0);
+  let firstKey=today;
+  if(keys.length){ const f=new Date(keys[0]+'T00:00:00'); if(!isNaN(f)&&f<firstKey) firstKey=f; }
+  const totalDays=Math.max(1,Math.floor((today-firstKey)/86400000)+1);
+  const maxOffset=Math.max(0,totalDays-BAR_WIN);
+  if(slider){ slider.max=String(maxOffset); if(BAR_OFFSET>maxOffset) BAR_OFFSET=maxOffset; }
+  renderBars();
 }
 
 function renderAccounts(s){
@@ -616,24 +1258,80 @@ function renderUsage(s){
     <td class="num-t">${fmtTok(r.completion_tokens)}</td><td class="num-t"><b>${fmtTok(r.total_tokens)}</b></td>
     <td>${r.status==='ok'?'<span class="tag on">成功</span>':'<span class="tag err">'+esc(r.status)+'</span>'}</td></tr>`;});
   if(!(s.recent||[]).length)tb.innerHTML=empty('暂无记录');
+  const info=document.getElementById('recentInfo');
+  if(info){
+    const total=Number(s.recent_total)||0;
+    const lim=Number(s.recent_limit)||50;
+    const off=Number(s.recent_offset)||0;
+    info.textContent = total
+      ? `${off+1}–${Math.min(off+lim,total)} / 共 ${total} 条`
+      : '';
+  }
+}
+let RECENT_LIMIT=50, RECENT_OFFSET=0;
+function recentPage(dir){
+  RECENT_OFFSET=Math.max(0, RECENT_OFFSET + dir*RECENT_LIMIT);
+  refresh();
 }
 function renderSettings(s){
   document.getElementById('setWasm').value=s.settings.deepseek_wasm_path||'';
   document.getElementById('setCache').checked=(s.settings.deepseek_session_cache||'true')!=='false';
+  const se=document.getElementById('setSearch'); if(se) se.checked=(s.settings.deepseek_search||'false')==='true';
   document.getElementById('setAntiMin').value=s.settings.deepseek_anti_min||'1.5';
   document.getElementById('setAntiMax').value=s.settings.deepseek_anti_max||'3.0';
+  const rt=document.getElementById('setRetain'); if(rt) rt.value=s.settings.usage_retain_days||'0';
+  const dm=document.getElementById('setDsModel'); if(dm) dm.value=s.settings.deepseek_default_model||'deepseek-chat';
+  const dc=document.getElementById('setDsContext'); if(dc) dc.value=s.settings.deepseek_context_limit||'1000000';
+  const dof=document.getElementById('setDsOutput'); if(dof) dof.value=s.settings.deepseek_output_limit||'384000';
+  const gc2=document.getElementById('setGlmContext'); if(gc2) gc2.value=s.settings.glm_context_limit||'1000000';
+  const go2=document.getElementById('setGlmOutput'); if(go2) go2.value=s.settings.glm_output_limit||'128000';
   const gm=document.getElementById('setGlmModel'); if(gm) gm.value=s.settings.glm_default_model||'GLM-5.3';
-  const ga=document.getElementById('setGlmAssistant'); if(ga) ga.value=s.settings.glm_assistant_id||'';
   const gn=document.getElementById('setGlmAntiMin'); if(gn) gn.value=s.settings.glm_anti_min||'1.5';
   const gx=document.getElementById('setGlmAntiMax'); if(gx) gx.value=s.settings.glm_anti_max||'3.0';
   const gs=document.getElementById('setGlmSearch'); if(gs) gs.checked=(s.settings.glm_search||'false')==='true';
+  const gc=document.getElementById('setGlmCache'); if(gc) gc.checked=(s.settings.glm_session_cache||'true')!=='false';
 }
+/* 恢复默认：只改表单，点保存才真正写入 */
+const DEEPSEEK_DEFAULTS={
+  model:'deepseek-chat', session_cache:true, search:false,
+  anti_min:'1.5', anti_max:'3.0',
+  context:'1000000', output:'384000'
+};
+const GLM_DEFAULTS={
+  model:'GLM-5.3',
+  context:'1000000', output:'128000',
+  anti_min:'1.5', anti_max:'3.0',
+  search:false, cache:true
+};
+function resetDeepSeekSettings(){
+  document.getElementById('setDsModel').value=DEEPSEEK_DEFAULTS.model;
+  document.getElementById('setCache').checked=DEEPSEEK_DEFAULTS.session_cache;
+  document.getElementById('setSearch').checked=DEEPSEEK_DEFAULTS.search;
+  document.getElementById('setAntiMin').value=DEEPSEEK_DEFAULTS.anti_min;
+  document.getElementById('setAntiMax').value=DEEPSEEK_DEFAULTS.anti_max;
+  document.getElementById('setDsContext').value=DEEPSEEK_DEFAULTS.context;
+  document.getElementById('setDsOutput').value=DEEPSEEK_DEFAULTS.output;
+  toast('已还原为默认值，点「保存」生效');
+}
+function resetGlmSettings(){
+  document.getElementById('setGlmModel').value=GLM_DEFAULTS.model;
+  document.getElementById('setGlmContext').value=GLM_DEFAULTS.context;
+  document.getElementById('setGlmOutput').value=GLM_DEFAULTS.output;
+  document.getElementById('setGlmAntiMin').value=GLM_DEFAULTS.anti_min;
+  document.getElementById('setGlmAntiMax').value=GLM_DEFAULTS.anti_max;
+  document.getElementById('setGlmSearch').checked=GLM_DEFAULTS.search;
+  document.getElementById('setGlmCache').checked=GLM_DEFAULTS.cache;
+  toast('已还原为默认值，点「保存」生效');
+}
+
 async function saveGlmSettings(){
   const body={glm_default_model:document.getElementById('setGlmModel').value.trim()||'GLM-5.3',
-    glm_assistant_id:document.getElementById('setGlmAssistant').value.trim(),
     glm_anti_min:document.getElementById('setGlmAntiMin').value.trim(),
     glm_anti_max:document.getElementById('setGlmAntiMax').value.trim(),
-    glm_search:document.getElementById('setGlmSearch').checked};
+    glm_context_limit:document.getElementById('setGlmContext').value.trim()||'1000000',
+    glm_output_limit:document.getElementById('setGlmOutput').value.trim()||'128000',
+    glm_search:document.getElementById('setGlmSearch').checked,
+    glm_session_cache:document.getElementById('setGlmCache').checked};
   await api('/settings','POST',body);toast('已保存并应用');refresh();
 }
 
@@ -682,20 +1380,56 @@ async function delKey(id){if(confirm('确定删除该 Key？')){await api('/keys
 async function saveSettings(){
   const body={deepseek_wasm_path:document.getElementById('setWasm').value.trim(),
     deepseek_session_cache:document.getElementById('setCache').checked,
+    deepseek_search:document.getElementById('setSearch').checked,
     deepseek_anti_min:document.getElementById('setAntiMin').value.trim(),
-    deepseek_anti_max:document.getElementById('setAntiMax').value.trim()};
+    deepseek_anti_max:document.getElementById('setAntiMax').value.trim(),
+    deepseek_default_model:document.getElementById('setDsModel').value.trim()||'deepseek-chat',
+    deepseek_context_limit:document.getElementById('setDsContext').value.trim()||'1000000',
+    deepseek_output_limit:document.getElementById('setDsOutput').value.trim()||'384000',
+    usage_retain_days:(document.getElementById('setRetain').value||'0').trim()};
   const pw=document.getElementById('setPw').value.trim();
   if(pw)body.admin_password=pw;
   await api('/settings','POST',body);toast('已保存并应用');refresh();
 }
+function clampLimit(el){
+  const cap=Number(el.dataset.cap||0);
+  if(!cap) return;
+  let v=Number(el.value);
+  if(!Number.isFinite(v) || v<1){ el.value=String(cap); return; }
+  if(v>cap){ el.value=String(cap); toast('已按该模型上限收敛为 '+cap.toLocaleString()); }
+}
+function bindLimitInputs(){
+  ['setDsContext','setDsOutput','setGlmContext','setGlmOutput'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el && !el.dataset.bound){
+      el.dataset.bound='1';
+      el.addEventListener('change',()=>clampLimit(el));
+      el.addEventListener('blur',()=>clampLimit(el));
+    }
+  });
+}
+function _wapi(){ try{ return window.pywebview && window.pywebview.api; }catch(e){ return null; } }
+function winMinimize(){ const a=_wapi(); if(a&&a.minimize) a.minimize(); }
+function winMaximize(){ const a=_wapi(); if(a&&a.toggle_max) a.toggle_max(); }
+function winClose(){ const a=_wapi(); if(a&&a.close) a.close(); else window.close(); }
 function copyText(t){navigator.clipboard.writeText(t).then(()=>toast('已复制'));}
 
 (async function init(){
   const loc=location.origin;
   document.getElementById('baseHint').textContent=loc+'/v1';
   document.getElementById('baseHint2').textContent=loc+'/v1';
-  const snip =
-`"webai2api": {
+  let OC_SNIP='';
+  let LIMITS={deepseek:{context:1000000,output:384000},chatglm:{context:1000000,output:128000}};
+  function buildSnippet(models){
+    const lines=[];
+    for(const m of models){
+      const isGlm=m.toLowerCase().startsWith('glm');
+      const lim=isGlm?LIMITS.chatglm:LIMITS.deepseek;
+      lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)}, "attachment": true, "reasoning": true,\n`
+        +`      "modalities": { "input": ["image","text"], "output": ["text"] },\n`
+        +`      "limit": { "context": ${lim.context}, "output": ${lim.output} } }`);
+    }
+    return `"webai2api": {
   "npm": "@ai-sdk/openai-compatible",
   "name": "webai2api 多账号网关",
   "options": {
@@ -704,19 +1438,33 @@ function copyText(t){navigator.clipboard.writeText(t).then(()=>toast('已复制'
     "maxRetries": 0
   },
   "models": {
-    "deepseek-chat": { "name": "DeepSeek Chat (webai2api)", "attachment": true, "reasoning": true,
-      "modalities": { "input": ["image","text"], "output": ["text"] },
-      "limit": { "context": 1000000, "output": 384000 } },
-    "deepseek-reasoner": { "name": "DeepSeek Reasoner (webai2api)", "attachment": true, "reasoning": true,
-      "modalities": { "input": ["image","text"], "output": ["text"] },
-      "limit": { "context": 1000000, "output": 384000 } }
+${lines.join(',\n')}
   }
 }`;
+  }
+  window.__setLimits=function(settings){
+    const n=(v,d)=>{const x=Number(v);return Number.isFinite(x)&&x>0?x:d;};
+    LIMITS={deepseek:{context:n(settings.deepseek_context_limit,1000000),output:n(settings.deepseek_output_limit,384000)},
+            chatglm:{context:n(settings.glm_context_limit,1000000),output:n(settings.glm_output_limit,128000)}};
+    if(window.__lastModels) window.__setSnippet(window.__lastModels);
+  };
+  OC_SNIP=buildSnippet(['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash']);
   const el = document.getElementById('ocSnippet');
-  if(el) el.textContent = snip;
+  if(el) el.textContent = OC_SNIP;
+  window.__setSnippet=function(models){
+    if(!models||!models.length) return;
+    window.__lastModels=models;
+    OC_SNIP=buildSnippet(models);
+    if(el) el.textContent=OC_SNIP;
+    const mh=document.getElementById('modelHint');
+    if(mh) mh.textContent=models.join(' / ');
+  };
   if(TOKEN){try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
   setInterval(()=>{if(document.getElementById('mainView').style.display!=='none')refresh();},5000);
 })();
 </script>
 </body>
 </html>
+
+
+

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from .providers import ProviderRegistry
+from .providers import MAX_LIMITS, ProviderRegistry
 from .store import Store
 
 router = APIRouter(prefix="/admin/api")
@@ -64,6 +64,41 @@ class _TokenStore:
         self._fails.clear()
 
 
+def _range_window(range_key: str, start: str = "", end: str = "") -> tuple[float | None, float | None]:
+    """把面板选择的时间范围换算成 (起始, 结束) 时间戳（本地时区）。"""
+    import datetime as _dt
+
+    now = _dt.datetime.now()
+    key = (range_key or "all").strip().lower()
+
+    def _end_of(day: _dt.datetime) -> float:
+        return (day + _dt.timedelta(days=1)).timestamp() - 0.001
+
+    if key == "today":
+        d = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return d.timestamp(), None
+    if key == "7d":
+        return (now - _dt.timedelta(days=7)).timestamp(), None
+    if key == "30d":
+        return (now - _dt.timedelta(days=30)).timestamp(), None
+    if key == "month":
+        d = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return d.timestamp(), None
+    if key == "custom":
+        try:
+            s = _dt.datetime.strptime(start.strip(), "%Y-%m-%d")
+        except Exception:
+            return None, None
+        e = None
+        if end.strip():
+            try:
+                e = _end_of(_dt.datetime.strptime(end.strip(), "%Y-%m-%d"))
+            except Exception:
+                e = None
+        return s.timestamp(), e
+    return None, None
+
+
 def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, logger: Logger) -> APIRouter:
     toks = _TokenStore()
 
@@ -100,23 +135,35 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         return {"ok": True}
 
     @router.get("/state")
-    async def state(request: Request):
+    async def state(request: Request, range: str = "all", start: str = "", end: str = "",
+                    limit: int = 50, offset: int = 0):
         g = _guard(request)
         if g:
             return g
         accounts = await run_in_threadpool(store.list_accounts)
+        since_ts, until_ts = _range_window(range, start, end)
+        limit = max(1, min(int(limit or 50), 500))
+        offset = max(0, int(offset or 0))
         return {
             "ok": True,
+            "range": range,
             "accounts": _safe_accounts(accounts),
             "login": {a["id"]: login_mgr.state(a["id"]) for a in accounts},
             "keys": await run_in_threadpool(store.list_keys),
-            "usage": await run_in_threadpool(store.usage_summary),
-            "recent": await run_in_threadpool(store.recent_usage, 50),
+            "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
+            "recent": await run_in_threadpool(store.recent_usage, limit, offset),
+            "recent_total": await run_in_threadpool(store.count_usage),
+            "recent_limit": limit,
+            "recent_offset": offset,
             "settings": {
                 "deepseek_wasm_path": await run_in_threadpool(
                     store.get_setting, "deepseek_wasm_path", ""),
                 "deepseek_session_cache": await run_in_threadpool(
                     store.get_setting, "deepseek_session_cache", "true"),
+                "deepseek_default_model": await run_in_threadpool(
+                    store.get_setting, "deepseek_default_model", "deepseek-chat"),
+                "deepseek_search": await run_in_threadpool(
+                    store.get_setting, "deepseek_search", "false"),
                 "deepseek_anti_min": await run_in_threadpool(
                     store.get_setting, "deepseek_anti_min", "1.5"),
                 "deepseek_anti_max": await run_in_threadpool(
@@ -125,14 +172,25 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                     store.get_setting, "glm_base_url", "https://chatglm.cn"),
                 "glm_default_model": await run_in_threadpool(
                     store.get_setting, "glm_default_model", "GLM-5.3"),
-                "glm_assistant_id": await run_in_threadpool(
-                    store.get_setting, "glm_assistant_id", ""),
+                "glm_default_effort": await run_in_threadpool(
+                    store.get_setting, "glm_default_effort", "high"),
                 "glm_anti_min": await run_in_threadpool(
                     store.get_setting, "glm_anti_min", "1.5"),
                 "glm_anti_max": await run_in_threadpool(
                     store.get_setting, "glm_anti_max", "3.0"),
                 "glm_search": await run_in_threadpool(
                     store.get_setting, "glm_search", "false"),
+                "glm_session_cache": await run_in_threadpool(
+                    store.get_setting, "glm_session_cache", "true"),
+                "usage_retain_days": await run_in_threadpool(
+                    store.get_setting, "usage_retain_days", "0"),
+                "deepseek_context_limit": await run_in_threadpool(
+                    store.get_setting, "deepseek_context_limit", "1000000"),                "deepseek_output_limit": await run_in_threadpool(
+                    store.get_setting, "deepseek_output_limit", "384000"),
+                "glm_context_limit": await run_in_threadpool(
+                    store.get_setting, "glm_context_limit", "1000000"),
+                "glm_output_limit": await run_in_threadpool(
+                    store.get_setting, "glm_output_limit", "128000"),
                 "admin_password": "******",
             },
         }
@@ -241,18 +299,41 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             return {"ok": False, "error": "请求格式错误"}
         for k in ("deepseek_wasm_path", "admin_password",
                   "deepseek_anti_min", "deepseek_anti_max",
-                  "glm_base_url", "glm_default_model", "glm_assistant_id",
-                  "glm_anti_min", "glm_anti_max"):
+                  "glm_base_url", "glm_default_model", "glm_default_effort",
+                  "glm_anti_min", "glm_anti_max", "usage_retain_days",
+                  "deepseek_default_model"):
             if k in b and str(b[k]).strip():
                 await run_in_threadpool(store.set_setting, k, str(b[k]).strip())
+        # 额度类：夹到该模型允许的上限内，防止填出荒谬值
+        for k in ("deepseek_context_limit", "deepseek_output_limit",
+                  "glm_context_limit", "glm_output_limit"):
+            if k not in b:
+                continue
+            prov = "chatglm" if k.startswith("glm") else "deepseek"
+            kind = "context" if "context" in k else "output"
+            cap = MAX_LIMITS[prov][kind]
+            try:
+                val = int(float(str(b[k]).strip()))
+            except Exception:
+                continue
+            val = max(1, min(val, cap))
+            await run_in_threadpool(store.set_setting, k, str(val))
         if "deepseek_session_cache" in b:
             v = b["deepseek_session_cache"]
             s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
             await run_in_threadpool(store.set_setting, "deepseek_session_cache", s)
+        if "deepseek_search" in b:
+            v = b["deepseek_search"]
+            s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+            await run_in_threadpool(store.set_setting, "deepseek_search", s)
         if "glm_search" in b:
             v = b["glm_search"]
             s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
             await run_in_threadpool(store.set_setting, "glm_search", s)
+        if "glm_session_cache" in b:
+            v = b["glm_session_cache"]
+            s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+            await run_in_threadpool(store.set_setting, "glm_session_cache", s)
         try:
             registry.refresh()
         except Exception:

@@ -241,6 +241,18 @@ def _payload_has_tools(payload: dict) -> bool:
     return payload.get("tool_choice", "auto") != "none"
 
 
+def _estimate_tokens(text: str) -> int:
+    """估算 token：中文约 1.5 字/token，其余约 4 字符/token。
+
+    DeepSeek 网页版上游不返回真实 token 数，只能估算。
+    """
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    other = len(text) - cjk
+    return max(1, int(cjk / 1.5 + other / 4))
+
+
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
@@ -1071,11 +1083,12 @@ class DeepSeekWebClient:
                         if not tool_calls_emitted:
                             self._validate_response_format(payload, full_text)
 
-                        # 4. usage chunk
-                        if include_usage:
+                        # 4. usage chunk（无条件发送：客户端即使没传 include_usage，
+                        #    opencode 等也需要它才能统计用量）
+                        if True:
                             prompt_text = current_resolved["ds_payload"].get("prompt", "")
-                            prompt_tokens = max(1, len(prompt_text) // 4) if prompt_text else 0
-                            completion_tokens = accumulated_tokens or max(1, len(full_text) // 4)
+                            prompt_tokens = max(1, _estimate_tokens(prompt_text)) if prompt_text else 0
+                            completion_tokens = accumulated_tokens or max(1, _estimate_tokens(full_text))
                             usage_chunk = {
                                 "id": completion_id,
                                 "object": "chat.completion.chunk",
@@ -1449,8 +1462,8 @@ class DeepSeekWebClient:
         completion_id: str,
     ) -> dict:
         prompt_text = resolved["ds_payload"].get("prompt", "")
-        prompt_tokens = max(1, len(prompt_text) // 4) if prompt_text else 0
-        completion_tokens = accumulated_tokens or max(1, len(full_text) // 4)
+        prompt_tokens = max(1, _estimate_tokens(prompt_text)) if prompt_text else 0
+        completion_tokens = accumulated_tokens or max(1, _estimate_tokens(full_text))
 
         message: dict = {
             "role": "assistant",
@@ -1488,7 +1501,7 @@ class DeepSeekWebClient:
         completion_id: str,
     ) -> dict:
         prompt_text = resolved["ds_payload"].get("prompt", "")
-        prompt_tokens = max(1, len(prompt_text) // 4) if prompt_text else 0
+        prompt_tokens = max(1, _estimate_tokens(prompt_text)) if prompt_text else 0
         completion_tokens = accumulated_tokens or max(
             1, sum(len(c.arguments) for c in calls) // 4
         )
@@ -1715,7 +1728,9 @@ class DeepSeekWebClient:
 
         while True:
             try:
-                raw_chunk = response.read(4096)
+                # 用 read1：有多少读多少，立刻返回。
+                # 用 read(4096) 会一直阻塞到攒满 4096 字节，首字延迟会明显变高。
+                raw_chunk = response.read1(4096)
             except http.client.IncompleteRead as exc:
                 raw_chunk = exc.partial or b""
                 self.logger.warning("上游 SSE 连接提前断开(IncompleteRead) bytes=%s", len(raw_chunk))

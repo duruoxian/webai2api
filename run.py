@@ -45,10 +45,104 @@ def _wait_port(port: int, timeout: float = 20.0) -> bool:
     return False
 
 
+_RESIZE_PROC = None
+
+
+def _install_frameless_resize(win) -> None:
+    """给无边框窗口补回「拖边缘缩放」（Windows 原生 hit-test）。"""
+    global _RESIZE_PROC
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.SetWindowLongPtrW.restype = ctypes.c_void_p
+    user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+    user32.GetWindowLongPtrW.restype = ctypes.c_void_p
+    user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.CallWindowProcW.restype = ctypes.c_ssize_t
+    user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND, ctypes.c_uint,
+                                       ctypes.c_size_t, ctypes.c_ssize_t]
+    CALLBACK = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, ctypes.c_uint,
+                                  ctypes.c_size_t, ctypes.c_ssize_t)
+
+    try:
+        hwnd = int(win.native.Handle.ToInt64())
+    except Exception:
+        return
+
+    GWL_STYLE = -16
+    WS_THICKFRAME = 0x00040000
+    try:
+        style = int(user32.GetWindowLongPtrW(hwnd, GWL_STYLE) or 0)
+        user32.SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME)
+    except Exception:
+        pass
+
+    border = 6
+    old_proc = [0]
+
+    def proc(h, msg, wp, lp):
+        if msg == 0x0084:  # WM_NCHITTEST
+            try:
+                rect = wintypes.RECT()
+                user32.GetWindowRect(h, ctypes.byref(rect))
+                x = ctypes.c_short(lp & 0xFFFF).value
+                y = ctypes.c_short((lp >> 16) & 0xFFFF).value
+                left, right = x - rect.left, rect.right - x
+                top, bottom = y - rect.top, rect.bottom - y
+                if left < border and top < border: return 13
+                if right < border and top < border: return 14
+                if left < border and bottom < border: return 16
+                if right < border and bottom < border: return 17
+                if left < border: return 10
+                if right < border: return 11
+                if top < border: return 12
+                if bottom < border: return 15
+            except Exception:
+                pass
+        return user32.CallWindowProcW(old_proc[0], h, msg, wp, lp)
+
+    new_proc = CALLBACK(proc)
+    old_proc[0] = user32.SetWindowLongPtrW(hwnd, -4, new_proc)
+    _RESIZE_PROC = (new_proc, old_proc)
+
+
+class WindowApi:
+    """暴露给页面的无边框窗口控制。"""
+
+    def __init__(self) -> None:
+        self._win = None
+        self._maximized = False
+
+    def bind(self, win) -> None:
+        self._win = win
+
+    def minimize(self) -> None:
+        if self._win:
+            self._win.minimize()
+
+    def toggle_max(self) -> bool:
+        if not self._win:
+            return False
+        if self._maximized:
+            self._win.restore()
+            self._maximized = False
+        else:
+            self._win.maximize()
+            self._maximized = True
+        return self._maximized
+
+    def close(self) -> None:
+        if self._win:
+            self._win.destroy()
+
+
 def main() -> None:
     log_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__)
     log_path = os.path.join(log_dir, "webai2api.log")
-
     # windowed exe 下 sys.stdout/stderr 为 None，会让 uvicorn / logging 报错。
     log_file = open(log_path, "a", encoding="utf-8", buffering=1)
     if sys.stdout is None:
@@ -111,7 +205,11 @@ def main() -> None:
 
         from webai2api.paths import resource_path
 
-        webview.create_window(WINDOW_TITLE, admin_url, width=1180, height=800, min_size=(900, 600))
+        win = webview.create_window(
+            WINDOW_TITLE, admin_url,
+            width=1180, height=800, min_size=(900, 600),
+            background_color="#eceef1",
+        )
         icon = resource_path("assets", "webai2api.ico")
         webview.start(icon=str(icon) if icon.exists() else None)
         logger.info("窗口已关闭，退出")
@@ -132,3 +230,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

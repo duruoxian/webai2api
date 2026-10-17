@@ -108,8 +108,131 @@ def _prepare_content(messages: list[dict]) -> str:
     return "".join(parts) + "<|assistant|>\n"
 
 
+TOOL_MARKER = "<<<TOOL_CALL>>>"
+
+TOOL_INSTRUCTION = """你可以调用以下工具来完成任务：
+
+{tools}
+
+规则：
+1. 如果用户的问题需要调用工具，只输出一行，格式严格为：
+{marker}{{"name":"工具名","arguments":{{"参数名":值}}}}
+2. 一次只调用一个工具。不要输出任何解释文字。
+3. 如果不需要工具，直接用自然语言回答，不要输出 {marker}。
+"""
+
+
+def _tools_prompt(tools: list) -> str:
+    """把 OpenAI tools 定义压成给模型看的说明。"""
+    lines = []
+    for t in tools or []:
+        if not isinstance(t, dict):
+            continue
+        fn = t.get("function") or t
+        name = fn.get("name") or ""
+        if not name:
+            continue
+        desc = fn.get("description") or ""
+        params = fn.get("parameters") or {}
+        lines.append(f"- {name}: {desc}")
+        props = (params.get("properties") or {}) if isinstance(params, dict) else {}
+        if props:
+            req = set(params.get("required") or [])
+            for k, v in props.items():
+                typ = (v or {}).get("type", "string")
+                mark = "（必填）" if k in req else ""
+                lines.append(f"    参数 {k} ({typ}){mark}: {(v or {}).get('description','')}")
+    return "\n".join(lines)
+
+
+def _inject_tools(messages: list, tools: list) -> list:
+    """把工具说明塞进 system（没有 system 就新建一条）。"""
+    spec = _tools_prompt(tools)
+    if not spec:
+        return messages
+    instruction = TOOL_INSTRUCTION.format(tools=spec, marker=TOOL_MARKER)
+    msgs = list(messages or [])
+    for i, m in enumerate(msgs):
+        if m.get("role") == "system":
+            merged = dict(m)
+            merged["content"] = (m.get("content") or "") + "\n\n" + instruction
+            msgs[i] = merged
+            return msgs
+    msgs.insert(0, {"role": "system", "content": instruction})
+    return msgs
+
+
+def _strip_tool_block(text: str) -> str:
+    """去掉文本里的工具调用标记行。"""
+    if TOOL_MARKER not in text:
+        return text
+    kept = [ln for ln in text.splitlines() if TOOL_MARKER not in ln]
+    return "\n".join(kept).strip()
+
+
+def _parse_tool_calls(text: str, tools: list) -> list:
+    """从模型回复里解析工具调用，返回 OpenAI tool_calls 结构。"""
+    if not text or not tools:
+        return []
+    names = set()
+    for t in tools:
+        if isinstance(t, dict):
+            fn = t.get("function") or t
+            if fn.get("name"):
+                names.add(fn["name"])
+    out = []
+    for line in text.splitlines():
+        idx = line.find(TOOL_MARKER)
+        if idx < 0:
+            continue
+        raw = line[idx + len(TOOL_MARKER):].strip()
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            try:
+                s, e = raw.find("{"), raw.rfind("}")
+                if s < 0 or e <= s:
+                    continue
+                obj = json.loads(raw[s:e + 1])
+            except Exception:
+                continue
+        if not isinstance(obj, dict):
+            continue
+        name = obj.get("name") or obj.get("tool") or ""
+        if not name or (names and name not in names):
+            continue
+        args = obj.get("arguments", obj.get("args", {}))
+        if not isinstance(args, str):
+            args = json.dumps(args, ensure_ascii=False)
+        out.append({
+            "id": f"call_{uuid.uuid4().hex[:16]}",
+            "type": "function",
+            "function": {"name": name, "arguments": args},
+        })
+        break
+    return out
+
+
+def _estimate_tokens(text: str) -> int:
+    """估算 token 数：中文约 1.5 字/token，其他约 4 字符/token。
+
+    智谱上游不返回真实 usage，只能估算；比单纯 len//4 更贴近实际。
+    """
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    other = len(text) - cjk
+    return max(1, int(cjk / 1.5 + other / 4))
+
+
+def _usage(payload: dict, text: str) -> dict:
+    """估算用量（智谱上游不返回 token 数）。"""
+    p = max(1, _estimate_tokens(_prepare_content(payload.get("messages") or [])))
+    c = max(1, _estimate_tokens(text or ""))
+    return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
+
+
 def _extract_parts(parts: list, is_silent: bool = False) -> tuple[str, str]:
-    """从 parts 快照里重建正文与思考内容。"""
     text = ""
     reasoning = ""
     for part in parts:
@@ -148,6 +271,51 @@ class ChatGlmWebClient:
         self._lock = threading.Lock()
         self._access_token = ""
         self._token_expire = 0.0
+        # 会话缓存：同一段对话复用 conversation_id，多轮只发增量（与 DeepSeek 行为一致）
+        self._conv_lock = threading.Lock()
+        self._conv_cache: dict[str, tuple[str, float]] = {}
+
+    def _conv_key(self, payload: dict) -> str:
+        """用「首条用户消息 + system」做会话指纹。"""
+        msgs = payload.get("messages") or []
+        first = ""
+        system = ""
+        for m in msgs:
+            role = m.get("role")
+            text = _text_of(m)
+            if role == "system" and not system:
+                system = text
+            elif role == "user" and not first:
+                first = text
+        raw = f"{system}\x00{first}\x00{payload.get('model') or ''}"
+        return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
+
+    def _cached_conv(self, key: str) -> str:
+        if not self.config.session_cache_enabled:
+            return ""
+        with self._conv_lock:
+            item = self._conv_cache.get(key)
+            if not item:
+                return ""
+            conv_id, ts = item
+            if time.time() - ts > self.config.session_cache_ttl:
+                self._conv_cache.pop(key, None)
+                return ""
+            self._conv_cache[key] = (conv_id, time.time())
+            return conv_id
+
+    def _store_conv(self, key: str, conv_id: str) -> None:
+        if not self.config.session_cache_enabled or not conv_id:
+            return
+        with self._conv_lock:
+            if len(self._conv_cache) >= self.config.session_cache_max_size:
+                oldest = min(self._conv_cache.items(), key=lambda kv: kv[1][1])[0]
+                self._conv_cache.pop(oldest, None)
+            self._conv_cache[key] = (conv_id, time.time())
+
+    def _drop_conv(self, key: str) -> None:
+        with self._conv_lock:
+            self._conv_cache.pop(key, None)
 
     # ── HTTP 基础 ──────────────────────────────────────
     @staticmethod
@@ -318,14 +486,23 @@ class ChatGlmWebClient:
         流结束后 yield 一个 dict 形式的收尾对象（键 __done__）。
         """
         model = payload.get("model") or self.config.default_model
-        content = _prepare_content(payload.get("messages") or [])
+        messages = payload.get("messages") or []
+        if payload.get("tools"):
+            messages = _inject_tools(messages, payload["tools"])
+        content = _prepare_content(messages)
         is_silent = "silent" in model
 
         self._throttle()
         token = self._access()
+        # 命中会话缓存则复用 conversation_id（与 DeepSeek 的多轮增量行为一致）
+        conv_key = self._conv_key(payload)
+        cached_conv = self._cached_conv(conv_key)
         conn, resp = self._open_stream(
             self.config.stream_url,
-            self._body(content, model, effort=str(payload.get("reasoning_effort") or "")),
+            self._body(
+                content, model,
+                effort=str(payload.get("reasoning_effort") or self.config.default_effort),
+            ),
             _build_headers(self.config.sign_secret, token),
             self.config.request_timeout,
         )
@@ -355,8 +532,11 @@ class ChatGlmWebClient:
                 pass
 
         text, reasoning = _extract_parts(parts_cache, is_silent)
-        if self.config.delete_conversation and conv_id:
-            self._delete_conversation(conv_id, token)
+        if conv_id:
+            if self.config.session_cache_enabled:
+                self._store_conv(conv_key, conv_id)
+            elif self.config.delete_conversation:
+                self._delete_conversation(conv_id, token)
         yield {"__done__": True, "text": text, "reasoning": reasoning, "conv_id": conv_id}
 
     def _delete_conversation(self, conv_id: str, token: str) -> None:
@@ -377,8 +557,27 @@ class ChatGlmWebClient:
         text = reasoning = ""
         for ev in self._stream_events(payload):
             text, reasoning = ev["text"], ev["reasoning"]
-        p = max(1, len(_prepare_content(payload.get("messages") or [])) // 4)
-        c = max(1, len(text) // 4)
+
+        # 若请求带了 tools，尝试从回复里解析工具调用
+        calls = _parse_tool_calls(text, payload.get("tools")) if payload.get("tools") else []
+        if calls:
+            return {
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": _strip_tool_block(text) or None,
+                        "tool_calls": calls,
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": _usage(payload, text),
+            }
+
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -390,13 +589,14 @@ class ChatGlmWebClient:
                             "reasoning_content": reasoning or None},
                 "finish_reason": "stop",
             }],
-            "usage": {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c},
+            "usage": _usage(payload, text),
         }
 
     def stream_chat_completion(self, payload: dict):
         model = payload.get("model") or self.config.default_model
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
+        has_tools = bool(payload.get("tools"))
 
         def chunk(delta: dict, finish=None, usage=None) -> str:
             obj = {
@@ -421,12 +621,39 @@ class ChatGlmWebClient:
                 dt = ev["text"][len(sent_text):]
                 if dt:
                     sent_text = ev["text"]
-                    yield chunk({"content": dt})
+                    # 带工具时先不吐，等流结束统一解析，避免把 JSON 片段漏给客户端
+                    if not has_tools:
+                        yield chunk({"content": dt})
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("智谱流式请求失败: %s", exc)
             err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
             yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
             return
+
+        if has_tools:
+            calls = _parse_tool_calls(sent_text, payload.get("tools"))
+            if calls:
+                for i, c in enumerate(calls):
+                    yield chunk({
+                        "tool_calls": [{
+                            "index": i,
+                            "id": c["id"],
+                            "type": "function",
+                            "function": c["function"],
+                        }]
+                    })
+                yield chunk({}, finish="tool_calls")
+                yield "data: [DONE]\n\n"
+                return
+            # 没解析出工具调用，按普通文本发出
+            plain = _strip_tool_block(sent_text)
+            if plain:
+                yield chunk({"content": plain})
+
+        # 无条件带上 usage（客户端没传 include_usage 也要给，
+        # 否则 opencode 等客户端统计不到用量）
+        yield chunk({}, usage=_usage(payload, sent_text))
         yield chunk({}, finish="stop")
         yield "data: [DONE]\n\n"
+

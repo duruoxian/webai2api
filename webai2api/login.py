@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -68,6 +69,38 @@ class LoginManager:
             return [sys.executable, "--login", acc_id]
         return [sys.executable, str(resource_path("run.py")), "--login", acc_id]
 
+    def _kill_leftover_browsers(self, acc_id: str) -> None:
+        """杀掉仍占用该账号 profile 的 WebView2 进程。
+
+        WebView2 的浏览器进程会常驻；如果上一个登录窗口没完全退出，
+        新窗口会挂到同一个进程上，导致直接复用了旧的 cookie / 登录态。
+        """
+        if sys.platform != "win32":
+            return
+        marker = f"browser_profiles{os.sep}{acc_id}"
+        marker_alt = marker.replace("\\", "/")
+        try:
+            out = subprocess.run(
+                ["wmic", "process", "where", "name='msedgewebview2.exe'",
+                 "get", "ProcessId,CommandLine", "/format:csv"],
+                capture_output=True, text=True, timeout=15,
+                encoding="utf-8", errors="ignore",
+            ).stdout
+        except Exception:
+            return
+        for line in out.splitlines():
+            if marker not in line and marker_alt not in line:
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            pid = parts[-1] if parts else ""
+            if pid.isdigit():
+                try:
+                    subprocess.run(["taskkill", "/F", "/PID", pid],
+                                   capture_output=True, timeout=10)
+                    self.logger.info("已清理残留浏览器进程 pid=%s", pid)
+                except Exception:
+                    pass
+
     def start(self, acc_id: str) -> dict:
         acc = self.store.get_account(acc_id)
         if not acc:
@@ -79,6 +112,9 @@ class LoginManager:
             alive = proc is not None and proc.poll() is None
         if alive and cur.get("status") in ("opening", "waiting"):
             return {"ok": False, "error": "该账号正在登录中"}
+
+        # 清掉该账号残留的 WebView2 进程，否则新开的窗口会复用旧会话
+        self._kill_leftover_browsers(acc_id)
 
         write_state(acc_id, "opening", "正在打开内置浏览器…")
         try:
@@ -95,3 +131,4 @@ class LoginManager:
             self._procs[acc_id] = proc
         self.logger.info("账号 %s 已启动内置浏览器登录（pid=%s）", acc.get("name"), proc.pid)
         return {"ok": True}
+

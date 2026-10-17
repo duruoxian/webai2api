@@ -48,7 +48,10 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
         idx = WEB_DIR / "index.html"
         if not idx.exists():
             return JSONResponse(status_code=404, content={"error": "面板文件缺失"})
-        return FileResponse(idx)
+        return FileResponse(
+            idx,
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
 
     if WEB_DIR.exists():
         app.mount("/admin/static", StaticFiles(directory=str(WEB_DIR)), name="static")
@@ -68,5 +71,16 @@ def create_default_app() -> FastAPI:
     if not store.get_setting("deepseek_wasm_path", ""):
         store.set_setting("deepseek_wasm_path", default_wasm_path())
     registry = ProviderRegistry(store, logging.getLogger("webai2api.providers"))
+
+    # 启动时按保留期清理历史用量（0/空 = 永久保留）
+    try:
+        retain = int(store.get_setting("usage_retain_days", "0") or 0)
+        if retain > 0:
+            removed = store.prune_usage(retain)
+            if removed:
+                logger.info("用量清理：删除 %s 条超过 %s 天的记录", removed, retain)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("用量清理失败: %s", exc)
+
     logger.info("webai2api %s 初始化完成，数据库: %s", __version__, store.db_path)
     return build_app(store, registry, logger)

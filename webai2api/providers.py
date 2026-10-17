@@ -8,15 +8,30 @@ from .adapters.deepseek.pool import build_pool as build_deepseek_pool
 from .adapters.chatglm.pool import build_pool as build_chatglm_pool
 from .store import Store
 
-# 对外暴露的模型清单
-MODELS = [
-    {"id": "deepseek-chat", "object": "model", "owned_by": "deepseek-web"},
-    {"id": "deepseek-reasoner", "object": "model", "owned_by": "deepseek-web"},
-    {"id": "GLM-5.3", "object": "model", "owned_by": "chatglm-web"},
-    {"id": "GLM-5.3-Flash", "object": "model", "owned_by": "chatglm-web"},
-]
-
 DEFAULT_MODEL = "deepseek-chat"
+
+# 各 provider 的推荐额度 + 硬上限（面板可改，但不能超过上限）
+DEFAULT_LIMITS: dict[str, dict[str, int]] = {
+    "deepseek": {"context": 1_000_000, "output": 384_000},
+    "chatglm": {"context": 1_000_000, "output": 128_000},
+}
+MAX_LIMITS: dict[str, dict[str, int]] = {
+    "deepseek": {"context": 1_000_000, "output": 384_000},
+    "chatglm": {"context": 1_000_000, "output": 128_000},
+}
+
+# 每个 provider 的默认模型清单（账号侧没配置时的兜底）
+PROVIDER_MODELS: dict[str, list[str]] = {
+    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "chatglm": ["GLM-5.3", "GLM-5.3-Flash"],
+}
+
+# 兼容旧引用
+MODELS = [
+    {"id": mid, "object": "model", "owned_by": f"{prov}-web"}
+    for prov, ids in PROVIDER_MODELS.items()
+    for mid in ids
+]
 
 
 class ProviderRegistry:
@@ -29,6 +44,33 @@ class ProviderRegistry:
             "deepseek": self.deepseek,
             "chatglm": self.chatglm,
         }
+
+    def model_catalog(self) -> list[dict]:
+        """动态模型清单：默认清单 ∪ 账号配置里出现过的模型。
+
+        以后新增模型只需在账号/设置里配置，无需改代码。
+        """
+        seen: set[str] = set()
+        out: list[dict] = []
+        # 1) 默认清单，但有可用账号的 provider 才展示
+        active = {p for p in self._pools if self.store.list_accounts(p)}
+        active = active or set(self._pools)
+        for prov in active:
+            for mid in PROVIDER_MODELS.get(prov, []):
+                if mid not in seen:
+                    seen.add(mid)
+                    out.append({"id": mid, "object": "model", "owned_by": f"{prov}-web"})
+        # 2) 用量里实际出现过的模型（说明真的在用）
+        try:
+            for row in self.store.list_used_models(limit=100):
+                mid = (row.get("model") or "").strip()
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    prov = "chatglm" if mid.lower().startswith("glm") else "deepseek"
+                    out.append({"id": mid, "object": "model", "owned_by": f"{prov}-web"})
+        except Exception:
+            pass
+        return out or MODELS
 
     def pool_for_model(self, model: str | None) -> GenericClientPool:
         m = (model or "").strip().lower()

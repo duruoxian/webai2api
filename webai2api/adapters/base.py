@@ -13,7 +13,12 @@ from typing import Callable
 
 from ..store import Store
 
-COOLDOWN_SECONDS = 120
+COOLDOWN_SECONDS = 300
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    low = str(exc).lower()
+    return any(w in low for w in ("429", "rate limit", "too many", "限流", "频繁"))
 
 
 class AccountClient:
@@ -28,7 +33,10 @@ class AccountClient:
     def healthy(self) -> bool:
         return self.cooldown_until < time.time()
 
-    def mark_bad(self, seconds: int = COOLDOWN_SECONDS) -> None:
+    def mark_bad(self, seconds: int = COOLDOWN_SECONDS, exc: Exception | None = None) -> None:
+        # 被限流的账号冷却更久，否则会一直撞墙
+        if exc is not None and _is_rate_limited(exc):
+            seconds = max(seconds, 900)
         self.cooldown_until = time.time() + seconds
 
     def mark_ok(self) -> None:

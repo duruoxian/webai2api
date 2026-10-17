@@ -20,7 +20,6 @@ from .store import Store
 
 DEEPSEEK_URL = "https://chat.deepseek.com/"
 CHATGLM_URL = "https://chatglm.cn/main/alltoolsdetail?lang=zh"
-
 DEEPSEEK_EXTRACT_JS = r"""
 (function(){
   const raw = {
@@ -100,6 +99,16 @@ def run_webview_login(acc_id: str) -> None:
 
     # 每个账号一套独立 storage，互不干扰，也不碰系统浏览器
     storage = data_dir / "browser_profiles" / acc_id
+    # 关键：每次登录都用全新的 profile，避免复用上一次的 cookie/会话，
+    # 否则新账号会直接显示成上一个账号已登录的状态。
+    if storage.exists():
+        import shutil
+        for _ in range(3):
+            try:
+                shutil.rmtree(storage, ignore_errors=False)
+                break
+            except Exception:
+                time.sleep(0.4)
     storage.mkdir(parents=True, exist_ok=True)
 
     window = webview.create_window(
@@ -111,12 +120,15 @@ def run_webview_login(acc_id: str) -> None:
     )
 
     done = {"v": False}
+    # 新建账号（还没有凭证）时必须确保是全新会话；
+    # 已有凭证的账号允许复用 profile（方便刷新 token）。
+    fresh = not (acc.get("auth_token") or "").strip()
 
     def worker() -> None:
         deadline = time.time() + 600
         announced = False
         while time.time() < deadline and not done["v"]:
-            time.sleep(2)
+            time.sleep(1.5)
             try:
                 val = window.evaluate_js(extract_js)
             except Exception:
@@ -130,21 +142,39 @@ def run_webview_login(acc_id: str) -> None:
                 creds = json.loads(val)
             except Exception:
                 continue
-            if creds.get("auth_token"):
-                store.update_account(
-                    acc_id,
-                    auth_token=creds["auth_token"],
-                    device_id=creds.get("device_id", ""),
-                    settings_token=creds.get("settings_token", ""),
-                    cookie=creds.get("cookie", ""),
-                )
-                done["v"] = True
-                write_state(acc_id, "success", "登录成功，凭证已保存")
+            token = (creds.get("auth_token") or "").strip()
+            if not token:
+                continue
+            # 全新账号：如果抓到的还是旧的残留 cookie，先清掉再等用户重新登录
+            if fresh and token == (acc.get("auth_token") or ""):
                 try:
-                    window.destroy()
+                    window.evaluate_js(
+                        "document.cookie.split(';').forEach(c=>{"
+                        "const n=c.split('=')[0].trim();"
+                        "document.cookie=n+'=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';});"
+                        "try{localStorage.clear()}catch(e){}"
+                    )
                 except Exception:
                     pass
-                return
+                time.sleep(1.5)
+                continue
+            # 给 WebView2 一点时间把 cookie 落盘
+            time.sleep(1.2)
+            store.update_account(
+                acc_id,
+                auth_token=token,
+                device_id=creds.get("device_id", ""),
+                settings_token=creds.get("settings_token", ""),
+                cookie=creds.get("cookie", ""),
+            )
+            done["v"] = True
+            write_state(acc_id, "success", "登录成功，凭证已保存")
+            time.sleep(0.6)
+            try:
+                window.destroy()
+            except Exception:
+                pass
+            return
         if not done["v"]:
             write_state(acc_id, "error", "等待登录超时，请重试")
             try:

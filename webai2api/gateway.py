@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from logging import Logger
 
@@ -18,7 +19,7 @@ from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .providers import DEFAULT_MODEL, MODELS, ProviderRegistry
+from .providers import DEFAULT_MODEL, ProviderRegistry
 from .store import Store
 
 router = APIRouter()
@@ -38,12 +39,60 @@ def _error(status: int, message: str, code: str = "invalid_request_error"):
     )
 
 
+def _friendly_error(exc: Exception) -> tuple[int, str]:
+    """把上游异常翻译成中文可读提示。"""
+    text = str(exc)
+    low = text.lower()
+
+    def has(*words: str) -> bool:
+        return any(w in low for w in words)
+
+    if has("refresh_token", "refresh token", "40102", "token 已过期", "重新登录"):
+        return 401, "账号凭证已失效，请到面板重新登录该账号"
+    if has("401", "unauthorized", "authentication"):
+        return 401, "账号未登录或登录已过期，请到面板重新登录"
+    if has("403", "forbidden", "risk", "风控", "verify"):
+        return 403, "账号被上游风控拦截，请稍后再试或更换账号"
+    if has("429", "rate limit", "too many", "限流", "频繁"):
+        return 429, "请求过于频繁，已被上游限流，请稍后重试"
+    if has("timeout", "timed out", "超时"):
+        return 504, "上游响应超时，请重试或换用其他模型"
+    if has("connection", "connect", "network", "unreachable", "ssl", "握手"):
+        return 503, "无法连接上游服务，请检查网络后重试"
+    if has("余额", "quota", "insufficient", "额度"):
+        return 402, "账号额度不足"
+    if has("content", "sensitive", "审核", "违规"):
+        return 400, "内容被上游审核拦截，请调整提问后重试"
+    return 502, f"上游服务异常：{text[:200]}"
+
+
+def _estimate_tokens(text: str) -> int:
+    """中文约 1.5 字/token，其余约 4 字符/token。"""
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    other = len(text) - cjk
+    return max(1, int(cjk / 1.5 + other / 4))
+
+
+def _estimate_usage(payload: dict, status: str) -> tuple[int, int]:
+    """上游没返回 usage 时的兜底估算。"""
+    msgs = payload.get("messages") or []
+    text = "".join(
+        str(m.get("content") or "") for m in msgs if isinstance(m, dict)
+    )
+    return _estimate_tokens(text), 0
+
+
 def _usage_from_openai(resp: dict) -> tuple[int, int, int]:
     u = resp.get("usage") or {}
     p = int(u.get("prompt_tokens") or 0)
     c = int(u.get("completion_tokens") or 0)
     t = int(u.get("total_tokens") or (p + c))
     return p, c, t
+
+
+MAX_ACCOUNT_TRIES = 5
 
 
 def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logger) -> APIRouter:
@@ -53,7 +102,7 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
         row = await run_in_threadpool(store.find_key, key) if key else None
         if not key or not row:
             return _error(401, "缺少或无效的 API Key", "authentication_error")
-        return {"object": "list", "data": MODELS}
+        return {"object": "list", "data": await run_in_threadpool(registry.model_catalog)}
 
     @router.post("/v1/chat/completions")
     async def chat_completions(request: Request):
@@ -91,28 +140,44 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
         if not stream:
             resp = None
             last_exc: Exception | None = None
-            for _ in range(2):  # 失败时换账号重试一次
+            tried: set[str] = set()
+            for attempt in range(MAX_ACCOUNT_TRIES):
                 try:
                     resp = await run_in_threadpool(ac.client.chat_completion, payload)
                     ac.mark_ok()
                     break
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
-                    ac.mark_bad()
-                    logger.warning("非流式请求失败(账号 %s): %s", ac.account["name"], exc)
+                    logger.warning(
+                        "非流式请求失败(账号 %s, 第%d次): %s",
+                        ac.account["name"], attempt + 1, exc,
+                    )
                     if want_acc:
                         break
-                    nxt = registry.pick(model, exclude={ac.account["id"]})
+                    # 先尝试换一个「没试过」的账号；没有别的账号时，
+                    # 就等一会儿重试同一个账号（单账号也能重试）。
+                    tried.add(ac.account["id"])
+                    nxt = registry.pick(model, exclude=tried)
                     if nxt is None:
-                        break
+                        if attempt + 1 >= MAX_ACCOUNT_TRIES:
+                            ac.mark_bad(exc=exc)
+                            break
+                        await asyncio.sleep(min(2 ** attempt, 8))
+                        ac.mark_bad(exc=exc)
+                        continue
+                    ac.mark_bad(exc=exc)
                     ac = nxt
-                    base.update(account_id=ac.account["id"], account_name=ac.account["name"])
+                    base.update(
+                        account_id=ac.account["id"], account_name=ac.account["name"],
+                        provider=ac.account["provider"],
+                    )
             if resp is None:
                 await run_in_threadpool(
                     store.log_usage,
                     status=f"error:{type(last_exc).__name__}", **base
                 )
-                return _error(502, f"上游错误: {last_exc}", "upstream_error")
+                code, msg = _friendly_error(last_exc) if last_exc else (502, "上游服务异常")
+                return _error(code, msg, "upstream_error")
             p, c, t = _usage_from_openai(resp)
             await run_in_threadpool(
                 store.log_usage, prompt_tokens=p, completion_tokens=c,
@@ -121,6 +186,13 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
             return JSONResponse(resp)
 
         # ── 流式 ──
+        # 先在异步上下文里尝试拿到第一块数据，成功后再开始吐流；
+        # 这样上游失败时可以换账号重试（而不是已经 200 了才发现失败）。
+        first_chunk, ac, base = await _stream_with_retry(
+            registry, store, payload, model, ac, base, want_acc, logger
+        )
+        if first_chunk is None:
+            return _error(502, "所有可用账号均请求失败，请稍后重试", "upstream_error")
         async def gen():
             import asyncio
             import threading
@@ -132,10 +204,9 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
             _DONE = object()
 
             def _producer():
-                # 独立线程里跑同步生成器；用 call_soon_threadsafe 推入 asyncio 队列，
-                # 避免每块都占用默认线程池（run_in_executor）。
+                # 继续消费「已经拿到前缀」的那个流（不要重新发起请求）。
                 try:
-                    for chunk in ac.client.stream_chat_completion(payload):
+                    for chunk in first_chunk:
                         loop.call_soon_threadsafe(aq.put_nowait, chunk)
                 except Exception as exc:  # noqa: BLE001
                     loop.call_soon_threadsafe(aq.put_nowait, ("error", exc))
@@ -151,8 +222,8 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                     if isinstance(item, tuple):
                         status = f"error:{type(item[1]).__name__}"
                         logger.warning("流式请求失败: %s", item[1])
-                        err = {"error": {"message": f"上游错误: {item[1]}",
-                                         "type": "upstream_error"}}
+                        _, msg = _friendly_error(item[1])
+                        err = {"error": {"message": msg, "type": "upstream_error"}}
                         yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                         yield "data: [DONE]\n\n"
                         break
@@ -169,6 +240,9 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                             pass
                     yield line
             finally:
+                # 上游没给 usage 时用估算兜底，保证面板/客户端都有数
+                if not prompt_t and not completion_t:
+                    prompt_t, completion_t = _estimate_usage(payload, status)
                 if not total_t:
                     total_t = prompt_t + completion_t
                 try:
@@ -183,3 +257,97 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     return router
+
+
+async def _stream_with_retry(registry, store, payload, model, ac, base, want_acc, logger):
+    """流式请求：先取到第一块「有内容」的数据，失败则换账号重试。
+
+    注意：客户端生成器一开始只发一个空的 role chunk，所以不能拿第一块就判定成功，
+    必须等到真正有 content / reasoning / tool_calls 的块，才能确认上游正常。
+    """
+    tried: set[str] = set()
+    last_exc: Exception | None = None
+    for attempt in range(MAX_ACCOUNT_TRIES):
+        try:
+            it = ac.client.stream_chat_completion(payload)
+            prefix = await run_in_threadpool(_take_until_content, it)
+            if prefix is None:
+                raise RuntimeError("上游未返回任何内容")
+            ac.mark_ok()
+            return _ChainPrefix(prefix, it), ac, base
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            logger.warning(
+                "流式请求失败(账号 %s, 第%d次): %s", ac.account["name"], attempt + 1, exc
+            )
+            if want_acc:
+                break
+            tried.add(ac.account["id"])
+            nxt = registry.pick(model, exclude=tried)
+            if nxt is None:
+                if attempt + 1 >= MAX_ACCOUNT_TRIES:
+                    ac.mark_bad(exc=exc)
+                    break
+                await asyncio.sleep(min(2 ** attempt, 8))
+                ac.mark_bad(exc=exc)
+                continue
+            ac.mark_bad(exc=exc)
+            ac = nxt
+            base.update(
+                account_id=ac.account["id"], account_name=ac.account["name"],
+                provider=ac.account["provider"],
+            )
+    if last_exc:
+        logger.warning("流式请求最终失败: %s", last_exc)
+    return None, ac, base
+
+
+def _chunk_has_payload(line: str) -> bool:
+    """判断一个 SSE 块是否包含真实内容（而不是空 role / 心跳）。"""
+    if not isinstance(line, str):
+        return False
+    if not line.startswith("data:"):
+        return False
+    body = line[5:].strip()
+    if not body or body == "[DONE]":
+        return False
+    try:
+        obj = json.loads(body)
+    except Exception:
+        return False
+    if obj.get("error"):
+        return True
+    for ch in obj.get("choices") or []:
+        delta = ch.get("delta") or {}
+        if delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls"):
+            return True
+        if ch.get("finish_reason"):
+            return True
+    return False
+
+
+def _take_until_content(it, limit: int = 200):
+    """消费生成器直到出现有内容的块，返回已消费的块列表。"""
+    prefix: list[str] = []
+    for _ in range(limit):
+        try:
+            line = next(it)
+        except StopIteration:
+            return prefix or None
+        prefix.append(line)
+        if _chunk_has_payload(line):
+            return prefix
+    return prefix or None
+
+
+class _ChainPrefix:
+    """把「已消费的前缀块」和剩余迭代器拼成完整迭代器。"""
+
+    def __init__(self, prefix, rest):
+        self._prefix = prefix
+        self._rest = rest
+
+    def __iter__(self):
+        yield from self._prefix
+        yield from self._rest
+

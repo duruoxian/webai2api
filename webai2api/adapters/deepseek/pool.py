@@ -38,6 +38,7 @@ def _base_defaults(store: Store) -> dict:
         "timeout": int(store.get_setting("deepseek_timeout", "180")),
         "session_cache": store.get_setting("deepseek_session_cache", "true"),
         "cache_ttl": int(store.get_setting("deepseek_cache_ttl", "7200")),
+        "search": store.get_setting("deepseek_search", "false"),
     }
 
 
@@ -70,6 +71,7 @@ def build_config(store: Store, account: dict) -> ds_config.AppConfig:
         anti_rate_limit_max_delay=d["anti_max"],
         session_cache_enabled=_truthy(d["session_cache"]),
         session_cache_ttl=d["cache_ttl"],
+        search_enabled=_truthy(d["search"]),
     )
 
 

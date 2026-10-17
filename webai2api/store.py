@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS usage_log (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_log(ts);
 CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_log(model);
+CREATE INDEX IF NOT EXISTS idx_usage_ts_model ON usage_log(ts, model);
+CREATE INDEX IF NOT EXISTS idx_usage_ts_account ON usage_log(ts, account_id);
+CREATE INDEX IF NOT EXISTS idx_usage_ts_key ON usage_log(ts, api_key_id);
+CREATE INDEX IF NOT EXISTS idx_usage_status ON usage_log(status);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -74,6 +78,29 @@ class Store:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
+            # WAL：读写并发更稳，长期跑不容易被锁住
+            try:
+                c.execute("PRAGMA journal_mode=WAL")
+                c.execute("PRAGMA synchronous=NORMAL")
+            except Exception:
+                pass
+
+    def prune_usage(self, retain_days: int = 0) -> int:
+        """删除超过保留期的用量记录，返回删除条数。
+
+        retain_days <= 0 表示不清理。
+        """
+        if not retain_days or retain_days <= 0:
+            return 0
+        cutoff = _now() - retain_days * 86400
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM usage_log WHERE ts < ?", (cutoff,))
+            return cur.rowcount or 0
+
+    def vacuum(self) -> None:
+        """整理数据库文件（清理后调用可回收空间）。"""
+        with self._conn() as c:
+            c.execute("VACUUM")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -190,31 +217,46 @@ class Store:
                  kw.get("status", "ok")),
             )
 
-    def usage_summary(self) -> dict:
-        """总览：总计 + 按模型 + 按账号 + 按 Key + 近 24h。"""
+    def usage_summary(self, since_ts: float | None = None,
+                      until_ts: float | None = None) -> dict:
+        """总览：总计 + 按模型 + 按账号 + 按 Key + 近 24h + 每日。
+
+        since_ts / until_ts 不为空时，只统计该时间区间内的数据。
+        """
+        conds, args = [], []
+        if since_ts is not None:
+            conds.append("ts>=?")
+            args.append(since_ts)
+        if until_ts is not None:
+            conds.append("ts<=?")
+            args.append(until_ts)
+        where = (" WHERE " + " AND ".join(conds)) if conds else ""
+        args = tuple(args)
         with self._conn() as c:
             total = c.execute(
-                "SELECT COUNT(*) n, COALESCE(SUM(prompt_tokens),0) p, "
+                "SELECT COUNT(*) n, "
+                "COALESCE(SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END),0) ok, "
+                "COALESCE(SUM(prompt_tokens),0) p, "
                 "COALESCE(SUM(completion_tokens),0) c, COALESCE(SUM(total_tokens),0) t "
-                "FROM usage_log"
+                "FROM usage_log" + where, args
             ).fetchone()
             by_model = c.execute(
                 "SELECT model, COUNT(*) n, COALESCE(SUM(prompt_tokens),0) p, "
                 "COALESCE(SUM(completion_tokens),0) c, COALESCE(SUM(total_tokens),0) t "
-                "FROM usage_log GROUP BY model ORDER BY t DESC"
+                "FROM usage_log" + where + " GROUP BY model ORDER BY t DESC", args
             ).fetchall()
             by_account = c.execute(
                 "SELECT account_name, provider, COUNT(*) n, COALESCE(SUM(total_tokens),0) t "
-                "FROM usage_log GROUP BY account_id ORDER BY t DESC"
+                "FROM usage_log" + where + " GROUP BY account_id ORDER BY t DESC", args
             ).fetchall()
             by_key = c.execute(
                 "SELECT api_key_name, COUNT(*) n, COALESCE(SUM(total_tokens),0) t "
-                "FROM usage_log GROUP BY api_key_id ORDER BY t DESC"
+                "FROM usage_log" + where + " GROUP BY api_key_id ORDER BY t DESC", args
             ).fetchall()
-            since = _now() - 86400
+            since24 = _now() - 86400
             last24 = c.execute(
                 "SELECT COUNT(*) n, COALESCE(SUM(total_tokens),0) t FROM usage_log WHERE ts>=?",
-                (since,),
+                (since24,),
             ).fetchone()
             daily = c.execute(
                 "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, "
@@ -231,10 +273,46 @@ class Store:
             "daily": [dict(r) for r in daily],
         }
 
-    def recent_usage(self, limit: int = 100) -> list[dict]:
+    def recent_usage(self, limit: int = 100, offset: int = 0,
+                     model: str = "", status: str = "") -> list[dict]:
+        """最近请求，支持分页与简单筛选。"""
+        conds, args = [], []
+        if model:
+            conds.append("model = ?")
+            args.append(model)
+        if status:
+            conds.append("status = ?")
+            args.append(status)
+        where = (" WHERE " + " AND ".join(conds)) if conds else ""
+        args.extend([max(1, int(limit)), max(0, int(offset))])
         with self._conn() as c:
             rows = c.execute(
-                "SELECT * FROM usage_log ORDER BY id DESC LIMIT ?", (limit,)
+                "SELECT * FROM usage_log" + where + " ORDER BY id DESC LIMIT ? OFFSET ?",
+                tuple(args),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_usage(self, model: str = "", status: str = "") -> int:
+        conds, args = [], []
+        if model:
+            conds.append("model = ?")
+            args.append(model)
+        if status:
+            conds.append("status = ?")
+            args.append(status)
+        where = (" WHERE " + " AND ".join(conds)) if conds else ""
+        with self._conn() as c:
+            row = c.execute("SELECT COUNT(*) n FROM usage_log" + where, tuple(args)).fetchone()
+        return int(row["n"]) if row else 0
+
+    def list_used_models(self, limit: int = 100) -> list[dict]:
+        """用量里实际出现过的模型（按最近使用倒序）。"""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT model, MAX(ts) last_ts, COUNT(*) n FROM usage_log "
+                "WHERE model IS NOT NULL AND model <> '' "
+                "GROUP BY model ORDER BY last_ts DESC LIMIT ?",
+                (max(1, int(limit)),),
             ).fetchall()
         return [dict(r) for r in rows]
 
