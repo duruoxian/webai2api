@@ -115,6 +115,22 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         except Exception:
             return None
 
+    async def _incompatible_models(accounts: list[str], models: list[str]) -> str:
+        """勾选了账号时，模型必须属于这些账号的平台。"""
+        if not accounts or not models:
+            return ""
+        accs = await run_in_threadpool(store.list_accounts)
+        chosen = set(accounts)
+        provs = {a["provider"] for a in accs if a["id"] in chosen}
+        bad = [
+            m for m in models
+            if ("chatglm" if m.strip().lower().startswith("glm") else "deepseek") not in provs
+        ]
+        if not bad:
+            return ""
+        return ("模型 " + "、".join(bad) +
+                " 需要对应平台的账号；请先勾选该平台的账号，或取消这些模型。")
+
     @router.post("/login")
     async def login(request: Request):
         if toks.rate_limited():
@@ -137,7 +153,8 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
 
     @router.get("/state")
     async def state(request: Request, range: str = "all", start: str = "", end: str = "",
-                    limit: int = 50, offset: int = 0):
+                    limit: int = 50, offset: int = 0,
+                    key_id: str = "", account_id: str = ""):
         g = _guard(request)
         if g:
             return g
@@ -152,9 +169,16 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             "accounts": _safe_accounts(accounts),
             "login": {a["id"]: login_mgr.state(a["id"]) for a in accounts},
             "keys": await run_in_threadpool(store.list_keys),
+            "models": [m["id"] for m in await run_in_threadpool(registry.model_catalog)],
+            "model_providers": {
+                m["id"]: ("chatglm" if m["id"].strip().lower().startswith("glm") else "deepseek")
+                for m in await run_in_threadpool(registry.model_catalog)
+            },
             "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
-            "recent": await run_in_threadpool(store.recent_usage, limit, offset),
-            "recent_total": await run_in_threadpool(store.count_usage),
+            "recent": await run_in_threadpool(
+                store.recent_usage, limit, offset, "", "", key_id, account_id),
+            "recent_total": await run_in_threadpool(
+                store.count_usage, "", "", key_id, account_id),
             "recent_limit": limit,
             "recent_offset": offset,
             "settings": {
@@ -269,7 +293,15 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if g:
             return g
         b = await _json(request) or {}
-        k = await run_in_threadpool(store.add_key, b.get("name", "未命名 Key"))
+        accounts = [str(x) for x in (b.get("accounts") or []) if str(x).strip()]
+        models = [str(x).strip() for x in (b.get("models") or []) if str(x).strip()]
+        bad = await _incompatible_models(accounts, models)
+        if bad:
+            return {"ok": False, "error": bad}
+        k = await run_in_threadpool(
+            store.add_key, b.get("name", "未命名 Key"),
+            None, accounts, models,
+        )
         return {"ok": True, "key": k}
 
     @router.put("/keys/{key_id}")
@@ -280,6 +312,28 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         b = await _json(request) or {}
         if "enabled" in b:
             await run_in_threadpool(store.set_key_enabled, key_id, bool(b["enabled"]))
+        name = b.get("name")
+        accounts = b.get("accounts")
+        models = b.get("models")
+        if accounts is not None or models is not None:
+            cur = next((k for k in await run_in_threadpool(store.list_keys)
+                        if k["id"] == key_id), None)
+            nacc = ([str(x) for x in accounts if str(x).strip()]
+                    if accounts is not None else (cur or {}).get("accounts", []))
+            nmod = ([str(x).strip() for x in models if str(x).strip()]
+                    if models is not None else (cur or {}).get("models", []))
+            bad = await _incompatible_models(nacc, nmod)
+            if bad:
+                return {"ok": False, "error": bad}
+        if name is not None or accounts is not None or models is not None:
+            await run_in_threadpool(
+                store.update_key, key_id,
+                name=(str(name).strip() or "未命名 Key") if name is not None else None,
+                accounts=([str(x) for x in accounts if str(x).strip()]
+                          if accounts is not None else None),
+                models=([str(x).strip() for x in models if str(x).strip()]
+                        if models is not None else None),
+            )
         return {"ok": True}
 
     @router.delete("/keys/{key_id}")

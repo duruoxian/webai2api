@@ -25,11 +25,42 @@ from .store import Store
 router = APIRouter()
 
 
+def _clean_key(raw: str) -> str:
+    """容忍客户端常见的多余格式：引号、重复 Bearer、首尾空白。"""
+    v = (raw or "").strip()
+    for _ in range(3):
+        v = v.strip().strip('"').strip("'").strip()
+        if v.lower().startswith("bearer "):
+            v = v[7:].strip()
+            continue
+        break
+    return v
+
+
 def _extract_api_key(request: Request) -> str:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
-        return auth[7:].strip()
-    return request.headers.get("x-api-key", "").strip()
+        return _clean_key(auth[7:])
+    for name in ("x-api-key", "api-key"):
+        value = request.headers.get(name, "")
+        if value:
+            return _clean_key(value)
+    return ""
+
+
+def _mask_key(value: str) -> str:
+    if not value:
+        return "(empty)"
+    if len(value) <= 12:
+        return f"{value!r} (len={len(value)})"
+    return f"{value[:8]}...{value[-4:]} (len={len(value)})"
+
+
+def _key_scope(row: dict) -> tuple[set[str], set[str]]:
+    """Key 的可用账号 / 可用模型范围（空集合表示不限）。"""
+    accounts = {str(a) for a in (row.get("accounts") or []) if str(a).strip()}
+    models = {str(m).strip().lower() for m in (row.get("models") or []) if str(m).strip()}
+    return accounts, models
 
 
 def _error(status: int, message: str, code: str = "invalid_request_error"):
@@ -101,14 +132,32 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
         key = _extract_api_key(request)
         row = await run_in_threadpool(store.find_key, key) if key else None
         if not key or not row:
+            logger.warning(
+                "鉴权失败 path=/v1/models key=%s auth=%s ua=%s",
+                _mask_key(key),
+                _mask_key(request.headers.get("authorization", "")),
+                (request.headers.get("user-agent") or "")[:120],
+            )
             return _error(401, "缺少或无效的 API Key", "authentication_error")
-        return {"object": "list", "data": await run_in_threadpool(registry.model_catalog)}
+        catalog = await run_in_threadpool(registry.model_catalog)
+        _, allowed_models = _key_scope(row)
+        if allowed_models:
+            catalog = [m for m in catalog
+                       if str(m.get("id", "")).strip().lower() in allowed_models]
+        return {"object": "list", "data": catalog}
 
     @router.post("/v1/chat/completions")
     async def chat_completions(request: Request):
         key = _extract_api_key(request)
         key_row = await run_in_threadpool(store.find_key, key) if key else None
         if not key_row:
+            logger.warning(
+                "鉴权失败 path=/v1/chat/completions key=%s auth=%s api-key=%s ua=%s",
+                _mask_key(key),
+                _mask_key(request.headers.get("authorization", "")),
+                _mask_key(request.headers.get("x-api-key", "") or request.headers.get("api-key", "")),
+                (request.headers.get("user-agent") or "")[:120],
+            )
             return _error(401, "缺少或无效的 API Key", "authentication_error")
         if not key_row.get("enabled"):
             return _error(403, "该 API Key 已被禁用", "permission_error")
@@ -125,10 +174,19 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
         model = payload.get("model") or DEFAULT_MODEL
         stream = bool(payload.get("stream"))
 
+        allowed_accs, allowed_models = _key_scope(key_row)
+        if allowed_models and str(model).strip().lower() not in allowed_models:
+            return _error(403, f"该 API Key 无权使用模型 {model}", "permission_error")
+
         want_acc = request.headers.get("x-account-id", "").strip()
-        ac = registry.pick_by_id(want_acc) if want_acc else registry.pick(model)
+        if want_acc and allowed_accs and want_acc not in allowed_accs:
+            return _error(403, "该 API Key 无权使用指定账号", "permission_error")
+        ac = registry.pick_by_id(want_acc) if want_acc else registry.pick(
+            model, allowed=allowed_accs or None)
         if ac is None:
-            return _error(503, "没有可用的账号，请先在面板添加并启用账号", "unavailable")
+            msg = ("该 Key 绑定的账号暂无可用，请检查账号状态"
+                   if allowed_accs else "没有可用的账号，请先在面板添加并启用账号")
+            return _error(503, msg, "unavailable")
 
         await run_in_threadpool(store.touch_key, key_row["id"])
         base = dict(
@@ -157,7 +215,8 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                     # 先尝试换一个「没试过」的账号；没有别的账号时，
                     # 就等一会儿重试同一个账号（单账号也能重试）。
                     tried.add(ac.account["id"])
-                    nxt = registry.pick(model, exclude=tried)
+                    nxt = registry.pick(model, exclude=tried,
+                                        allowed=allowed_accs or None)
                     if nxt is None:
                         if attempt + 1 >= MAX_ACCOUNT_TRIES:
                             ac.mark_bad(exc=exc)
@@ -189,7 +248,7 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
         # 先在异步上下文里尝试拿到第一块数据，成功后再开始吐流；
         # 这样上游失败时可以换账号重试（而不是已经 200 了才发现失败）。
         first_chunk, ac, base = await _stream_with_retry(
-            registry, store, payload, model, ac, base, want_acc, logger
+            registry, store, payload, model, ac, base, want_acc, allowed_accs or None, logger
         )
         if first_chunk is None:
             return _error(502, "所有可用账号均请求失败，请稍后重试", "upstream_error")
@@ -259,7 +318,7 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
     return router
 
 
-async def _stream_with_retry(registry, store, payload, model, ac, base, want_acc, logger):
+async def _stream_with_retry(registry, store, payload, model, ac, base, want_acc, allowed, logger):
     """流式请求：先取到第一块「有内容」的数据，失败则换账号重试。
 
     注意：客户端生成器一开始只发一个空的 role chunk，所以不能拿第一块就判定成功，
@@ -283,7 +342,7 @@ async def _stream_with_retry(registry, store, payload, model, ac, base, want_acc
             if want_acc:
                 break
             tried.add(ac.account["id"])
-            nxt = registry.pick(model, exclude=tried)
+            nxt = registry.pick(model, exclude=tried, allowed=allowed)
             if nxt is None:
                 if attempt + 1 >= MAX_ACCOUNT_TRIES:
                     ac.mark_bad(exc=exc)

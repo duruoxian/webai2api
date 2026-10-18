@@ -692,3 +692,33 @@ html[data-theme=dark] .notice{background:linear-gradient(165deg,rgba(255,255,255
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .guide-row .btn{flex:0 0 auto}
 @media (max-width:640px){.guide-row{flex-wrap:wrap}.guide-row>span{width:100%}.guide-row code{white-space:normal;word-break:break-all}}
+
+.guide-models{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:6px}
+.guide-model{display:flex;align-items:center;gap:10px;min-width:0}
+.guide-model code{flex:0 0 168px}
+.guide-model>span{flex:1 1 auto;min-width:0;font-size:12.5px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.guide-model .btn{flex:0 0 auto}
+@media (max-width:640px){
+  .guide-model{flex-wrap:wrap}
+  .guide-model code{flex:0 0 100%}
+  .guide-model>span{white-space:normal}
+}
+
+.hint-inline{font-weight:400;font-size:12px;color:var(--text3)}
+.pick-list{max-height:190px;overflow-y:auto;border:1px solid var(--hairline-strong);border-radius:10px;
+  padding:6px;background:var(--input-bg);overscroll-behavior:contain}
+.pick-item{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;
+  font-size:13px;color:var(--text2);cursor:pointer;user-select:none}
+.pick-item:hover{background:var(--input-bg-focus)}
+.pick-item input{width:15px;height:15px;accent-color:#0a84ff;flex:0 0 auto}
+.pick-item em{margin-left:auto;font-style:normal;font-size:11px;color:var(--text3)}
+
+.sel.disabled{opacity:.55;pointer-events:none}
+
+.sel-sm{width:auto;min-width:126px}
+.sel-sm .sel-btn{height:30px;padding:0 10px;font-size:12.5px;border-radius:9px}
+.sel-sm .sel-btn>svg{width:11px;height:11px}
+.sel-sm .sel-menu{min-width:180px}
+
+/* 下拉菜单内部滚动时不要带动页面 */
+.sel-menu,.pick-list,.tbl-scroll{overscroll-behavior:contain}

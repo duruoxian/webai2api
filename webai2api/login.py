@@ -20,6 +20,17 @@ from .paths import resource_path, user_data_dir
 from .store import Store
 
 
+def _hidden_kwargs() -> dict:
+    """Windows 下隐藏子进程控制台窗口（打包为 windowed exe 时会闪黑框）。
+
+    注意：只加 CREATE_NO_WINDOW，不要传 STARTUPINFO/SW_HIDE ——
+    登录助手是 GUI 程序，SW_HIDE 会把它自己的 WebView2 窗口一起隐藏。
+    """
+    if os.name != "nt":
+        return {}
+    return {"creationflags": 0x08000000}
+
+
 def _state_dir() -> Path:
     d = user_data_dir() / "login_state"
     d.mkdir(parents=True, exist_ok=True)
@@ -86,7 +97,7 @@ class LoginManager:
                  "Get-CimInstance Win32_Process -Filter \"Name='webai2api.exe'\" | "
                  "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
                 capture_output=True, text=True, timeout=20,
-                encoding="utf-8", errors="ignore",
+                encoding="utf-8", errors="ignore", **_hidden_kwargs(),
             ).stdout
             procs = json.loads(out) if out.strip() else []
             if isinstance(procs, dict):
@@ -97,7 +108,7 @@ class LoginManager:
                     pid = p.get("ProcessId")
                     if pid:
                         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                                       capture_output=True, timeout=10)
+                                       capture_output=True, timeout=10, **_hidden_kwargs())
                         self.logger.info("已清理残留登录进程 pid=%s", pid)
         except Exception:
             pass
@@ -108,7 +119,7 @@ class LoginManager:
                  "Get-CimInstance Win32_Process -Filter \"Name='msedgewebview2.exe'\" | "
                  "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
                 capture_output=True, text=True, timeout=20,
-                encoding="utf-8", errors="ignore",
+                encoding="utf-8", errors="ignore", **_hidden_kwargs(),
             ).stdout
             procs = json.loads(out) if out.strip() else []
             if isinstance(procs, dict):
@@ -121,7 +132,7 @@ class LoginManager:
                 if pid:
                     try:
                         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                                       capture_output=True, timeout=10)
+                                       capture_output=True, timeout=10, **_hidden_kwargs())
                         self.logger.info("已清理残留浏览器进程 pid=%s", pid)
                     except Exception:
                         pass
@@ -149,6 +160,7 @@ class LoginManager:
                 self._helper_cmd(acc_id),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                **_hidden_kwargs(),
             )
         except Exception as exc:  # noqa: BLE001
             write_state(acc_id, "error", f"启动内置浏览器失败: {exc}")

@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 import uuid
@@ -32,6 +33,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
     key          TEXT NOT NULL UNIQUE,
     name         TEXT NOT NULL,
     enabled      INTEGER NOT NULL DEFAULT 1,
+    accounts     TEXT NOT NULL DEFAULT '[]',
+    models       TEXT NOT NULL DEFAULT '[]',
     created_at   REAL NOT NULL,
     last_used_at REAL
 );
@@ -72,12 +75,28 @@ def gen_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
+def _json_list(raw: Any) -> list[str]:
+    try:
+        value = json.loads(raw or "[]")
+    except Exception:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(x) for x in value if str(x).strip()]
+
+
 class Store:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(SCHEMA)
+            # 旧库升级：给 api_keys 补上「可用账号 / 可用模型」范围
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(api_keys)")}
+            if "accounts" not in cols:
+                c.execute("ALTER TABLE api_keys ADD COLUMN accounts TEXT NOT NULL DEFAULT '[]'")
+            if "models" not in cols:
+                c.execute("ALTER TABLE api_keys ADD COLUMN models TEXT NOT NULL DEFAULT '[]'")
             # WAL：读写并发更稳，长期跑不容易被锁住
             try:
                 c.execute("PRAGMA journal_mode=WAL")
@@ -170,22 +189,57 @@ class Store:
     def list_keys(self) -> list[dict]:
         with self._conn() as c:
             rows = c.execute("SELECT * FROM api_keys ORDER BY created_at").fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["accounts"] = _json_list(d.get("accounts"))
+            d["models"] = _json_list(d.get("models"))
+            out.append(d)
+        return out
 
-    def add_key(self, name: str, key: str | None = None) -> dict:
+    def add_key(self, name: str, key: str | None = None,
+                accounts: list[str] | None = None,
+                models: list[str] | None = None) -> dict:
         kid = gen_id("key")
         key = key or ("sk-" + uuid.uuid4().hex + uuid.uuid4().hex[:8])
         with self._conn() as c:
             c.execute(
-                "INSERT INTO api_keys (id, key, name, enabled, created_at) VALUES (?,?,?,1,?)",
-                (kid, key, name, _now()),
+                "INSERT INTO api_keys (id, key, name, enabled, accounts, models, created_at) "
+                "VALUES (?,?,?,1,?,?,?)",
+                (kid, key, name, json.dumps(accounts or [], ensure_ascii=False),
+                 json.dumps(models or [], ensure_ascii=False), _now()),
             )
-        return {"id": kid, "key": key, "name": name, "enabled": 1}
+        return {"id": kid, "key": key, "name": name, "enabled": 1,
+                "accounts": accounts or [], "models": models or []}
 
     def find_key(self, key: str) -> dict | None:
         with self._conn() as c:
             row = c.execute("SELECT * FROM api_keys WHERE key=?", (key,)).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        d = dict(row)
+        d["accounts"] = _json_list(d.get("accounts"))
+        d["models"] = _json_list(d.get("models"))
+        return d
+
+    def update_key(self, key_id: str, *, name: str | None = None,
+                   accounts: list[str] | None = None,
+                   models: list[str] | None = None) -> None:
+        sets, vals = [], []
+        if name is not None:
+            sets.append("name=?")
+            vals.append(name)
+        if accounts is not None:
+            sets.append("accounts=?")
+            vals.append(json.dumps(accounts, ensure_ascii=False))
+        if models is not None:
+            sets.append("models=?")
+            vals.append(json.dumps(models, ensure_ascii=False))
+        if not sets:
+            return
+        vals.append(key_id)
+        with self._conn() as c:
+            c.execute(f"UPDATE api_keys SET {', '.join(sets)} WHERE id=?", vals)
 
     def touch_key(self, key_id: str) -> None:
         with self._conn() as c:
@@ -246,11 +300,14 @@ class Store:
                 "FROM usage_log" + where + " GROUP BY model ORDER BY t DESC", args
             ).fetchall()
             by_account = c.execute(
-                "SELECT account_name, provider, COUNT(*) n, COALESCE(SUM(total_tokens),0) t "
+                "SELECT account_id, account_name, provider, COUNT(*) n, COALESCE(SUM(total_tokens),0) t "
                 "FROM usage_log" + where + " GROUP BY account_id ORDER BY t DESC", args
             ).fetchall()
             by_key = c.execute(
-                "SELECT api_key_name, COUNT(*) n, COALESCE(SUM(total_tokens),0) t "
+                "SELECT api_key_id, api_key_name, COUNT(*) n, "
+                "COALESCE(SUM(prompt_tokens),0) p, "
+                "COALESCE(SUM(completion_tokens),0) c, "
+                "COALESCE(SUM(total_tokens),0) t "
                 "FROM usage_log" + where + " GROUP BY api_key_id ORDER BY t DESC", args
             ).fetchall()
             since24 = _now() - 86400
@@ -274,7 +331,8 @@ class Store:
         }
 
     def recent_usage(self, limit: int = 100, offset: int = 0,
-                     model: str = "", status: str = "") -> list[dict]:
+                     model: str = "", status: str = "",
+                     key_id: str = "", account_id: str = "") -> list[dict]:
         """最近请求，支持分页与简单筛选。"""
         conds, args = [], []
         if model:
@@ -283,6 +341,18 @@ class Store:
         if status:
             conds.append("status = ?")
             args.append(status)
+        if key_id:
+            conds.append("api_key_id = ?")
+            args.append(key_id)
+        if account_id:
+            conds.append("account_id = ?")
+            args.append(account_id)
+        if key_id:
+            conds.append("api_key_id = ?")
+            args.append(key_id)
+        if account_id:
+            conds.append("account_id = ?")
+            args.append(account_id)
         where = (" WHERE " + " AND ".join(conds)) if conds else ""
         args.extend([max(1, int(limit)), max(0, int(offset))])
         with self._conn() as c:
@@ -292,7 +362,8 @@ class Store:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def count_usage(self, model: str = "", status: str = "") -> int:
+    def count_usage(self, model: str = "", status: str = "",
+                    key_id: str = "", account_id: str = "") -> int:
         conds, args = [], []
         if model:
             conds.append("model = ?")

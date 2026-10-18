@@ -64,7 +64,7 @@ class ProviderRegistry:
         try:
             for row in self.store.list_used_models(limit=100):
                 mid = (row.get("model") or "").strip()
-                if mid and mid not in seen:
+                if len(mid) >= 3 and mid not in seen:
                     seen.add(mid)
                     prov = "chatglm" if mid.lower().startswith("glm") else "deepseek"
                     out.append({"id": mid, "object": "model", "owned_by": f"{prov}-web"})
@@ -78,8 +78,9 @@ class ProviderRegistry:
             return self.chatglm
         return self.deepseek
 
-    def pick(self, model: str | None, exclude: set[str] | None = None) -> AccountClient | None:
-        return self.pool_for_model(model).pick(exclude)
+    def pick(self, model: str | None, exclude: set[str] | None = None,
+             allowed: set[str] | None = None) -> AccountClient | None:
+        return self.pool_for_model(model).pick(exclude, allowed=allowed)
 
     def pick_by_id(self, account_id: str) -> AccountClient | None:
         for pool in self._pools.values():
