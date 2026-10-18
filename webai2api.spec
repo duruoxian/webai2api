@@ -10,6 +10,8 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 datas = [
     ("webai2api/web/index.html", "webai2api/web"),
+    ("webai2api/web/app.css", "webai2api/web"),
+    ("webai2api/web/hyalite.js", "webai2api/web"),
 ]
 
 # 若根目录有 wasm，一并打包

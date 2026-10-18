@@ -54,7 +54,12 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
         )
 
     if WEB_DIR.exists():
-        app.mount("/admin/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+        class _NoCacheStatic(StaticFiles):
+            async def get_response(self, path, scope):
+                resp = await super().get_response(path, scope)
+                resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+                return resp
+        app.mount("/admin/static", _NoCacheStatic(directory=str(WEB_DIR)), name="static")
 
     return app
 

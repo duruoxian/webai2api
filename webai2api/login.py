@@ -79,27 +79,54 @@ class LoginManager:
             return
         marker = f"browser_profiles{os.sep}{acc_id}"
         marker_alt = marker.replace("\\", "/")
+        # 1) 杀掉上一次同账号的登录助手进程（<exe> --login <acc_id>）
         try:
             out = subprocess.run(
-                ["wmic", "process", "where", "name='msedgewebview2.exe'",
-                 "get", "ProcessId,CommandLine", "/format:csv"],
-                capture_output=True, text=True, timeout=15,
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-CimInstance Win32_Process -Filter \"Name='webai2api.exe'\" | "
+                 "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=20,
                 encoding="utf-8", errors="ignore",
             ).stdout
+            procs = json.loads(out) if out.strip() else []
+            if isinstance(procs, dict):
+                procs = [procs]
+            for p in procs:
+                cmd = str(p.get("CommandLine") or "")
+                if "--login" in cmd and acc_id in cmd:
+                    pid = p.get("ProcessId")
+                    if pid:
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                                       capture_output=True, timeout=10)
+                        self.logger.info("已清理残留登录进程 pid=%s", pid)
         except Exception:
-            return
-        for line in out.splitlines():
-            if marker not in line and marker_alt not in line:
-                continue
-            parts = [p.strip() for p in line.split(",")]
-            pid = parts[-1] if parts else ""
-            if pid.isdigit():
-                try:
-                    subprocess.run(["taskkill", "/F", "/PID", pid],
-                                   capture_output=True, timeout=10)
-                    self.logger.info("已清理残留浏览器进程 pid=%s", pid)
-                except Exception:
-                    pass
+            pass
+        # 2) 杀掉占用该 profile 的 msedgewebview2 进程
+        try:
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-CimInstance Win32_Process -Filter \"Name='msedgewebview2.exe'\" | "
+                 "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=20,
+                encoding="utf-8", errors="ignore",
+            ).stdout
+            procs = json.loads(out) if out.strip() else []
+            if isinstance(procs, dict):
+                procs = [procs]
+            for p in procs:
+                cmd = str(p.get("CommandLine") or "")
+                if marker not in cmd and marker_alt not in cmd:
+                    continue
+                pid = p.get("ProcessId")
+                if pid:
+                    try:
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                                       capture_output=True, timeout=10)
+                        self.logger.info("已清理残留浏览器进程 pid=%s", pid)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def start(self, acc_id: str) -> dict:
         acc = self.store.get_account(acc_id)

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
+from . import __version__
 from .providers import MAX_LIMITS, ProviderRegistry
 from .store import Store
 
@@ -147,6 +148,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         return {
             "ok": True,
             "range": range,
+            "version": __version__,
             "accounts": _safe_accounts(accounts),
             "login": {a["id"]: login_mgr.state(a["id"]) for a in accounts},
             "keys": await run_in_threadpool(store.list_keys),

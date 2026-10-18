@@ -42,6 +42,8 @@ DEEPSEEK_EXTRACT_JS = r"""
 """
 
 # 智谱清言：refresh_token 在 cookie 里（chatglm_refresh_token）
+# 注意：未登录时站点也会下发一个游客 refresh_token（JWT 里 is_guest=true），
+# 必须忽略，否则会瞬间“登录成功”并关闭窗口。
 CHATGLM_EXTRACT_JS = r"""
 (function(){
   function getCookie(name){
@@ -55,8 +57,19 @@ CHATGLM_EXTRACT_JS = r"""
       if(v){ refresh = JSON.parse(v); if(refresh && refresh.value) refresh = refresh.value; }
     }catch(e){}
   }
+  let guest = false;
+  if(refresh){
+    try{
+      let p = refresh.split('.')[1] || '';
+      p = p.replace(/-/g,'+').replace(/_/g,'/');
+      while(p.length % 4) p += '=';
+      const payload = JSON.parse(atob(p));
+      guest = payload && payload.is_guest === true;
+    }catch(e){}
+  }
   return JSON.stringify({
-    auth_token: refresh||'', device_id: '', settings_token: '', cookie: document.cookie||''
+    auth_token: refresh||'', device_id: '', settings_token: '', cookie: document.cookie||'',
+    guest: guest
   });
 })()
 """
@@ -123,10 +136,17 @@ def run_webview_login(acc_id: str) -> None:
     # 新建账号（还没有凭证）时必须确保是全新会话；
     # 已有凭证的账号允许复用 profile（方便刷新 token）。
     fresh = not (acc.get("auth_token") or "").strip()
+    # 同平台其它账号已用的凭证，抓到就说明是旧会话残留
+    other_tokens = {
+        (a.get("auth_token") or "").strip()
+        for a in store.list_accounts(provider)
+        if a.get("id") != acc_id and (a.get("auth_token") or "").strip()
+    }
 
     def worker() -> None:
         deadline = time.time() + 600
         announced = False
+        guest_noted = False
         while time.time() < deadline and not done["v"]:
             time.sleep(1.5)
             try:
@@ -144,6 +164,30 @@ def run_webview_login(acc_id: str) -> None:
                 continue
             token = (creds.get("auth_token") or "").strip()
             if not token:
+                continue
+            # 智谱未登录时会下发游客 token，不能当作登录成功
+            if creds.get("guest"):
+                if not guest_noted:
+                    guest_noted = True
+                    write_state(acc_id, "waiting", "当前是游客会话，请在页面里扫码 / 手机号登录新账号…")
+                continue
+            # 抓到的凭证如果已经属于别的账号，说明是旧会话残留，清掉重来
+            if token in other_tokens:
+                try:
+                    window.evaluate_js(
+                        "document.cookie.split(';').forEach(c=>{"
+                        "const n=c.split('=')[0].trim();"
+                        "document.cookie=n+'=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';});"
+                        "try{localStorage.clear()}catch(e){}"
+                        "try{sessionStorage.clear()}catch(e){}"
+                        "setTimeout(()=>location.reload(),300);"
+                    )
+                except Exception:
+                    pass
+                if not guest_noted:
+                    guest_noted = True
+                    write_state(acc_id, "waiting", "检测到旧账号会话，已清除，请登录新账号…")
+                time.sleep(1.5)
                 continue
             # 全新账号：如果抓到的还是旧的残留 cookie，先清掉再等用户重新登录
             if fresh and token == (acc.get("auth_token") or ""):
