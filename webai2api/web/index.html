@@ -255,107 +255,80 @@
 
     <div id="tab-settings" class="tabpane">
       <div class="card">
-        <div class="card-head"><h2>DeepSeek（chat.deepseek.com）</h2></div>
-
-        <div class="set-group">
-          <div class="set-group-title">额度</div>
-          <div class="fld-row">
-            <label class="fld"><span>上下文长度（tokens，上限 1,000,000）</span>
-              <input id="setDsContext" inputmode="numeric" placeholder="1000000" max="1000000" data-cap="1000000"></label>
-            <label class="fld"><span>最大输出（tokens，上限 384,000）</span>
-              <input id="setDsOutput" inputmode="numeric" placeholder="384000" max="384000" data-cap="384000"></label>
+        <div class="card-head"><h2>模型设置</h2><div class="sp"></div>
+          <div class="seg seg-sm" id="setProvSeg">
+            <button class="active" data-prov="deepseek" onclick="setSettingsProvider('deepseek')">DeepSeek</button>
+            <button data-prov="glm" onclick="setSettingsProvider('glm')">智谱清言</button>
           </div>
         </div>
 
-        <div class="set-group">
-          <div class="set-group-title">性能</div>
-          <label class="chk"><input type="checkbox" id="setCache"> 启用会话缓存：多轮只发增量，更快、更不易被限流</label>
-          <label class="chk"><input type="checkbox" id="setSearch"> 联网搜索：模型按需检索，不是每次都搜</label>
-        </div>
-
-        <div class="set-group">
-          <div class="set-group-title">风控 / 高级</div>
-          <div class="fld-row">
-            <label class="fld"><span>防风控延迟下限（秒）</span>
-              <input id="setAntiMin" placeholder="1.5"></label>
-            <label class="fld"><span>防风控延迟上限（秒）</span>
-              <input id="setAntiMax" placeholder="3.0"></label>
+        <div id="dsSettings">
+          <div class="set-group">
+            <div class="set-group-title">额度</div>
+            <div class="fld-row">
+              <label class="fld"><span>上下文长度（tokens，上限 1,000,000）</span>
+                <input id="setDsContext" inputmode="numeric" placeholder="1000000" max="1000000" data-cap="1000000"></label>
+              <label class="fld"><span>最大输出（tokens，上限 384,000）</span>
+                <input id="setDsOutput" inputmode="numeric" placeholder="384000" max="384000" data-cap="384000"></label>
+            </div>
           </div>
-          <label class="fld"><span>PoW WASM 文件路径</span>
-            <input id="setWasm" placeholder="./sha3_wasm_bg.wasm"></label>
-        </div>
-
-        <div class="btn-row">
-          <button class="btn" onclick="saveSettings()">保存</button>
-          <button class="btn gray" onclick="resetDeepSeekSettings()">恢复默认</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><h2>智谱清言（chatglm.cn）</h2></div>
-
-        <div class="set-group">
-          <div class="set-group-title">思考强度</div>
-          <span class="hint" style="display:block">
-            在客户端里选（opencode 的推理强度下拉）：<br>
-            low → 快速，medium/high → 深度，max → 极致。
-          </span>
-        </div>
-
-        <div class="set-group">
-          <div class="set-group-title">额度</div>
-          <div class="fld-row">
-            <label class="fld"><span>上下文长度（tokens，上限 1,000,000）</span>
-              <input id="setGlmContext" inputmode="numeric" placeholder="1000000" max="1000000" data-cap="1000000"></label>
-            <label class="fld"><span>最大输出（tokens，上限 128,000）</span>
-              <input id="setGlmOutput" inputmode="numeric" placeholder="128000" max="128000" data-cap="128000"></label>
+          <div class="set-group">
+            <div class="set-group-title">性能</div>
+            <label class="chk"><input type="checkbox" id="setCache"> 启用会话缓存：多轮只发增量，更快、更不易被限流</label>
+            <label class="chk"><input type="checkbox" id="setSearch"> 联网搜索：模型按需检索，不是每次都搜</label>
+          </div>
+          <div class="set-group">
+            <div class="set-group-title">风控 / 高级</div>
+            <div class="fld-row">
+              <label class="fld"><span>防风控延迟下限（秒）</span>
+                <input id="setAntiMin" placeholder="1.5"></label>
+              <label class="fld"><span>防风控延迟上限（秒）</span>
+                <input id="setAntiMax" placeholder="3.0"></label>
+            </div>
+            <label class="fld"><span>PoW WASM 文件路径</span>
+              <input id="setWasm" placeholder="./sha3_wasm_bg.wasm"></label>
+          </div>
+          <div class="btn-row">
+            <button class="btn" onclick="saveDeepSeekSettings()">保存</button>
+            <button class="btn gray" onclick="resetDeepSeekSettings()">恢复默认</button>
           </div>
         </div>
 
-        <div class="set-group">
-          <div class="set-group-title">性能</div>
-          <label class="chk"><input type="checkbox" id="setGlmCache"> 启用会话缓存：多轮复用同一会话，更快、更省</label>
-          <label class="chk"><input type="checkbox" id="setGlmSearch"> 联网搜索：模型按需检索</label>
-          <div class="hint" style="margin-top:10px;line-height:1.9">
-            智谱只有三档思考强度，客户端下拉会自动收敛：<br>
-            <b>Low</b>（或不选）→ 快速&nbsp;·&nbsp;<b>Medium / High</b> → 深度&nbsp;·&nbsp;<b>Max</b> → 极致
+        <div id="glmSettings" style="display:none">
+          <div class="set-group">
+            <div class="set-group-title">额度</div>
+            <div class="fld-row">
+              <label class="fld"><span>上下文长度（tokens，上限 1,000,000）</span>
+                <input id="setGlmContext" inputmode="numeric" placeholder="1000000" max="1000000" data-cap="1000000"></label>
+              <label class="fld"><span>最大输出（tokens，上限 128,000）</span>
+                <input id="setGlmOutput" inputmode="numeric" placeholder="128000" max="128000" data-cap="128000"></label>
+            </div>
           </div>
-        </div>
-
-        <div class="set-group">
-          <div class="set-group-title">风控</div>
-          <div class="fld-row">
-            <label class="fld"><span>防风控延迟下限（秒）</span>
-              <input id="setGlmAntiMin" placeholder="1.5"></label>
-            <label class="fld"><span>防风控延迟上限（秒）</span>
-              <input id="setGlmAntiMax" placeholder="3.0"></label>
+          <div class="set-group">
+            <div class="set-group-title">性能</div>
+            <label class="chk"><input type="checkbox" id="setGlmCache"> 启用会话缓存：多轮复用同一会话，更快、更省</label>
+            <label class="chk"><input type="checkbox" id="setGlmSearch"> 联网搜索：模型按需检索</label>
           </div>
-        </div>
-
-        <div class="btn-row">
-          <button class="btn" onclick="saveGlmSettings()">保存</button>
-          <button class="btn gray" onclick="resetGlmSettings()">恢复默认</button>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>通用 / 数据</h2></div>
-        <label class="fld"><span>用量数据保留天数（0 = 永久保留）</span>
-          <input id="setRetain" placeholder="0" inputmode="numeric">
-          <span class="hint" style="display:block;margin-top:6px">启动时自动清理超过该天数的历史记录，避免数据库无限增长。</span></label>
-        <label class="fld"><span>管理员密码</span>
-          <input id="setPw" type="password" placeholder="留空则不修改"></label>
-        <button class="btn" onclick="saveSettings()">保存</button>
-
-        <div class="set-group" style="margin-top:18px">
-          <div class="set-group-title">系统</div>
-          <label class="chk"><input type="checkbox" id="setTray" onchange="saveTray()"> 显示系统托盘图标（可打开面板 / 退出）</label>
-          <label class="chk"><input type="checkbox" id="setAutostart" onchange="saveAutostart()"> 开机自动启动</label>
-          <div class="fld-row" style="margin-top:10px">
-            <button class="btn gray sm" onclick="doBackup()">立即备份数据库</button>
-            <button class="btn gray sm" onclick="showLogs()">查看日志</button>
-            <button class="btn danger sm" onclick="doShutdown()">退出程序</button>
+          <div class="set-group">
+            <div class="set-group-title">风控</div>
+            <div class="fld-row">
+              <label class="fld"><span>防风控延迟下限（秒）</span>
+                <input id="setGlmAntiMin" placeholder="1.5"></label>
+              <label class="fld"><span>防风控延迟上限（秒）</span>
+                <input id="setGlmAntiMax" placeholder="3.0"></label>
+            </div>
           </div>
-          <span class="hint" style="display:block;margin-top:8px" id="sysHint"></span>
+          <div class="set-group">
+            <div class="set-group-title">思考强度</div>
+            <span class="hint" style="display:block;line-height:1.9">
+              在客户端里选（opencode 的推理强度下拉）：<br>
+              <b>Low</b>（或不选）→ 快速&nbsp;·&nbsp;<b>Medium / High</b> → 深度&nbsp;·&nbsp;<b>Max</b> → 极致
+            </span>
+          </div>
+          <div class="btn-row">
+            <button class="btn" onclick="saveGlmSettings()">保存</button>
+            <button class="btn gray" onclick="resetGlmSettings()">恢复默认</button>
+          </div>
         </div>
       </div>
 
@@ -378,6 +351,28 @@
           <div class="guide-row"><span>请求头</span><code>留空</code></div>
         </div>
         <p class="muted" style="margin:12px 0 0">添加模型时：左边填<b>模型 ID</b>（照上表），右边填<b>显示名称</b>（可自定义）。注意：通过界面添加模型时，客户端只会保存名称，<b>不会自动带上上下文 / 推理 / 图片能力</b>；需要这些能力请用上方「快速接入」里的完整配置片段。GLM 模型需要先在「账号」页登录智谱账号。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>通用 / 数据</h2></div>
+        <label class="fld"><span>用量数据保留天数（0 = 永久保留）</span>
+          <input id="setRetain" placeholder="0" inputmode="numeric">
+          <span class="hint" style="display:block;margin-top:6px">启动时自动清理超过该天数的历史记录，避免数据库无限增长。</span></label>
+        <label class="fld"><span>管理员密码</span>
+          <input id="setPw" type="password" placeholder="留空则不修改"></label>
+        <button class="btn" onclick="saveGeneralSettings()">保存</button>
+
+        <div class="set-group" style="margin-top:18px">
+          <div class="set-group-title">系统</div>
+          <label class="chk"><input type="checkbox" id="setTray" onchange="saveTray()"> 显示系统托盘图标（可打开面板 / 退出）</label>
+          <label class="chk"><input type="checkbox" id="setAutostart" onchange="saveAutostart()"> 开机自动启动</label>
+          <div class="fld-row" style="margin-top:10px">
+            <button class="btn gray sm" onclick="doBackup()">立即备份数据库</button>
+            <button class="btn gray sm" onclick="showLogs()">查看日志</button>
+            <button class="btn danger sm" onclick="doShutdown()">退出程序</button>
+          </div>
+          <span class="hint" style="display:block;margin-top:8px" id="sysHint"></span>
+        </div>
       </div>
 
       <div class="card about">
@@ -1406,19 +1401,30 @@ async function doShutdown(){
   await api('/system/shutdown','POST',{});
   toast('已退出');
 }
-async function saveSettings(){
+let SETTINGS_PROV='deepseek';
+function setSettingsProvider(p){
+  SETTINGS_PROV=p;
+  document.querySelectorAll('#setProvSeg button').forEach(b=>b.classList.toggle('active',b.dataset.prov===p));
+  const ds=document.getElementById('dsSettings'), gl=document.getElementById('glmSettings');
+  if(ds) ds.style.display=p==='deepseek'?'':'none';
+  if(gl) gl.style.display=p==='glm'?'':'none';
+}
+async function saveDeepSeekSettings(){
   const body={deepseek_wasm_path:document.getElementById('setWasm').value.trim(),
-    tray_enabled:document.getElementById('setTray').checked,
     deepseek_session_cache:document.getElementById('setCache').checked,
     deepseek_search:document.getElementById('setSearch').checked,
     deepseek_anti_min:document.getElementById('setAntiMin').value.trim(),
     deepseek_anti_max:document.getElementById('setAntiMax').value.trim(),
     deepseek_context_limit:document.getElementById('setDsContext').value.trim()||'1000000',
-    deepseek_output_limit:document.getElementById('setDsOutput').value.trim()||'384000',
+    deepseek_output_limit:document.getElementById('setDsOutput').value.trim()||'384000'};
+  await api('/settings','POST',body);toast('DeepSeek 设置已保存');refresh();
+}
+async function saveGeneralSettings(){
+  const body={tray_enabled:document.getElementById('setTray').checked,
     usage_retain_days:(document.getElementById('setRetain').value||'0').trim()};
   const pw=document.getElementById('setPw').value.trim();
   if(pw)body.admin_password=pw;
-  await api('/settings','POST',body);toast('已保存并应用');refresh();
+  await api('/settings','POST',body);toast('已保存');refresh();
 }
 function clampLimit(el){
   const cap=Number(el.dataset.cap||0);
