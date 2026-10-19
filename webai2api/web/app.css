@@ -507,7 +507,7 @@ html[data-theme=dark] .dp{border-color:rgba(255,255,255,.10);box-shadow:var(--hy
 
 /* 弹窗：遮罩不加模糊（全屏 backdrop-filter 是点「添加账号」卡顿的元凶） */
 .modal-bg{
-  position:fixed;inset:0;z-index:100;
+  position:fixed;inset:0;z-index:100;overflow:hidden;
   background:rgba(14,18,26,.34);
   display:none;align-items:center;justify-content:center;padding:24px;
   opacity:0;transition:opacity .18s ease;
@@ -722,4 +722,4 @@ html[data-theme=dark] .notice{background:linear-gradient(165deg,rgba(255,255,255
 
 /* 下拉菜单内部滚动时不要带动页面 */
 .sel-menu,.pick-list,.tbl-scroll,.modal,.modal-bg{overscroll-behavior:contain}
-body.modal-open{overscroll-behavior:none}
+html.modal-open,html.modal-open body{overflow:hidden;overscroll-behavior:none}

@@ -1163,10 +1163,14 @@ function onProviderChange(){
 }
 function closeModal(id){
   document.getElementById(id).classList.remove('show');
-  if(!document.querySelector('.modal-bg.show')) document.body.classList.remove('modal-open');
+  if(!document.querySelector('.modal-bg.show')){
+    document.body.classList.remove('modal-open');
+    document.documentElement.classList.remove('modal-open');
+  }
 }
 function openModal(id){
   document.body.classList.add('modal-open');
+  document.documentElement.classList.add('modal-open');
   document.getElementById(id).classList.add('show');
 }
 
