@@ -520,13 +520,13 @@ html[data-theme=dark] .modal-bg{background:rgba(0,0,0,.55)}
   -webkit-backdrop-filter:blur(40px) saturate(180%);
   border:1px solid rgba(255,255,255,.6);
   border-radius:24px;padding:26px 28px 22px;max-width:520px;width:100%;
-  max-height:88vh;overflow:auto;
+  max-height:88vh;overflow:auto;overscroll-behavior:contain;
   box-shadow:var(--shadow-lg);
   transform:translateY(10px);
   transition:transform .2s cubic-bezier(.32,.72,0,1);
   position:relative;isolation:isolate;
 }
-.modal.modal-flex{overflow:hidden;display:flex;flex-direction:column}
+.modal.modal-flex{overflow:hidden;display:flex;flex-direction:column;overscroll-behavior:contain}
 .modal-body{
   flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;
   margin:0;padding:4px 10px 6px 0;
@@ -721,4 +721,5 @@ html[data-theme=dark] .notice{background:linear-gradient(165deg,rgba(255,255,255
 .sel-sm .sel-menu{min-width:180px}
 
 /* 下拉菜单内部滚动时不要带动页面 */
-.sel-menu,.pick-list,.tbl-scroll{overscroll-behavior:contain}
+.sel-menu,.pick-list,.tbl-scroll,.modal,.modal-bg{overscroll-behavior:contain}
+body.modal-open{overscroll-behavior:none}
