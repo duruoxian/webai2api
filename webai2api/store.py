@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     cookie       TEXT NOT NULL DEFAULT '',
     enabled      INTEGER NOT NULL DEFAULT 1,
     note         TEXT NOT NULL DEFAULT '',
+    profile      TEXT NOT NULL DEFAULT '{}',
+    health       TEXT NOT NULL DEFAULT '',
+    checked_at   REAL NOT NULL DEFAULT 0,
     created_at   REAL NOT NULL,
     updated_at   REAL NOT NULL
 );
@@ -97,6 +100,13 @@ class Store:
                 c.execute("ALTER TABLE api_keys ADD COLUMN accounts TEXT NOT NULL DEFAULT '[]'")
             if "models" not in cols:
                 c.execute("ALTER TABLE api_keys ADD COLUMN models TEXT NOT NULL DEFAULT '[]'")
+            acols = {r["name"] for r in c.execute("PRAGMA table_info(accounts)")}
+            if "profile" not in acols:
+                c.execute("ALTER TABLE accounts ADD COLUMN profile TEXT NOT NULL DEFAULT '{}'")
+            if "health" not in acols:
+                c.execute("ALTER TABLE accounts ADD COLUMN health TEXT NOT NULL DEFAULT ''")
+            if "checked_at" not in acols:
+                c.execute("ALTER TABLE accounts ADD COLUMN checked_at REAL NOT NULL DEFAULT 0")
             # WAL：读写并发更稳，长期跑不容易被锁住
             try:
                 c.execute("PRAGMA journal_mode=WAL")
@@ -120,6 +130,41 @@ class Store:
         """整理数据库文件（清理后调用可回收空间）。"""
         with self._conn() as c:
             c.execute("VACUUM")
+
+    def checkpoint(self) -> None:
+        """把 WAL 落盘，避免异常退出时数据只存在于 -wal 里。"""
+        with self._conn() as c:
+            c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def backup_to(self, dest: Path) -> None:
+        """用 SQLite 在线备份 API 导出一致性快照（含 WAL 内容）。"""
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        src = sqlite3.connect(self.db_path, timeout=15)
+        try:
+            dst = sqlite3.connect(dest)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+
+    def auto_backup(self, keep: int = 7) -> Path | None:
+        """每天自动备份一次，保留最近 keep 份。"""
+        import datetime as _dt
+        bdir = self.db_path.parent / "backups"
+        bdir.mkdir(parents=True, exist_ok=True)
+        stamp = _dt.datetime.now().strftime("%Y%m%d")
+        dest = bdir / f"webai2api-{stamp}.db"
+        if not dest.exists():
+            self.backup_to(dest)
+        files = sorted(bdir.glob("webai2api-*.db"))
+        for old in files[:-max(1, int(keep))]:
+            try:
+                old.unlink()
+            except Exception:
+                pass
+        return dest if dest.exists() else None
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -185,10 +230,25 @@ class Store:
         with self._conn() as c:
             c.execute("DELETE FROM accounts WHERE id=?", (account_id,))
 
+    def set_account_health(self, account_id: str, health: str,
+                           profile: dict | None = None,
+                           auth_token: str | None = None) -> None:
+        sets = ["health=?", "checked_at=?"]
+        vals: list[Any] = [health, _now()]
+        if profile is not None:
+            sets.append("profile=?")
+            vals.append(json.dumps(profile, ensure_ascii=False))
+        if auth_token:
+            sets.append("auth_token=?")
+            vals.append(auth_token)
+        vals.append(account_id)
+        with self._conn() as c:
+            c.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)
+
     # ── API Key ───────────────────────────────────────
     def list_keys(self) -> list[dict]:
         with self._conn() as c:
-            rows = c.execute("SELECT * FROM api_keys ORDER BY created_at").fetchall()
+            rows = c.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
         out = []
         for r in rows:
             d = dict(r)

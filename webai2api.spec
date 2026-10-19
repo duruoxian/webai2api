@@ -36,6 +36,18 @@ datas += wt_datas
 # deepseek_pow 内置 wasm
 datas += collect_data_files("deepseek_pow")
 
+# pystray / pillow（系统托盘）在下方 hiddenimports 汇总后处理
+_tray_datas, _tray_bins, _tray_hidden = [], [], []
+for pkg in ("pystray", "PIL"):
+    try:
+        d, b, h = collect_all(pkg)
+        _tray_datas += d
+        _tray_bins += b
+        _tray_hidden += h
+    except Exception:
+        pass
+datas += _tray_datas
+
 # pywebview 原生窗口（Windows 走 WebView2 + pythonnet）
 wv_datas, wv_bins, wv_hidden = collect_all("webview")
 datas += wv_datas
@@ -52,17 +64,17 @@ hiddenimports = [
     "webview.platforms.edgechromium",
     "clr_loader",
     "pythonnet",
-] + wt_hidden + wv_hidden
+] + wt_hidden + wv_hidden + _tray_hidden
 
 a = Analysis(
     ["run.py"],
     pathex=[],
-    binaries=wt_bins,
+    binaries=wt_bins + _tray_bins,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "matplotlib", "numpy", "PIL", "pandas", "playwright"],
+    excludes=["tkinter", "matplotlib", "numpy", "pandas", "playwright"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

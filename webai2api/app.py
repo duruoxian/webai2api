@@ -8,14 +8,17 @@
 from __future__ import annotations
 
 import logging
+import time
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .admin_api import create_admin_router
 from .gateway import create_gateway_router
+from .health import HealthMonitor
 from .login import LoginManager
 from .paths import default_wasm_path, resource_path, user_data_dir
 from .providers import ProviderRegistry
@@ -29,9 +32,45 @@ if not WEB_DIR.exists():
 def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) -> FastAPI:
     app = FastAPI(title="webai2api", version=__version__)
     login_mgr = LoginManager(store, registry, logger)
+    recent_errors: list[dict] = []
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception):
+        logger.error("未处理异常 %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+        recent_errors.append({
+            "ts": time.time(),
+            "method": request.method,
+            "path": request.url.path,
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+        del recent_errors[:-20]
+        return JSONResponse(
+            status_code=500,
+            content={"error": {
+                "message": f"服务内部错误：{type(exc).__name__}: {exc}",
+                "type": "internal_error",
+                "code": "internal_error",
+            }},
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error(request: Request, exc: StarletteHTTPException):
+        if request.url.path.startswith("/admin/api"):
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"ok": False, "error": str(exc.detail)},
+            )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"message": str(exc.detail), "type": "http_error"}},
+        )
+
+    app.state.recent_errors = recent_errors
 
     app.include_router(create_gateway_router(store, registry, logger))
     app.include_router(create_admin_router(store, registry, login_mgr, logger))
+    from .system_api import create_system_router
+    app.include_router(create_system_router(store, logger))
 
     @app.get("/health")
     async def health():
@@ -88,4 +127,12 @@ def create_default_app() -> FastAPI:
         logger.warning("用量清理失败: %s", exc)
 
     logger.info("webai2api %s 初始化完成，数据库: %s", __version__, store.db_path)
-    return build_app(store, registry, logger)
+
+    app = build_app(store, registry, logger)
+    try:
+        monitor = HealthMonitor(store, logger)
+        monitor.start()
+        app.state.health_monitor = monitor
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("健康检查启动失败: %s", exc)
+    return app

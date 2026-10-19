@@ -65,6 +65,9 @@ class _TokenStore:
         self._fails.clear()
 
 
+_TOKENS = _TokenStore()
+
+
 def _range_window(range_key: str, start: str = "", end: str = "") -> tuple[float | None, float | None]:
     """把面板选择的时间范围换算成 (起始, 结束) 时间戳（本地时区）。"""
     import datetime as _dt
@@ -101,7 +104,7 @@ def _range_window(range_key: str, start: str = "", end: str = "") -> tuple[float
 
 
 def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, logger: Logger) -> APIRouter:
-    toks = _TokenStore()
+    toks = _TOKENS
 
     def _guard(request: Request):
         if not toks.valid(request.headers.get("x-admin-token", "")):
@@ -144,7 +147,8 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             toks.note_fail()
             return {"ok": False, "error": "密码错误"}
         toks.note_ok()
-        return {"ok": True, "token": toks.issue()}
+        return {"ok": True, "token": toks.issue(),
+                "default_password": hmac.compare_digest(expect, "admin")}
 
     @router.post("/logout")
     async def logout(request: Request):
@@ -188,6 +192,8 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                     store.get_setting, "deepseek_session_cache", "true"),
                 "deepseek_default_model": await run_in_threadpool(
                     store.get_setting, "deepseek_default_model", "deepseek-chat"),
+                "tray_enabled": await run_in_threadpool(
+                    store.get_setting, "tray_enabled", "true"),
                 "deepseek_search": await run_in_threadpool(
                     store.get_setting, "deepseek_search", "false"),
                 "deepseek_anti_min": await run_in_threadpool(
@@ -256,11 +262,45 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         fields = {k: b[k] for k in
                   ("name", "auth_token", "device_id", "settings_token",
                    "cookie", "enabled", "note") if k in b}
+        # 凭证有变化 → 重新检查
+        if any(k in fields for k in ("auth_token", "device_id", "settings_token", "cookie")):
+            fields["health"] = ""
+            fields["checked_at"] = 0.0
         if "enabled" in fields:
             fields["enabled"] = 1 if fields["enabled"] else 0
         await run_in_threadpool(store.update_account, account_id, **fields)
         registry.refresh()
         return {"ok": True}
+
+    @router.post("/accounts/{account_id}/check")
+    async def check_account(account_id: str, request: Request):
+        g = _guard(request)
+        if g:
+            return g
+        from .health import check_account as _check
+
+        acc = await run_in_threadpool(store.get_account, account_id)
+        if not acc:
+            return {"ok": False, "error": "账号不存在"}
+        try:
+            status, profile, new_token = await run_in_threadpool(_check, acc)
+            await run_in_threadpool(
+                store.set_account_health, account_id, status, profile, new_token or None)
+            return {"ok": True, "status": status, "profile": profile}
+        except Exception as exc:  # noqa: BLE001
+            await run_in_threadpool(store.set_account_health, account_id, "expired")
+            return {"ok": False, "error": str(exc)[:300]}
+
+    @router.post("/accounts/check-all")
+    async def check_all_accounts(request: Request):
+        g = _guard(request)
+        if g:
+            return g
+        monitor = getattr(request.app.state, "health_monitor", None)
+        if monitor is None:
+            return {"ok": False, "error": "健康检查未启动"}
+        results = await run_in_threadpool(monitor.check_all)
+        return {"ok": True, "results": results}
 
     @router.delete("/accounts/{account_id}")
     async def delete_account(account_id: str, request: Request):
@@ -390,6 +430,10 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             v = b["glm_session_cache"]
             s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
             await run_in_threadpool(store.set_setting, "glm_session_cache", s)
+        if "tray_enabled" in b:
+            v = b["tray_enabled"]
+            s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+            await run_in_threadpool(store.set_setting, "tray_enabled", s)
         try:
             registry.refresh()
         except Exception:
@@ -401,6 +445,12 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
 
 def _safe_account(a: dict) -> dict:
     """返回账号（凭证脱敏）。"""
+    import json as _json
+
+    try:
+        profile = _json.loads(a.get("profile") or "{}")
+    except Exception:
+        profile = {}
     return {
         "id": a["id"], "provider": a["provider"], "name": a["name"],
         "enabled": a["enabled"], "note": a["note"],
@@ -408,6 +458,9 @@ def _safe_account(a: dict) -> dict:
         "has_device": bool(a.get("device_id")),
         "has_settings": bool(a.get("settings_token")),
         "has_cookie": bool(a.get("cookie")),
+        "health": a.get("health", ""),
+        "checked_at": a.get("checked_at", 0),
+        "profile": profile,
         "created_at": a["created_at"], "updated_at": a["updated_at"],
     }
 

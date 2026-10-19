@@ -38,6 +38,7 @@ class ProviderRegistry:
     def __init__(self, store: Store, logger: Logger) -> None:
         self.store = store
         self.logger = logger
+        self._auth_fails: dict[str, int] = {}
         self.deepseek = build_deepseek_pool(store, logger)
         self.chatglm = build_chatglm_pool(store, logger)
         self._pools: dict[str, GenericClientPool] = {
@@ -81,6 +82,23 @@ class ProviderRegistry:
     def pick(self, model: str | None, exclude: set[str] | None = None,
              allowed: set[str] | None = None) -> AccountClient | None:
         return self.pool_for_model(model).pick(exclude, allowed=allowed)
+
+    def note_auth_failure(self, account_id: str) -> bool:
+        """连续两次鉴权失败 → 自动停用账号，避免继续浪费请求。"""
+        fails = self._auth_fails.get(account_id, 0) + 1
+        self._auth_fails[account_id] = fails
+        if fails >= 2:
+            try:
+                self.store.update_account(account_id, enabled=0, health="expired")
+            except Exception:
+                pass
+            self.logger.warning("账号 %s 连续鉴权失败，已自动停用", account_id)
+            self.refresh()
+            return True
+        return False
+
+    def note_auth_ok(self, account_id: str) -> None:
+        self._auth_fails.pop(account_id, None)
 
     def pick_by_id(self, account_id: str) -> AccountClient | None:
         for pool in self._pools.values():

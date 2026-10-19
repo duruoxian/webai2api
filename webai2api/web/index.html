@@ -196,7 +196,7 @@
         </div>
         <p class="card-sub">把 Key 发给朋友，填进 opencode 等客户端即可。接口地址：<b id="baseHint">http://127.0.0.1:8800/v1</b></p>
         <div class="tbl-scroll tall">
-          <table id="keyTable"><thead><tr><th>名称</th><th>Key</th><th>状态</th><th>最近使用</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
+          <table id="keyTable"><thead><tr><th>名称</th><th>创建时间</th><th>状态</th><th>最近使用</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
         </div>
       </div>
       <div class="card">
@@ -345,6 +345,18 @@
         <label class="fld"><span>管理员密码</span>
           <input id="setPw" type="password" placeholder="留空则不修改"></label>
         <button class="btn" onclick="saveSettings()">保存</button>
+
+        <div class="set-group" style="margin-top:18px">
+          <div class="set-group-title">系统</div>
+          <label class="chk"><input type="checkbox" id="setTray" onchange="saveTray()"> 显示系统托盘图标（可打开面板 / 退出）</label>
+          <label class="chk"><input type="checkbox" id="setAutostart" onchange="saveAutostart()"> 开机自动启动</label>
+          <div class="fld-row" style="margin-top:10px">
+            <button class="btn gray sm" onclick="doBackup()">立即备份数据库</button>
+            <button class="btn gray sm" onclick="showLogs()">查看日志</button>
+            <button class="btn danger sm" onclick="doShutdown()">退出程序</button>
+          </div>
+          <span class="hint" style="display:block;margin-top:8px" id="sysHint"></span>
+        </div>
       </div>
 
       <div class="card">
@@ -458,6 +470,24 @@
   </div>
 </div>
 
+<div id="keyViewModal" class="modal-bg">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>API Key</h2>
+      <div class="sp"></div>
+      <button class="modal-x" onclick="closeModal('keyViewModal')" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub" id="keyViewMeta"></p>
+    <div class="copy" id="keyViewValue" style="word-break:break-all"></div>
+    <div class="modal-foot">
+      <button class="btn gray" onclick="closeModal('keyViewModal')">关闭</button>
+      <button class="btn" onclick="copyText(document.getElementById('keyViewValue').textContent)">复制 Key</button>
+    </div>
+  </div>
+</div>
+
 <div id="keyEditModal" class="modal-bg">
   <div class="modal">
     <div class="modal-head">
@@ -476,6 +506,21 @@
     <div class="modal-foot">
       <button class="btn gray" onclick="closeModal('keyEditModal')">取消</button>
       <button class="btn" onclick="saveKeyEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="logModal" class="modal-bg">
+  <div class="modal modal-flex" style="max-width:760px">
+    <div class="modal-head">
+      <h2>运行日志</h2>
+      <div class="sp"></div>
+      <button class="modal-x" onclick="closeModal('logModal')" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <pre id="logText" style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;font-family:Consolas,monospace;background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:14px"></pre>
     </div>
   </div>
 </div>
@@ -529,7 +574,9 @@ async function doLogin(){
   const pw=document.getElementById('loginPw').value;
   const r=await fetch('/admin/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
   const j=await r.json();
-  if(j.ok){TOKEN=j.token;localStorage.setItem('wapi_token',TOKEN);showMain();refresh();toast('已登录');}
+  if(j.ok){TOKEN=j.token;localStorage.setItem('wapi_token',TOKEN);showMain();refresh();
+    if(j.default_password) setTimeout(()=>toast('当前仍是默认密码 admin，建议到「设置」里修改'),1500);
+    else toast('已登录');}
   else toast(j.error||'登录失败');
 }
 async function logout(){try{await api('/logout','POST')}catch(e){}TOKEN='';localStorage.removeItem('wapi_token');showLogin();}
@@ -722,6 +769,7 @@ async function refresh(){
     `Key <b>${s.keys.length}</b>`;
   renderOverview(s);renderAccounts(s);renderKeys(s);renderUsage(s);renderSettings(s);
   bindLimitInputs();
+  loadSystem();
   if(window.__setLimits) window.__setLimits(s.settings||{});
   try{
     const key=(s.keys||[]).find(k=>k.enabled);
@@ -950,17 +998,25 @@ function renderAccounts(s){
   s.accounts.forEach(a=>{
     const cred=[a.has_token&&'token',a.has_device&&'device',a.has_settings&&'settings',a.has_cookie&&'cookie']
       .filter(Boolean).join(' · ')||'未填写';
+    const pr=a.profile||{};
+    const who=pr.email||pr.phone||pr.nickname||'';
+    let healthBadge='';
+    if(a.health==='ok') healthBadge='<span class="tag on">正常</span>';
+    else if(a.health==='expired') healthBadge='<span class="tag err">凭证失效</span>';
+    else if(a.health==='error') healthBadge='<span class="tag err">检查失败</span>';
+    else healthBadge='<span class="tag off">未检查</span>';
     const lg = (s.login&&s.login[a.id])||{};
     let loginBadge='';
     if(lg.status==='opening') loginBadge='<span class="tag off">正在打开…</span>';
     else if(lg.status==='waiting') loginBadge='<span class="tag off">等待登录…</span>';
     else if(lg.status==='success') loginBadge='<span class="tag on">登录成功</span>';
     else if(lg.status==='error') loginBadge='<span class="tag err">'+esc(lg.message||'失败')+'</span>';
-    tb.innerHTML+=`<tr><td><b>${esc(a.name)}</b></td><td class="muted">${esc(a.provider)}</td>
-      <td class="muted mono">${cred} ${loginBadge}</td>
+    tb.innerHTML+=`<tr><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
+      <td class="muted mono">${cred} ${loginBadge} ${healthBadge}</td>
       <td><span class="tag ${a.enabled?'on':'off'}">${a.enabled?'启用':'停用'}</span></td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn sm" onclick="browserLogin('${a.id}')">浏览器登录</button>
+        <button class="btn gray sm" onclick="checkAcc('${a.id}')">检查</button>
         <button class="btn gray sm" onclick="toggleAcc('${a.id}',${a.enabled?0:1})">${a.enabled?'停用':'启用'}</button>
         <button class="btn gray sm" onclick='editAcc(${JSON.stringify(a).replace(/'/g,"&#39;")})'>编辑</button>
         <button class="btn danger sm" onclick="delAcc('${a.id}')">删除</button></td></tr>`;});
@@ -978,13 +1034,13 @@ function renderKeys(s){
     const scope=`<div class="muted" style="font-size:12px;margin-top:3px">${
       accN?('账号 '+accN+' 个'):'全部账号'} · ${modN?('模型 '+modN+' 个'):'全部模型'}</div>`;
     tb.innerHTML+=`<tr><td><b>${esc(k.name)}</b>${scope}</td>
-      <td class="mono" style="color:var(--text2)">${esc(k.key)}</td>
+      <td class="muted">${fmtTime(k.created_at)}</td>
       <td><span class="tag ${k.enabled?'on':'off'}">${k.enabled?'启用':'停用'}</span></td>
       <td class="muted">${fmtTime(k.last_used_at)}</td>
       <td style="text-align:right;white-space:nowrap">
+        <button class="btn sm" onclick="openKeyView('${k.id}')">查看</button>
         <button class="btn gray sm" onclick="openKeyEdit('${k.id}')">编辑</button>
         <button class="btn gray sm" onclick="toggleKey('${k.id}',${k.enabled?0:1})">${k.enabled?'停用':'启用'}</button>
-        <button class="btn gray sm" onclick="copyText('${esc(k.key)}')">复制</button>
         <button class="btn danger sm" onclick="delKey('${k.id}')">删除</button></td></tr>`;});
   if(!s.keys.length)tb.innerHTML=empty('还没有 Key，点右上角生成');
 }
@@ -1078,6 +1134,8 @@ function renderSettings(s){
   if(av) av.textContent=s.version?('v'+s.version):'—';
   const gb=document.getElementById('guideBase');
   if(gb) gb.textContent=location.origin+'/v1';
+  const tr=document.getElementById('setTray');
+  if(tr) tr.checked=(s.settings.tray_enabled||'true')!=='false';
   document.getElementById('setWasm').value=s.settings.deepseek_wasm_path||'';
   document.getElementById('setCache').checked=(s.settings.deepseek_session_cache||'true')!=='false';
   const se=document.getElementById('setSearch'); if(se) se.checked=(s.settings.deepseek_search||'false')==='true';
@@ -1247,6 +1305,12 @@ async function saveAccount(){
   closeModal('accModal');refresh();toast('已保存');
 }
 async function toggleAcc(id,en){await api('/accounts/'+id,'PUT',{enabled:en});refresh();}
+async function checkAcc(id){
+  toast('正在检查账号…');
+  const j=await api('/accounts/'+id+'/check','POST',{});
+  if(j&&j.ok){toast('账号正常');refresh();}
+  else toast((j&&j.error)||'凭证已失效，请重新登录');
+}
 async function delAcc(id){if(confirm('确定删除该账号？')){await api('/accounts/'+id,'DELETE');refresh();toast('已删除');}}
 function openKeyModal(){document.getElementById('keyName').value='';
   document.getElementById('keyResult').style.display='none';openModal('keyModal');
@@ -1260,6 +1324,14 @@ async function createKey(){
 async function toggleKey(id,en){await api('/keys/'+id,'PUT',{enabled:en});refresh();}
 let EDIT_KEY_ID='';
 let EDIT_KEY_MODELS=[];
+function openKeyView(id){
+  const s=LAST_STATE; if(!s) return;
+  const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
+  document.getElementById('keyViewMeta').textContent =
+    `${k.name} · 创建于 ${fmtTime(k.created_at)}`;
+  document.getElementById('keyViewValue').textContent = k.key;
+  openModal('keyViewModal');
+}
 function openKeyEdit(id){
   const s=LAST_STATE; if(!s) return;
   const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
@@ -1297,8 +1369,46 @@ async function saveKeyEdit(){
   else toast(j.error||'保存失败');
 }
 async function delKey(id){if(confirm('确定删除该 Key？')){await api('/keys/'+id,'DELETE');refresh();toast('已删除');}}
+async function saveTray(){
+  const on=document.getElementById('setTray').checked;
+  await api('/settings','POST',{tray_enabled:on?'true':'false'});
+  toast(on?'已开启托盘（重启后生效）':'已关闭托盘（重启后生效）');
+}
+async function loadSystem(){
+  try{
+    const j=await api('/system');
+    if(!j||!j.ok) return;
+    const a=document.getElementById('setAutostart'); if(a) a.checked=!!j.autostart;
+    const tr=document.getElementById('setTray');
+    if(tr && LAST_STATE) tr.checked=(LAST_STATE.settings.tray_enabled||'true')!=='false';
+    const h=document.getElementById('sysHint');
+    if(h) h.textContent='数据目录：'+j.data_dir+(j.backups&&j.backups.length?(' · 最近备份：'+j.backups[0].name):'');
+  }catch(e){}
+}
+async function saveAutostart(){
+  const on=document.getElementById('setAutostart').checked;
+  const j=await api('/system/autostart','POST',{enabled:on});
+  toast(j&&j.autostart?'已设置开机启动':'已取消开机启动');
+}
+async function doBackup(){
+  const j=await api('/system/backup','POST',{});
+  toast(j&&j.ok?('已备份：'+j.file):'备份失败');
+  loadSystem();
+}
+async function showLogs(){
+  const j=await api('/system/logs?lines=300');
+  const el=document.getElementById('logText');
+  el.textContent=(j&&j.lines&&j.lines.length)?j.lines.join('\n'):'暂无日志';
+  openModal('logModal');
+}
+async function doShutdown(){
+  if(!confirm('确定退出 webai2api？退出后接口将不可用。')) return;
+  await api('/system/shutdown','POST',{});
+  toast('已退出');
+}
 async function saveSettings(){
   const body={deepseek_wasm_path:document.getElementById('setWasm').value.trim(),
+    tray_enabled:document.getElementById('setTray').checked,
     deepseek_session_cache:document.getElementById('setCache').checked,
     deepseek_search:document.getElementById('setSearch').checked,
     deepseek_anti_min:document.getElementById('setAntiMin').value.trim(),

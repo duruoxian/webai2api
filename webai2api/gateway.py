@@ -203,6 +203,7 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                 try:
                     resp = await run_in_threadpool(ac.client.chat_completion, payload)
                     ac.mark_ok()
+                    registry.note_auth_ok(ac.account["id"])
                     break
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
@@ -210,6 +211,11 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                         "非流式请求失败(账号 %s, 第%d次): %s",
                         ac.account["name"], attempt + 1, exc,
                     )
+                    low = str(exc).lower()
+                    if any(w in low for w in ("401", "unauthorized", "token", "凭证", "登录")):
+                        registry.note_auth_failure(ac.account["id"])
+                    else:
+                        registry.note_auth_ok(ac.account["id"])
                     if want_acc:
                         break
                     # 先尝试换一个「没试过」的账号；没有别的账号时，

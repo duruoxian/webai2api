@@ -18,6 +18,17 @@ DEFAULT_PORT = int(os.environ.get("WEBAI2API_PORT", "8800"))
 WINDOW_TITLE = "webai2api 控制台"
 
 
+def _graceful_exit() -> None:
+    """退出前把 WAL 落盘，再结束进程。"""
+    try:
+        from webai2api.paths import user_data_dir
+        from webai2api.store import Store
+        Store(user_data_dir() / "webai2api.db").checkpoint()
+    except Exception:
+        pass
+    os._exit(0)
+
+
 def _find_free_port(preferred: int) -> int:
     """优先用 preferred，被占用则往上找一个空闲端口。"""
     for port in [preferred] + list(range(preferred + 1, preferred + 20)):
@@ -162,11 +173,47 @@ def main() -> None:
         return
 
     logger = logging.getLogger("webai2api")
+
+    # 单实例锁：同一个 data 目录只允许一个进程写库
+    data_dir = os.path.join(log_dir, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    lock_path = os.path.join(data_dir, "webai2api.lock")
+    lock_file = open(lock_path, "a+", encoding="utf-8")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        logger.warning("检测到已有实例在运行，本进程退出")
+        try:
+            import ctypes
+            # 5 秒自动消失，避免阻塞第二个进程
+            ctypes.windll.user32.MessageBoxTimeoutW(
+                0, "webai2api 已经在运行了。\n请从任务栏/托盘打开，或先退出旧实例。",
+                "webai2api", 0x40, 0, 5000,
+            )
+        except Exception:
+            pass
+        return
+
     port = _find_free_port(DEFAULT_PORT)
     logger.info("启动 webai2api (frozen=%s) 端口=%s", getattr(sys, "frozen", False), port)
 
     from webai2api.app import create_default_app
     app = create_default_app()
+
+    # 每日自动备份 + 启动时 WAL checkpoint
+    try:
+        from webai2api.store import Store
+        from webai2api.paths import user_data_dir
+        _st = Store(user_data_dir() / "webai2api.db")
+        _st.checkpoint()
+        _st.auto_backup()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("启动备份失败: %s", exc)
 
     base_url = f"http://{HOST}:{port}/v1"
     admin_url = f"http://{HOST}:{port}/admin"
@@ -200,6 +247,13 @@ def main() -> None:
         logger.error("服务在超时时间内未就绪")
 
     # 主线程打开原生窗口
+    # 托盘（可选，设置里开关）
+    try:
+        from webai2api.tray import start_tray
+        start_tray(admin_url, logger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("托盘启动失败: %s", exc)
+
     try:
         import webview
 
@@ -213,7 +267,7 @@ def main() -> None:
         icon = resource_path("assets", "webai2api.ico")
         webview.start(icon=str(icon) if icon.exists() else None)
         logger.info("窗口已关闭，退出")
-        os._exit(0)
+        _graceful_exit()
     except Exception as exc:  # noqa: BLE001
         logger.error("原生窗口启动失败，回退浏览器: %s", exc, exc_info=True)
 
