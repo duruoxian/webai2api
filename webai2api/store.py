@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
     owner        TEXT NOT NULL DEFAULT '',
     note         TEXT NOT NULL DEFAULT '',
     expires_at   REAL NOT NULL DEFAULT 0,
+    quota_daily  INTEGER NOT NULL DEFAULT 0,
+    quota_monthly INTEGER NOT NULL DEFAULT 0,
     created_at   REAL NOT NULL,
     last_used_at REAL
 );
@@ -108,7 +110,9 @@ class Store:
                 c.execute("ALTER TABLE api_keys ADD COLUMN models TEXT NOT NULL DEFAULT '[]'")
             for col, ddl in (("owner", "TEXT NOT NULL DEFAULT ''"),
                              ("note", "TEXT NOT NULL DEFAULT ''"),
-                             ("expires_at", "REAL NOT NULL DEFAULT 0")):
+                             ("expires_at", "REAL NOT NULL DEFAULT 0"),
+                             ("quota_daily", "INTEGER NOT NULL DEFAULT 0"),
+                             ("quota_monthly", "INTEGER NOT NULL DEFAULT 0")):
                 if col not in cols:
                     c.execute(f"ALTER TABLE api_keys ADD COLUMN {col} {ddl}")
             ucols = {r["name"] for r in c.execute("PRAGMA table_info(usage_log)")}
@@ -304,7 +308,9 @@ class Store:
                    models: list[str] | None = None,
                    owner: str | None = None,
                    note: str | None = None,
-                   expires_at: float | None = None) -> None:
+                   expires_at: float | None = None,
+                   quota_daily: int | None = None,
+                   quota_monthly: int | None = None) -> None:
         sets, vals = [], []
         if name is not None:
             sets.append("name=?")
@@ -324,6 +330,12 @@ class Store:
         if expires_at is not None:
             sets.append("expires_at=?")
             vals.append(float(expires_at))
+        if quota_daily is not None:
+            sets.append("quota_daily=?")
+            vals.append(max(0, int(quota_daily)))
+        if quota_monthly is not None:
+            sets.append("quota_monthly=?")
+            vals.append(max(0, int(quota_monthly)))
         if not sets:
             return
         vals.append(key_id)
@@ -508,6 +520,39 @@ class Store:
         with self._conn() as c:
             row = c.execute("SELECT COUNT(*) n FROM usage_log" + where, tuple(args)).fetchone()
         return int(row["n"]) if row else 0
+
+    def key_usage_map(self) -> dict[str, dict]:
+        """每个 Key 今日/本月 Token 用量（额度看板用）。"""
+        import datetime as _dt
+        now = _dt.datetime.now()
+        today0 = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        month0 = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT api_key_id, "
+                "SUM(CASE WHEN ts>=? THEN total_tokens ELSE 0 END) today, "
+                "SUM(CASE WHEN ts>=? THEN total_tokens ELSE 0 END) month "
+                "FROM usage_log WHERE api_key_id IS NOT NULL GROUP BY api_key_id",
+                (today0, month0),
+            ).fetchall()
+        return {r["api_key_id"]: {"today": int(r["today"] or 0),
+                                  "month": int(r["month"] or 0)} for r in rows}
+
+    def key_quota_status(self, key_id: str) -> tuple[int, int]:
+        """返回 (今日已用, 本月已用) tokens。"""
+        import datetime as _dt
+        now = _dt.datetime.now()
+        today0 = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        month0 = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT "
+                "COALESCE(SUM(CASE WHEN ts>=? THEN total_tokens ELSE 0 END),0) today, "
+                "COALESCE(SUM(CASE WHEN ts>=? THEN total_tokens ELSE 0 END),0) month "
+                "FROM usage_log WHERE api_key_id=?",
+                (today0, month0, key_id),
+            ).fetchone()
+        return int(row["today"] or 0), int(row["month"] or 0)
 
     def export_usage(self, since_ts: float | None = None,
                      until_ts: float | None = None) -> list[dict]:

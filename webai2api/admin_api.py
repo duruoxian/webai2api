@@ -180,6 +180,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             },
             "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
             "today": await run_in_threadpool(store.today_summary),
+            "key_usage": await run_in_threadpool(store.key_usage_map),
             "recent": await run_in_threadpool(
                 store.recent_usage, limit, offset, "", "", key_id, account_id),
             "recent_total": await run_in_threadpool(
@@ -346,9 +347,12 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         owner = str(b.get("owner") or "").strip()
         note = str(b.get("note") or "").strip()
         exp = float(b.get("expires_at") or 0)
-        if owner or note or exp:
+        qd = int(b.get("quota_daily") or 0)
+        qm = int(b.get("quota_monthly") or 0)
+        if owner or note or exp or qd or qm:
             await run_in_threadpool(
-                store.update_key, k["id"], owner=owner, note=note, expires_at=exp)
+                store.update_key, k["id"], owner=owner, note=note,
+                expires_at=exp, quota_daily=qd, quota_monthly=qm)
         return {"ok": True, "key": k}
 
     @router.put("/keys/{key_id}")
@@ -365,6 +369,8 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         owner = b.get("owner")
         note = b.get("note")
         expires_at = b.get("expires_at")
+        quota_daily = b.get("quota_daily")
+        quota_monthly = b.get("quota_monthly")
         if accounts is not None or models is not None:
             cur = next((k for k in await run_in_threadpool(store.list_keys)
                         if k["id"] == key_id), None)
@@ -387,6 +393,8 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                 owner=str(owner or "").strip() if owner is not None else None,
                 note=str(note or "").strip() if note is not None else None,
                 expires_at=float(expires_at or 0) if expires_at is not None else None,
+                quota_daily=int(quota_daily or 0) if quota_daily is not None else None,
+                quota_monthly=int(quota_monthly or 0) if quota_monthly is not None else None,
             )
         return {"ok": True}
 

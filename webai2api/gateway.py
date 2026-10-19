@@ -191,6 +191,21 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
         model = payload.get("model") or DEFAULT_MODEL
         stream = bool(payload.get("stream"))
 
+        if key_row.get("expires_at") and float(key_row["expires_at"]) < time.time():
+            return _error(403, "该 API Key 已过期", "permission_error")
+
+        daily_quota = int(key_row.get("quota_daily") or 0)
+        monthly_quota = int(key_row.get("quota_monthly") or 0)
+        if daily_quota or monthly_quota:
+            used_today, used_month = await run_in_threadpool(
+                store.key_quota_status, key_row["id"])
+            if daily_quota and used_today >= daily_quota:
+                return _error(429, f"该 Key 今日额度已用完（{used_today}/{daily_quota} tokens）",
+                              "rate_limit_error")
+            if monthly_quota and used_month >= monthly_quota:
+                return _error(429, f"该 Key 本月额度已用完（{used_month}/{monthly_quota} tokens）",
+                              "rate_limit_error")
+
         allowed_accs, allowed_models = _key_scope(key_row)
         if allowed_models and str(model).strip().lower() not in allowed_models:
             return _error(403, f"该 API Key 无权使用模型 {model}", "permission_error")

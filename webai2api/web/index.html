@@ -73,6 +73,7 @@
     </div>
 
     <div id="tab-overview" class="tabpane active">
+      <div id="alertBar" class="alert-bar" style="display:none"></div>
       <div class="card">
         <div class="card-head"><h2>用量总览</h2><div class="sp"></div>
           <div class="seg seg-sm" id="rangeSeg">
@@ -217,6 +218,10 @@
         <div class="card-head"><h2>今日概览</h2><div class="sp"></div>
           <button class="btn gray sm" onclick="exportCsv()">导出 CSV</button></div>
         <div class="today-grid" id="todayGrid"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Key 额度</h2></div>
+        <div id="quotaList" class="quota-list"></div>
       </div>
       <div class="card">
         <div class="card-head"><h2>失败原因</h2></div>
@@ -528,9 +533,18 @@
     <label class="fld"><span>名称</span><input id="editKeyName" placeholder="例如：小明"></label>
     <div class="fld-row">
       <label class="fld"><span>归属人</span><input id="editKeyOwner" placeholder="例如：张三"></label>
-      <label class="fld"><span>到期时间（留空 = 永不过期）</span><input id="editKeyExpires" type="date"></label>
+      <label class="fld"><span>到期时间（留空 = 永不过期）</span>
+        <button type="button" class="date-btn empty" id="editKeyExpiresBtn" onclick="openDatePicker('keyexp',this)">
+          <span id="editKeyExpiresText">选择日期</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M8 3v4M16 3v4M3.5 10h17"/></svg>
+        </button>
+      </label>
     </div>
     <label class="fld"><span>备注</span><input id="editKeyNote" placeholder="可选"></label>
+    <div class="fld-row">
+      <label class="fld"><span>每日 Token 上限（0 = 不限）</span><input id="editKeyQuotaDay" inputmode="numeric" placeholder="0"></label>
+      <label class="fld"><span>每月 Token 上限（0 = 不限）</span><input id="editKeyQuotaMonth" inputmode="numeric" placeholder="0"></label>
+    </div>
     <div class="fld"><span>可用账号 <span class="hint-inline">（不勾选 = 全部账号）</span></span>
       <div id="editKeyAcc" class="pick-list"></div></div>
     <div class="fld"><span>可用模型 <span class="hint-inline">（仅显示所选账号平台的模型；不勾选 = 全部）</span></span>
@@ -559,7 +573,7 @@
 
 <div id="toast" class="toast hyalite"></div>
 
-<div id="datePicker" class="dp hyalite">
+<div id="datePicker" class="dp">
   <div class="dp-head">
     <button type="button" class="dp-nav" onclick="dpMove(-1)">‹</button>
     <span id="dpTitle">2026年9月</span>
@@ -657,7 +671,7 @@ function dpInit(){
 function openDatePicker(target, anchor){
   dpInit();
   DP_TARGET=target;
-  const cur = target==='start'?RANGE_START:RANGE_END;
+  const cur = target==='start'?RANGE_START:(target==='keyexp'?KEY_EXPIRES:RANGE_END);
   if(cur){
     const [y,m]=cur.split('-').map(Number);
     DP_VIEW={y, m:m-1};
@@ -689,7 +703,7 @@ function dpRender(){
   const daysInMonth=new Date(y,m+1,0).getDate();
   const prevDays=new Date(y,m,0).getDate();
   const today=new Date(); const todayKey=ymdLocal(today);
-  const sel = DP_TARGET==='start'?RANGE_START:RANGE_END;
+  const sel = DP_TARGET==='start'?RANGE_START:(DP_TARGET==='keyexp'?KEY_EXPIRES:RANGE_END);
   let cells=[];
   for(let i=startPad-1;i>=0;i--) cells.push({d:prevDays-i,other:true,date:new Date(y,m-1,prevDays-i)});
   for(let i=1;i<=daysInMonth;i++) cells.push({d:i,other:false,date:new Date(y,m,i)});
@@ -708,7 +722,15 @@ function dpRender(){
     return `<button type="button" class="${cls.join(' ')}" onclick="dpPick('${key}')">${c.d}</button>`;
   }).join('');
 }
+let KEY_EXPIRES='';
 function dpPick(key){
+  if(DP_TARGET==='keyexp'){
+    KEY_EXPIRES=key;
+    document.getElementById('editKeyExpiresText').textContent=key;
+    document.getElementById('editKeyExpiresBtn').classList.remove('empty');
+    closeDatePicker();
+    return;
+  }
   if(DP_TARGET==='start'){
     RANGE_START=key;
     document.getElementById('rangeStartText').textContent=key;
@@ -723,6 +745,13 @@ function dpPick(key){
   closeDatePicker();
 }
 function dpClear(){
+  if(DP_TARGET==='keyexp'){
+    KEY_EXPIRES='';
+    document.getElementById('editKeyExpiresText').textContent='选择日期';
+    document.getElementById('editKeyExpiresBtn').classList.add('empty');
+    closeDatePicker();
+    return;
+  }
   if(DP_TARGET==='start'){
     RANGE_START='';
     document.getElementById('rangeStartText').textContent='选择日期';
@@ -832,6 +861,19 @@ function keyNameHTML(id,name,kids){
 }
 
 function renderOverview(s){
+  const alerts=[];
+  const ku=s.key_usage||{};
+  (s.keys||[]).forEach(k=>{
+    const u=ku[k.id]||{today:0,month:0};
+    if(k.quota_daily&&u.today>=k.quota_daily*0.8) alerts.push(`Key「${k.name}」今日额度已用 ${Math.round(u.today/k.quota_daily*100)}%`);
+    if(k.quota_monthly&&u.month>=k.quota_monthly*0.8) alerts.push(`Key「${k.name}」本月额度已用 ${Math.round(u.month/k.quota_monthly*100)}%`);
+  });
+  (s.accounts||[]).forEach(a=>{ if(a.health==='expired') alerts.push(`账号「${a.name}」凭证已失效，请重新登录`); });
+  const ab=document.getElementById('alertBar');
+  if(ab){
+    if(alerts.length){ ab.style.display=''; ab.innerHTML=alerts.slice(0,5).map(x=>`<div>⚠ ${esc(x)}</div>`).join(''); }
+    else ab.style.display='none';
+  }
   const t=s.usage.total||{};
   document.getElementById('ovTotal').innerHTML=fmtTokHTML(t.t);
   document.getElementById('ovPrompt').innerHTML=fmtTokHTML(t.p);
@@ -1088,6 +1130,22 @@ function renderUsage(s){
     <div class="today-item"><span>今日 Token</span><b>${fmtTok(td.t)}</b><em>昨日 ${fmtTok(yd.t)} · ${diff(td.t,yd.t)}%</em></div>
     <div class="today-item"><span>成功率</span><b>${td.n?((td.ok/td.n*100).toFixed(1)+'%'):'–'}</b><em>昨日 ${yd.n?((yd.ok/yd.n*100).toFixed(1)+'%'):'–'}</em></div>
     <div class="today-item"><span>平均耗时</span><b>${(s.usage.latency&&s.usage.latency.avg_ms)?((s.usage.latency.avg_ms/1000).toFixed(2)+'s'):'–'}</b><em>首 Token ${(s.usage.latency&&s.usage.latency.avg_ttft)?((s.usage.latency.avg_ttft/1000).toFixed(2)+'s'):'–'}</em></div>`;
+  const ql=document.getElementById('quotaList');
+  if(ql){
+    const ku=s.key_usage||{};
+    const rows=(s.keys||[]).filter(k=>k.quota_daily||k.quota_monthly).map(k=>{
+      const u=ku[k.id]||{today:0,month:0};
+      const dq=k.quota_daily||0, mq=k.quota_monthly||0;
+      const dp=dq?Math.min(100,Math.round(u.today/dq*100)):0;
+      const mp=mq?Math.min(100,Math.round(u.month/mq*100)):0;
+      return `<div class="quota-row"><div class="quota-name"><b>${esc(k.name)}</b>${k.owner?`<span class="muted">${esc(k.owner)}</span>`:''}</div>
+        <div class="quota-bars">
+          <div class="quota-bar"><span>今日</span><i class="${dp>=90?'hot':''}" style="width:${dp}%"></i><em>${fmtTok(u.today)}${dq?(' / '+fmtTok(dq)):''}</em></div>
+          <div class="quota-bar"><span>本月</span><i class="${mp>=90?'hot':''}" style="width:${mp}%"></i><em>${fmtTok(u.month)}${mq?(' / '+fmtTok(mq)):''}</em></div>
+        </div></div>`;
+    });
+    ql.innerHTML=rows.length?rows.join(''):'<div class="muted">还没有设置额度的 Key</div>';
+  }
   const el=document.getElementById('errList');
   if(el){
     const errs=s.usage.errors||[];
@@ -1388,8 +1446,11 @@ function openKeyEdit(id){
   document.getElementById('editKeyName').value=k.name||'';
   document.getElementById('editKeyOwner').value=k.owner||'';
   document.getElementById('editKeyNote').value=k.note||'';
-  document.getElementById('editKeyExpires').value=k.expires_at?
-    (new Date(k.expires_at*1000).toISOString().slice(0,10)):'';
+  document.getElementById('editKeyQuotaDay').value=k.quota_daily||'';
+  document.getElementById('editKeyQuotaMonth').value=k.quota_monthly||'';
+  KEY_EXPIRES=k.expires_at?(new Date(k.expires_at*1000).toISOString().slice(0,10)):'';
+  document.getElementById('editKeyExpiresText').textContent=KEY_EXPIRES||'选择日期';
+  document.getElementById('editKeyExpiresBtn').classList.toggle('empty',!KEY_EXPIRES);
   const accSel=new Set(k.accounts||[]);
   document.getElementById('editKeyAcc').innerHTML=(s.accounts||[]).map(a=>
     `<label class="pick-item" data-provider="${esc(a.provider)}"><input type="checkbox" value="${esc(a.id)}" ${accSel.has(a.id)?'checked':''} onchange="renderKeyModelPicker()"><span>${esc(a.name)}</span><em>${esc(a.provider)}</em></label>`
@@ -1419,9 +1480,11 @@ async function saveKeyEdit(){
   const models=[...document.querySelectorAll('#editKeyModel input:checked')].map(x=>x.value);
   const owner=document.getElementById('editKeyOwner').value.trim();
   const note=document.getElementById('editKeyNote').value.trim();
-  const expv=document.getElementById('editKeyExpires').value;
+  const expv=KEY_EXPIRES;
   const expires_at=expv?(new Date(expv+'T23:59:59').getTime()/1000):0;
-  const j=await api('/keys/'+EDIT_KEY_ID,'PUT',{name,accounts,models,owner,note,expires_at});
+  const quota_daily=Number(document.getElementById('editKeyQuotaDay').value)||0;
+  const quota_monthly=Number(document.getElementById('editKeyQuotaMonth').value)||0;
+  const j=await api('/keys/'+EDIT_KEY_ID,'PUT',{name,accounts,models,owner,note,expires_at,quota_daily,quota_monthly});
   if(j.ok){closeModal('keyEditModal');toast('已保存');refresh();}
   else toast(j.error||'保存失败');
 }
@@ -1597,9 +1660,12 @@ function tuneGlass(dark){
       const isGlm=m.toLowerCase().startsWith('glm');
       const lim=isGlm?LIMITS.chatglm:LIMITS.deepseek;
       const reason=isGlm||/reasoner/i.test(m);
+      const variants=isGlm
+        ? `,\n      "variants": { "快速": { "reasoningEffort": "low" }, "深度": { "reasoningEffort": "medium" }, "极致": { "reasoningEffort": "max" } }`
+        : '';
       lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)}, "attachment": true, "reasoning": ${reason},\n`
         +`      "modalities": { "input": ["image","text"], "output": ["text"] },\n`
-        +`      "limit": { "context": ${lim.context}, "output": ${lim.output} } }`);
+        +`      "limit": { "context": ${lim.context}, "output": ${lim.output} }${variants} }`);
     }
     return `"webai2api": {
   "npm": "@ai-sdk/openai-compatible",
