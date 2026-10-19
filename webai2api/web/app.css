@@ -723,3 +723,18 @@ html[data-theme=dark] .notice{background:linear-gradient(165deg,rgba(255,255,255
 /* 下拉菜单内部滚动时不要带动页面 */
 .sel-menu,.pick-list,.tbl-scroll,.modal,.modal-bg{overscroll-behavior:contain}
 html.modal-open,html.modal-open body{overflow:hidden;overscroll-behavior:none}
+
+.today-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.today-item{padding:14px 16px;border-radius:12px;background:var(--input-bg);border:1px solid var(--hairline-strong)}
+.today-item span{display:block;font-size:12.5px;color:var(--text3);margin-bottom:6px}
+.today-item b{display:block;font-size:22px;letter-spacing:-.02em;color:var(--text)}
+.today-item em{display:block;margin-top:5px;font-style:normal;font-size:11.5px;color:var(--text3)}
+.err-list{display:flex;flex-direction:column;gap:8px}
+.err-row{display:flex;align-items:center;gap:10px;font-size:13px}
+.err-row b{margin-left:auto;font-variant-numeric:tabular-nums}
+@media (max-width:760px){.today-grid{grid-template-columns:repeat(2,1fr)}}
+
+.kd-bars{display:flex;align-items:flex-end;gap:4px;height:96px;padding:6px 0;overflow-x:auto}
+.kd-bar{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:22px}
+.kd-bar i{display:block;width:12px;border-radius:4px;background:linear-gradient(180deg,#5aa7ff,#0a7cff)}
+.kd-bar span{font-size:9.5px;color:var(--text3);white-space:nowrap}

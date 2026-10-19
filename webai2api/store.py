@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
     enabled      INTEGER NOT NULL DEFAULT 1,
     accounts     TEXT NOT NULL DEFAULT '[]',
     models       TEXT NOT NULL DEFAULT '[]',
+    owner        TEXT NOT NULL DEFAULT '',
+    note         TEXT NOT NULL DEFAULT '',
+    expires_at   REAL NOT NULL DEFAULT 0,
     created_at   REAL NOT NULL,
     last_used_at REAL
 );
@@ -54,7 +57,10 @@ CREATE TABLE IF NOT EXISTS usage_log (
     prompt_tokens     INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     total_tokens      INTEGER NOT NULL DEFAULT 0,
-    status       TEXT NOT NULL DEFAULT 'ok'
+    status       TEXT NOT NULL DEFAULT 'ok',
+    latency_ms   INTEGER NOT NULL DEFAULT 0,
+    first_token_ms INTEGER NOT NULL DEFAULT 0,
+    error_code   TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_log(ts);
 CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_log(model);
@@ -100,6 +106,17 @@ class Store:
                 c.execute("ALTER TABLE api_keys ADD COLUMN accounts TEXT NOT NULL DEFAULT '[]'")
             if "models" not in cols:
                 c.execute("ALTER TABLE api_keys ADD COLUMN models TEXT NOT NULL DEFAULT '[]'")
+            for col, ddl in (("owner", "TEXT NOT NULL DEFAULT ''"),
+                             ("note", "TEXT NOT NULL DEFAULT ''"),
+                             ("expires_at", "REAL NOT NULL DEFAULT 0")):
+                if col not in cols:
+                    c.execute(f"ALTER TABLE api_keys ADD COLUMN {col} {ddl}")
+            ucols = {r["name"] for r in c.execute("PRAGMA table_info(usage_log)")}
+            for col, ddl in (("latency_ms", "INTEGER NOT NULL DEFAULT 0"),
+                             ("first_token_ms", "INTEGER NOT NULL DEFAULT 0"),
+                             ("error_code", "TEXT NOT NULL DEFAULT ''")):
+                if col not in ucols:
+                    c.execute(f"ALTER TABLE usage_log ADD COLUMN {col} {ddl}")
             acols = {r["name"] for r in c.execute("PRAGMA table_info(accounts)")}
             if "profile" not in acols:
                 c.execute("ALTER TABLE accounts ADD COLUMN profile TEXT NOT NULL DEFAULT '{}'")
@@ -284,7 +301,10 @@ class Store:
 
     def update_key(self, key_id: str, *, name: str | None = None,
                    accounts: list[str] | None = None,
-                   models: list[str] | None = None) -> None:
+                   models: list[str] | None = None,
+                   owner: str | None = None,
+                   note: str | None = None,
+                   expires_at: float | None = None) -> None:
         sets, vals = [], []
         if name is not None:
             sets.append("name=?")
@@ -295,6 +315,15 @@ class Store:
         if models is not None:
             sets.append("models=?")
             vals.append(json.dumps(models, ensure_ascii=False))
+        if owner is not None:
+            sets.append("owner=?")
+            vals.append(owner)
+        if note is not None:
+            sets.append("note=?")
+            vals.append(note)
+        if expires_at is not None:
+            sets.append("expires_at=?")
+            vals.append(float(expires_at))
         if not sets:
             return
         vals.append(key_id)
@@ -319,8 +348,9 @@ class Store:
             c.execute(
                 """INSERT INTO usage_log
                    (ts, api_key_id, api_key_name, account_id, account_name, provider,
-                    model, prompt_tokens, completion_tokens, total_tokens, status)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    model, prompt_tokens, completion_tokens, total_tokens, status,
+                    latency_ms, first_token_ms, error_code)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (_now(),
                  kw.get("api_key_id"), kw.get("api_key_name"),
                  kw.get("account_id"), kw.get("account_name"), kw.get("provider"),
@@ -328,8 +358,31 @@ class Store:
                  int(kw.get("prompt_tokens", 0)),
                  int(kw.get("completion_tokens", 0)),
                  int(kw.get("total_tokens", 0)),
-                 kw.get("status", "ok")),
+                 kw.get("status", "ok"),
+                 int(kw.get("latency_ms", 0) or 0),
+                 int(kw.get("first_token_ms", 0) or 0),
+                 str(kw.get("error_code", "") or "")),
             )
+
+    def today_summary(self) -> dict:
+        """今日 vs 昨日对比。"""
+        import datetime as _dt
+        now = _dt.datetime.now()
+        today0 = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        yday0 = today0 - 86400
+        with self._conn() as c:
+            def _agg(since, until=None):
+                sql = "SELECT COUNT(*) n, COALESCE(SUM(total_tokens),0) t, " \
+                      "COALESCE(SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END),0) ok " \
+                      "FROM usage_log WHERE ts>=?"
+                args = [since]
+                if until is not None:
+                    sql += " AND ts<?"
+                    args.append(until)
+                return dict(c.execute(sql, args).fetchone())
+            today = _agg(today0)
+            yday = _agg(yday0, today0)
+        return {"today": today, "yesterday": yday}
 
     def usage_summary(self, since_ts: float | None = None,
                       until_ts: float | None = None) -> dict:
@@ -356,18 +409,22 @@ class Store:
             ).fetchone()
             by_model = c.execute(
                 "SELECT model, COUNT(*) n, COALESCE(SUM(prompt_tokens),0) p, "
-                "COALESCE(SUM(completion_tokens),0) c, COALESCE(SUM(total_tokens),0) t "
+                "COALESCE(SUM(completion_tokens),0) c, COALESCE(SUM(total_tokens),0) t, "
+                "COALESCE(SUM(CASE WHEN status<>'ok' THEN 1 ELSE 0 END),0) err "
                 "FROM usage_log" + where + " GROUP BY model ORDER BY t DESC", args
             ).fetchall()
             by_account = c.execute(
-                "SELECT account_id, account_name, provider, COUNT(*) n, COALESCE(SUM(total_tokens),0) t "
+                "SELECT account_id, account_name, provider, COUNT(*) n, "
+                "COALESCE(SUM(total_tokens),0) t, "
+                "COALESCE(SUM(CASE WHEN status<>'ok' THEN 1 ELSE 0 END),0) err "
                 "FROM usage_log" + where + " GROUP BY account_id ORDER BY t DESC", args
             ).fetchall()
             by_key = c.execute(
                 "SELECT api_key_id, api_key_name, COUNT(*) n, "
                 "COALESCE(SUM(prompt_tokens),0) p, "
                 "COALESCE(SUM(completion_tokens),0) c, "
-                "COALESCE(SUM(total_tokens),0) t "
+                "COALESCE(SUM(total_tokens),0) t, "
+                "COALESCE(SUM(CASE WHEN status<>'ok' THEN 1 ELSE 0 END),0) err "
                 "FROM usage_log" + where + " GROUP BY api_key_id ORDER BY t DESC", args
             ).fetchall()
             since24 = _now() - 86400
@@ -381,6 +438,20 @@ class Store:
                 "FROM usage_log WHERE ts>=? GROUP BY d ORDER BY d",
                 (_now() - 86400 * 182,),
             ).fetchall()
+            errors = c.execute(
+                "SELECT CASE WHEN error_code<>'' THEN error_code ELSE status END code, "
+                "COUNT(*) n FROM usage_log" + where +
+                " AND status<>'ok' GROUP BY code ORDER BY n DESC LIMIT 10"
+                if where else
+                "SELECT CASE WHEN error_code<>'' THEN error_code ELSE status END code, "
+                "COUNT(*) n FROM usage_log WHERE status<>'ok' GROUP BY code ORDER BY n DESC LIMIT 10",
+                args if where else (),
+            ).fetchall()
+            lat = c.execute(
+                "SELECT COALESCE(AVG(latency_ms),0) avg_ms, "
+                "COALESCE(AVG(NULLIF(first_token_ms,0)),0) avg_ttft "
+                "FROM usage_log" + where, args
+            ).fetchone()
         return {
             "total": dict(total),
             "by_model": [dict(r) for r in by_model],
@@ -388,6 +459,8 @@ class Store:
             "by_key": [dict(r) for r in by_key],
             "last24h": dict(last24),
             "daily": [dict(r) for r in daily],
+            "errors": [dict(r) for r in errors],
+            "latency": dict(lat) if lat else {"avg_ms": 0, "avg_ttft": 0},
         }
 
     def recent_usage(self, limit: int = 100, offset: int = 0,
@@ -435,6 +508,51 @@ class Store:
         with self._conn() as c:
             row = c.execute("SELECT COUNT(*) n FROM usage_log" + where, tuple(args)).fetchone()
         return int(row["n"]) if row else 0
+
+    def export_usage(self, since_ts: float | None = None,
+                     until_ts: float | None = None) -> list[dict]:
+        conds, args = [], []
+        if since_ts is not None:
+            conds.append("ts>=?")
+            args.append(since_ts)
+        if until_ts is not None:
+            conds.append("ts<=?")
+            args.append(until_ts)
+        where = (" WHERE " + " AND ".join(conds)) if conds else ""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT ts, api_key_name, account_name, provider, model, "
+                "prompt_tokens, completion_tokens, total_tokens, status, "
+                "latency_ms, first_token_ms, error_code "
+                "FROM usage_log" + where + " ORDER BY id DESC LIMIT 100000",
+                tuple(args),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def key_detail(self, key_id: str, since_ts: float | None = None) -> dict:
+        conds, args = ["api_key_id=?"], [key_id]
+        if since_ts is not None:
+            conds.append("ts>=?")
+            args.append(since_ts)
+        where = " WHERE " + " AND ".join(conds)
+        with self._conn() as c:
+            daily = c.execute(
+                "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, "
+                "COUNT(*) n, COALESCE(SUM(total_tokens),0) t "
+                "FROM usage_log" + where + " GROUP BY d ORDER BY d", tuple(args)
+            ).fetchall()
+            by_model = c.execute(
+                "SELECT model, COUNT(*) n, COALESCE(SUM(total_tokens),0) t "
+                "FROM usage_log" + where + " GROUP BY model ORDER BY t DESC", tuple(args)
+            ).fetchall()
+            totals = c.execute(
+                "SELECT COUNT(*) n, COALESCE(SUM(total_tokens),0) t, "
+                "COALESCE(SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END),0) ok "
+                "FROM usage_log" + where, tuple(args)
+            ).fetchone()
+        return {"daily": [dict(r) for r in daily],
+                "by_model": [dict(r) for r in by_model],
+                "total": dict(totals)}
 
     def list_used_models(self, limit: int = 100) -> list[dict]:
         """用量里实际出现过的模型（按最近使用倒序）。"""

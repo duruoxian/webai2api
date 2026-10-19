@@ -179,6 +179,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                 for m in await run_in_threadpool(registry.model_catalog)
             },
             "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
+            "today": await run_in_threadpool(store.today_summary),
             "recent": await run_in_threadpool(
                 store.recent_usage, limit, offset, "", "", key_id, account_id),
             "recent_total": await run_in_threadpool(
@@ -342,6 +343,12 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             store.add_key, b.get("name", "未命名 Key"),
             None, accounts, models,
         )
+        owner = str(b.get("owner") or "").strip()
+        note = str(b.get("note") or "").strip()
+        exp = float(b.get("expires_at") or 0)
+        if owner or note or exp:
+            await run_in_threadpool(
+                store.update_key, k["id"], owner=owner, note=note, expires_at=exp)
         return {"ok": True, "key": k}
 
     @router.put("/keys/{key_id}")
@@ -355,6 +362,9 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         name = b.get("name")
         accounts = b.get("accounts")
         models = b.get("models")
+        owner = b.get("owner")
+        note = b.get("note")
+        expires_at = b.get("expires_at")
         if accounts is not None or models is not None:
             cur = next((k for k in await run_in_threadpool(store.list_keys)
                         if k["id"] == key_id), None)
@@ -365,7 +375,8 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             bad = await _incompatible_models(nacc, nmod)
             if bad:
                 return {"ok": False, "error": bad}
-        if name is not None or accounts is not None or models is not None:
+        if (name is not None or accounts is not None or models is not None
+                or owner is not None or note is not None or expires_at is not None):
             await run_in_threadpool(
                 store.update_key, key_id,
                 name=(str(name).strip() or "未命名 Key") if name is not None else None,
@@ -373,8 +384,54 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                           if accounts is not None else None),
                 models=([str(x).strip() for x in models if str(x).strip()]
                         if models is not None else None),
+                owner=str(owner or "").strip() if owner is not None else None,
+                note=str(note or "").strip() if note is not None else None,
+                expires_at=float(expires_at or 0) if expires_at is not None else None,
             )
         return {"ok": True}
+
+    @router.get("/keys/{key_id}/detail")
+    async def key_detail(key_id: str, request: Request, range: str = "all"):
+        g = _guard(request)
+        if g:
+            return g
+        since, _ = _range_window(range)
+        data = await run_in_threadpool(store.key_detail, key_id, since)
+        return {"ok": True, **data}
+
+    @router.get("/usage/export")
+    async def export_usage(request: Request, range: str = "all",
+                           start: str = "", end: str = ""):
+        g = _guard(request)
+        if g:
+            return g
+        since, until = _range_window(range, start, end)
+        rows = await run_in_threadpool(store.export_usage, since, until)
+        import csv
+        import io
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["时间", "Key", "账号", "平台", "模型", "输入", "输出",
+                         "合计", "状态", "总耗时ms", "首Token ms", "错误码"])
+        for r in rows:
+            writer.writerow([
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"])),
+                r.get("api_key_name", ""), r.get("account_name", ""),
+                r.get("provider", ""), r.get("model", ""),
+                r.get("prompt_tokens", 0), r.get("completion_tokens", 0),
+                r.get("total_tokens", 0), r.get("status", ""),
+                r.get("latency_ms", 0), r.get("first_token_ms", 0),
+                r.get("error_code", ""),
+            ])
+        from fastapi.responses import Response
+
+        data = "\ufeff" + buf.getvalue()
+        return Response(
+            content=data.encode("utf-8"),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="webai2api-usage.csv"'},
+        )
 
     @router.delete("/keys/{key_id}")
     async def delete_key(key_id: str, request: Request):

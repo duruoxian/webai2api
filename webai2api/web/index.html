@@ -214,6 +214,15 @@
 
     <div id="tab-usage" class="tabpane">
       <div class="card">
+        <div class="card-head"><h2>今日概览</h2><div class="sp"></div>
+          <button class="btn gray sm" onclick="exportCsv()">导出 CSV</button></div>
+        <div class="today-grid" id="todayGrid"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>失败原因</h2></div>
+        <div id="errList" class="err-list"></div>
+      </div>
+      <div class="card">
         <div class="card-head"><h2>按账号</h2></div>
         <div class="tbl-scroll">
           <table id="accUsageTable"><thead><tr><th>账号</th><th>平台</th><th>请求数</th><th>Token 合计</th></tr></thead><tbody></tbody></table>
@@ -248,7 +257,7 @@
           <button class="btn gray sm" onclick="recentPage(1)">下一页</button>
         </div>
         <div class="tbl-scroll tall">
-          <table id="recentTable"><thead><tr><th>时间</th><th>Key</th><th>账号</th><th>模型</th><th>输入</th><th>输出</th><th>合计</th><th>状态</th></tr></thead><tbody></tbody></table>
+          <table id="recentTable"><thead><tr><th>时间</th><th>Key</th><th>账号</th><th>模型</th><th>输入</th><th>输出</th><th>合计</th><th>耗时</th><th>状态</th></tr></thead><tbody></tbody></table>
         </div>
       </div>
     </div>
@@ -465,6 +474,29 @@
   </div>
 </div>
 
+<div id="keyDetailModal" class="modal-bg">
+  <div class="modal modal-flex" style="max-width:760px">
+    <div class="modal-head">
+      <h2 id="kdTitle">Key 详情</h2>
+      <div class="sp"></div>
+      <button class="modal-x" onclick="closeModal('keyDetailModal')" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="today-grid" id="kdTotals" style="grid-template-columns:repeat(3,1fr)"></div>
+      <div class="set-group" style="margin-top:16px">
+        <div class="set-group-title">每日 Token</div>
+        <div id="kdDaily" class="kd-bars"></div>
+      </div>
+      <div class="set-group">
+        <div class="set-group-title">模型分布</div>
+        <div id="kdModels"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="keyViewModal" class="modal-bg">
   <div class="modal">
     <div class="modal-head">
@@ -494,6 +526,11 @@
     </div>
     <p class="modal-sub">限定这个 Key 能用哪些账号、哪些模型。不勾选表示不限制。</p>
     <label class="fld"><span>名称</span><input id="editKeyName" placeholder="例如：小明"></label>
+    <div class="fld-row">
+      <label class="fld"><span>归属人</span><input id="editKeyOwner" placeholder="例如：张三"></label>
+      <label class="fld"><span>到期时间（留空 = 永不过期）</span><input id="editKeyExpires" type="date"></label>
+    </div>
+    <label class="fld"><span>备注</span><input id="editKeyNote" placeholder="可选"></label>
     <div class="fld"><span>可用账号 <span class="hint-inline">（不勾选 = 全部账号）</span></span>
       <div id="editKeyAcc" class="pick-list"></div></div>
     <div class="fld"><span>可用模型 <span class="hint-inline">（仅显示所选账号平台的模型；不勾选 = 全部）</span></span>
@@ -1027,8 +1064,9 @@ function renderKeys(s){
   s.keys.forEach(k=>{
     const accN=(k.accounts||[]).length, modN=(k.models||[]).length;
     const scope=`<div class="muted" style="font-size:12px;margin-top:3px">${
-      accN?('账号 '+accN+' 个'):'全部账号'} · ${modN?('模型 '+modN+' 个'):'全部模型'}</div>`;
-    tb.innerHTML+=`<tr><td><b>${esc(k.name)}</b>${scope}</td>
+      k.owner?esc(k.owner)+' · ':''}${accN?('账号 '+accN+' 个'):'全部账号'} · ${modN?('模型 '+modN+' 个'):'全部模型'}${
+      k.expires_at?(' · 到期 '+fmtTime(k.expires_at)):''}</div>`;
+    tb.innerHTML+=`<tr><td><a href="javascript:void(0)" onclick="openKeyDetail('${k.id}')" style="color:inherit;text-decoration:none"><b>${esc(k.name)}</b></a>${scope}</td>
       <td class="muted">${fmtTime(k.created_at)}</td>
       <td><span class="tag ${k.enabled?'on':'off'}">${k.enabled?'启用':'停用'}</span></td>
       <td class="muted">${fmtTime(k.last_used_at)}</td>
@@ -1041,6 +1079,20 @@ function renderKeys(s){
 }
 function renderUsage(s){
   syncRecentFilters(s);
+  const td=(s.today&&s.today.today)||{n:0,t:0,ok:0};
+  const yd=(s.today&&s.today.yesterday)||{n:0,t:0,ok:0};
+  const diff=(a,b)=>b?(((a-b)/b)*100).toFixed(0):'–';
+  const tg=document.getElementById('todayGrid');
+  if(tg) tg.innerHTML=`
+    <div class="today-item"><span>今日请求</span><b>${fmt(td.n)}</b><em>昨日 ${fmt(yd.n)} · ${diff(td.n,yd.n)}%</em></div>
+    <div class="today-item"><span>今日 Token</span><b>${fmtTok(td.t)}</b><em>昨日 ${fmtTok(yd.t)} · ${diff(td.t,yd.t)}%</em></div>
+    <div class="today-item"><span>成功率</span><b>${td.n?((td.ok/td.n*100).toFixed(1)+'%'):'–'}</b><em>昨日 ${yd.n?((yd.ok/yd.n*100).toFixed(1)+'%'):'–'}</em></div>
+    <div class="today-item"><span>平均耗时</span><b>${(s.usage.latency&&s.usage.latency.avg_ms)?((s.usage.latency.avg_ms/1000).toFixed(2)+'s'):'–'}</b><em>首 Token ${(s.usage.latency&&s.usage.latency.avg_ttft)?((s.usage.latency.avg_ttft/1000).toFixed(2)+'s'):'–'}</em></div>`;
+  const el=document.getElementById('errList');
+  if(el){
+    const errs=s.usage.errors||[];
+    el.innerHTML=errs.length?errs.map(e=>`<div class="err-row"><span class="tag err">${esc(e.code)}</span><b>${fmt(e.n)}</b></div>`).join(''):'<div class="muted">当前时间范围内没有失败请求</div>';
+  }
   const kids=new Set((s.keys||[]).map(k=>k.id));
   const keyName=(id,name)=>keyNameHTML(id,name,kids);
   let tb=document.querySelector('#accUsageTable tbody');tb.innerHTML='';
@@ -1056,7 +1108,8 @@ function renderUsage(s){
     <td>${keyName(r.api_key_id,r.api_key_name)}</td><td>${esc(r.account_name||'–')}</td>
     <td class="mono">${esc(r.model)}</td><td class="num-t">${fmtTok(r.prompt_tokens)}</td>
     <td class="num-t">${fmtTok(r.completion_tokens)}</td><td class="num-t"><b>${fmtTok(r.total_tokens)}</b></td>
-    <td>${r.status==='ok'?'<span class="tag on">成功</span>':'<span class="tag err">'+esc(r.status)+'</span>'}</td></tr>`;});
+    <td class="num-t">${r.latency_ms?((r.latency_ms/1000).toFixed(1)+'s'):'–'}</td>
+    <td>${r.status==='ok'?'<span class="tag on">成功</span>':'<span class="tag err">'+esc(r.error_code||r.status)+'</span>'}</td></tr>`;});
   if(!(s.recent||[]).length)tb.innerHTML=empty('暂无记录');
   const info=document.getElementById('recentInfo');
   if(info){
@@ -1322,8 +1375,9 @@ let EDIT_KEY_MODELS=[];
 function openKeyView(id){
   const s=LAST_STATE; if(!s) return;
   const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
+  const exp=k.expires_at?(' · 到期 '+fmtTime(k.expires_at)):'';
   document.getElementById('keyViewMeta').textContent =
-    `${k.name} · 创建于 ${fmtTime(k.created_at)}`;
+    `${k.name}${k.owner?(' · '+k.owner):''} · 创建于 ${fmtTime(k.created_at)}${exp}${k.note?(' · '+k.note):''}`;
   document.getElementById('keyViewValue').textContent = k.key;
   openModal('keyViewModal');
 }
@@ -1332,6 +1386,10 @@ function openKeyEdit(id){
   const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
   EDIT_KEY_ID=id; EDIT_KEY_MODELS=(k.models||[]).slice();
   document.getElementById('editKeyName').value=k.name||'';
+  document.getElementById('editKeyOwner').value=k.owner||'';
+  document.getElementById('editKeyNote').value=k.note||'';
+  document.getElementById('editKeyExpires').value=k.expires_at?
+    (new Date(k.expires_at*1000).toISOString().slice(0,10)):'';
   const accSel=new Set(k.accounts||[]);
   document.getElementById('editKeyAcc').innerHTML=(s.accounts||[]).map(a=>
     `<label class="pick-item" data-provider="${esc(a.provider)}"><input type="checkbox" value="${esc(a.id)}" ${accSel.has(a.id)?'checked':''} onchange="renderKeyModelPicker()"><span>${esc(a.name)}</span><em>${esc(a.provider)}</em></label>`
@@ -1359,9 +1417,50 @@ async function saveKeyEdit(){
   const name=document.getElementById('editKeyName').value.trim()||'未命名 Key';
   const accounts=[...document.querySelectorAll('#editKeyAcc input:checked')].map(x=>x.value);
   const models=[...document.querySelectorAll('#editKeyModel input:checked')].map(x=>x.value);
-  const j=await api('/keys/'+EDIT_KEY_ID,'PUT',{name,accounts,models});
+  const owner=document.getElementById('editKeyOwner').value.trim();
+  const note=document.getElementById('editKeyNote').value.trim();
+  const expv=document.getElementById('editKeyExpires').value;
+  const expires_at=expv?(new Date(expv+'T23:59:59').getTime()/1000):0;
+  const j=await api('/keys/'+EDIT_KEY_ID,'PUT',{name,accounts,models,owner,note,expires_at});
   if(j.ok){closeModal('keyEditModal');toast('已保存');refresh();}
   else toast(j.error||'保存失败');
+}
+async function openKeyDetail(id){
+  const s=LAST_STATE; if(!s) return;
+  const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
+  document.getElementById('kdTitle').textContent='Key 详情 · '+k.name;
+  const qs=RANGE==='all'?'':('?range='+encodeURIComponent(RANGE));
+  const j=await api('/keys/'+id+'/detail'+qs);
+  const t=(j&&j.total)||{n:0,t:0,ok:0};
+  document.getElementById('kdTotals').innerHTML=`
+    <div class="today-item"><span>请求数</span><b>${fmt(t.n)}</b></div>
+    <div class="today-item"><span>Token</span><b>${fmtTok(t.t)}</b></div>
+    <div class="today-item"><span>成功率</span><b>${t.n?((t.ok/t.n*100).toFixed(1)+'%'):'–'}</b></div>`;
+  const daily=(j&&j.daily)||[];
+  const max=Math.max(1,...daily.map(d=>Number(d.t)||0));
+  document.getElementById('kdDaily').innerHTML=daily.length?daily.slice(-30).map(d=>{
+    const h=Math.max(2,Math.round((Number(d.t)||0)/max*70));
+    return `<div class="kd-bar" title="${esc(d.d)} · ${fmtTok(d.t)}"><i style="height:${h}px"></i><span>${esc((d.d||'').slice(5))}</span></div>`;
+  }).join(''):'<div class="muted">暂无数据</div>';
+  const models=(j&&j.by_model)||[];
+  document.getElementById('kdModels').innerHTML=models.length?models.map(m=>
+    `<div class="err-row"><span>${esc(m.model||'–')}</span><b>${fmt(m.n)} 次 · ${fmtTok(m.t)}</b></div>`).join(''):'<div class="muted">暂无数据</div>';
+  openModal('keyDetailModal');
+}
+async function exportCsv(){
+  const qs=RANGE==='all'?'':('?range='+encodeURIComponent(RANGE)
+    +'&start='+encodeURIComponent(RANGE_START)+'&end='+encodeURIComponent(RANGE_END));
+  try{
+    const r=await fetch('/admin/api/usage/export'+qs,{headers:{'X-Admin-Token':TOKEN}});
+    if(!r.ok){toast('导出失败');return;}
+    const blob=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='webai2api-usage.csv';
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+    toast('已导出');
+  }catch(e){toast('导出失败');}
 }
 async function delKey(id){if(confirm('确定删除该 Key？')){await api('/keys/'+id,'DELETE');refresh();toast('已删除');}}
 async function saveTray(){

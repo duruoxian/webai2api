@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import time
 from logging import Logger
 
 from fastapi import APIRouter, Request
@@ -54,6 +56,21 @@ def _mask_key(value: str) -> str:
     if len(value) <= 12:
         return f"{value!r} (len={len(value)})"
     return f"{value[:8]}...{value[-4:]} (len={len(value)})"
+
+
+def _err_code(exc: Exception | None) -> str:
+    if exc is None:
+        return ""
+    text = str(exc)
+    m = re.search(r"\b(4\d\d|5\d\d)\b", text)
+    if m:
+        return m.group(1)
+    low = text.lower()
+    if "timeout" in low or "timed out" in low:
+        return "timeout"
+    if "token" in low or "登录" in low or "凭证" in low:
+        return "auth"
+    return type(exc).__name__
 
 
 def _key_scope(row: dict) -> tuple[set[str], set[str]]:
@@ -178,6 +195,7 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
         if allowed_models and str(model).strip().lower() not in allowed_models:
             return _error(403, f"该 API Key 无权使用模型 {model}", "permission_error")
 
+        started = time.perf_counter()
         want_acc = request.headers.get("x-account-id", "").strip()
         if want_acc and allowed_accs and want_acc not in allowed_accs:
             return _error(403, "该 API Key 无权使用指定账号", "permission_error")
@@ -239,23 +257,28 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
             if resp is None:
                 await run_in_threadpool(
                     store.log_usage,
-                    status=f"error:{type(last_exc).__name__}", **base
+                    status=f"error:{type(last_exc).__name__}", **base,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    error_code=_err_code(last_exc),
                 )
                 code, msg = _friendly_error(last_exc) if last_exc else (502, "上游服务异常")
                 return _error(code, msg, "upstream_error")
             p, c, t = _usage_from_openai(resp)
             await run_in_threadpool(
                 store.log_usage, prompt_tokens=p, completion_tokens=c,
-                total_tokens=t, **base
+                total_tokens=t, **base,
+                latency_ms=int((time.perf_counter() - started) * 1000),
             )
             return JSONResponse(resp)
 
         # ── 流式 ──
         # 先在异步上下文里尝试拿到第一块数据，成功后再开始吐流；
         # 这样上游失败时可以换账号重试（而不是已经 200 了才发现失败）。
+        started = time.perf_counter()
         first_chunk, ac, base = await _stream_with_retry(
             registry, store, payload, model, ac, base, want_acc, allowed_accs or None, logger
         )
+        ttft_ms = int((time.perf_counter() - started) * 1000)
         if first_chunk is None:
             return _error(502, "所有可用账号均请求失败，请稍后重试", "upstream_error")
         async def gen():
@@ -314,7 +337,10 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                     await run_in_threadpool(
                         store.log_usage, prompt_tokens=prompt_t,
                         completion_tokens=completion_t, total_tokens=total_t,
-                        status=status, **base
+                        status=status, **base,
+                        latency_ms=int((time.perf_counter() - started) * 1000),
+                        first_token_ms=ttft_ms,
+                        error_code=("upstream" if status != "ok" else ""),
                     )
                 except Exception:
                     pass
