@@ -206,7 +206,7 @@
           <div>可用模型&nbsp;&nbsp;<b id="modelHint">deepseek-chat</b></div>
           <div>API Key&nbsp;&nbsp;在上方生成</div>
         </div>
-        <p class="hint" style="margin-bottom:8px">填进 opencode（<code>~/.config/opencode/opencode.jsonc</code> 的 provider 里）：</p>
+        <p class="hint" style="margin-bottom:8px">opencode 不会自动识别模型能力（上下文 / 推理 / 图片），请直接复制下面这段完整配置（已带好能力值），粘进 <code>~/.config/opencode/opencode.jsonc</code> 的 provider 里：</p>
         <pre id="ocSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
         <button class="btn sm" onclick="copyText(document.getElementById('ocSnippet').textContent)" style="margin-top:10px">复制配置片段</button>
       </div>
@@ -365,7 +365,7 @@
           </div>
           <div class="guide-row"><span>请求头</span><code>留空</code></div>
         </div>
-        <p class="muted" style="margin:12px 0 0">添加模型时：左边填<b>模型 ID</b>（照上表），右边填<b>显示名称</b>（可自定义，建议照上表）；需一条一条添加。GLM 模型需要先在「账号」页登录智谱账号。以「API Key」页显示的可用模型为准，其余模型会被拒绝。</p>
+        <p class="muted" style="margin:12px 0 0">添加模型时：左边填<b>模型 ID</b>（照上表），右边填<b>显示名称</b>（可自定义）。注意：通过界面添加模型时，客户端只会保存名称，<b>不会自动带上上下文 / 推理 / 图片能力</b>；需要这些能力请用上方「快速接入」里的完整配置片段。GLM 模型需要先在「账号」页登录智谱账号。</p>
       </div>
 
       <div class="card about">
@@ -1381,7 +1381,8 @@ function tuneGlass(dark){
     for(const m of models){
       const isGlm=m.toLowerCase().startsWith('glm');
       const lim=isGlm?LIMITS.chatglm:LIMITS.deepseek;
-      lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)}, "attachment": true, "reasoning": true,\n`
+      const reason=isGlm||/reasoner/i.test(m);
+      lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)}, "attachment": true, "reasoning": ${reason},\n`
         +`      "modalities": { "input": ["image","text"], "output": ["text"] },\n`
         +`      "limit": { "context": ${lim.context}, "output": ${lim.output} } }`);
     }
