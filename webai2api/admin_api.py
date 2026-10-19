@@ -181,6 +181,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
             "today": await run_in_threadpool(store.today_summary),
             "key_usage": await run_in_threadpool(store.key_usage_map),
+            "today_by_key_account": await run_in_threadpool(store.today_by_key_account),
             "recent": await run_in_threadpool(
                 store.recent_usage, limit, offset, "", "", key_id, account_id),
             "recent_total": await run_in_threadpool(
@@ -406,6 +407,17 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         since, _ = _range_window(range)
         data = await run_in_threadpool(store.key_detail, key_id, since)
         return {"ok": True, **data}
+
+    @router.get("/keys/{key_id}/accounts-today")
+    async def key_accounts_today(key_id: str, request: Request):
+        g = _guard(request)
+        if g:
+            return g
+        import datetime as _dt
+        now = _dt.datetime.now()
+        day0 = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        rows = await run_in_threadpool(store.key_daily_by_account, key_id, day0)
+        return {"ok": True, "rows": rows}
 
     @router.get("/usage/export")
     async def export_usage(request: Request, range: str = "all",

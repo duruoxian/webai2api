@@ -161,6 +161,10 @@
       </div>
       <div class="card">
         <div class="card-head"><h2>每日 Token 消耗</h2><div class="sp"></div>
+          <div class="seg seg-sm" id="dailyViewSeg">
+            <button class="active" data-view="model" onclick="setDailyView('model')">按模型</button>
+            <button data-view="key" onclick="setDailyView('key')">按 Key</button>
+          </div>
           <div class="seg seg-sm" id="barWinSeg">
             <button data-win="7" onclick="setBarWindow(7)">7 天</button>
             <button class="active" data-win="14" onclick="setBarWindow(14)">14 天</button>
@@ -521,7 +525,7 @@
 </div>
 
 <div id="keyEditModal" class="modal-bg">
-  <div class="modal">
+  <div class="modal modal-flex">
     <div class="modal-head">
       <h2>编辑 API Key</h2>
       <div class="sp"></div>
@@ -529,11 +533,12 @@
         <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>
+    <div class="modal-body">
     <p class="modal-sub">限定这个 Key 能用哪些账号、哪些模型。不勾选表示不限制。</p>
     <label class="fld"><span>名称</span><input id="editKeyName" placeholder="例如：小明"></label>
     <div class="fld-row">
       <label class="fld"><span>归属人</span><input id="editKeyOwner" placeholder="例如：张三"></label>
-      <label class="fld"><span>到期时间（留空 = 永不过期）</span>
+      <label class="fld" style="flex:1.2"><span>到期时间（留空 = 永不过期）</span>
         <button type="button" class="date-btn empty" id="editKeyExpiresBtn" onclick="openDatePicker('keyexp',this)">
           <span id="editKeyExpiresText">选择日期</span>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M8 3v4M16 3v4M3.5 10h17"/></svg>
@@ -549,6 +554,7 @@
       <div id="editKeyAcc" class="pick-list"></div></div>
     <div class="fld"><span>可用模型 <span class="hint-inline">（仅显示所选账号平台的模型；不勾选 = 全部）</span></span>
       <div id="editKeyModel" class="pick-list"></div></div>
+    </div>
     <div class="modal-foot">
       <button class="btn gray" onclick="closeModal('keyEditModal')">取消</button>
       <button class="btn" onclick="saveKeyEdit()">保存</button>
@@ -917,7 +923,7 @@ function renderOverview(s){
       <td class="num-t"><b>${fmtTok(m.t)}</b></td></tr>`;});
   if(!rows.length)tb.innerHTML='<tr><td colspan="5" class="empty">暂无数据</td></tr>';
   renderDonut(byToken.map(x=>({model:x.label,t:x.t})));
-  renderHeatmap(s.usage.daily||[]);
+  renderHeatmap(s.usage.daily||[], s);
 }
 let MODEL_SORT='token';
 let MODEL_VIEW='model';
@@ -1007,6 +1013,28 @@ function onBarSlide(v){
 }
 function renderBars(){
   const el=document.getElementById('barchart'); if(!el)return;
+  const slider2=document.getElementById('barSlider');
+  if(DAILY_VIEW==='key'){
+    const data=TODAY_KEY_DATA||[];
+    if(slider2){ slider2.style.display='none'; const box=slider2.closest('.bar-slider'); if(box) box.style.display='none'; }
+    const win=document.getElementById('barWinSeg'); if(win) win.style.display='none';
+    const max=Math.max(1,...data.map(x=>x.v));
+    el.innerHTML=data.length?data.map(x=>{
+      const h=x.v?Math.max(2,Math.round(x.v/max*100)):0;
+      const tip=x.accounts.map(a=>`${a.name}：${fmtTok(a.t)}`).join('\n');
+      const full=`${x.label} · 今日 ${fmtTok(x.v)}\n${tip}`;
+      return `<div class="bar-item" title="${esc(full)}">
+        <div class="bar-val">${x.v?fmtTok(x.v):''}</div>
+        <div class="bar-fill${x.v?'':' zero'}" style="height:${h}%"></div>
+        <div class="bar-x" style="max-width:80px;overflow:hidden;text-overflow:ellipsis">${esc(x.label)}</div>
+      </div>`;
+    }).join(''):'<div class="muted" style="padding:20px">今日暂无 Key 消耗</div>';
+    const lab=document.getElementById('barRangeLabel');
+    if(lab) lab.textContent='今日 · 按 Key';
+    return;
+  }
+  if(slider2){ slider2.style.display=''; const box=slider2.closest('.bar-slider'); if(box) box.style.display=''; }
+  const win=document.getElementById('barWinSeg'); if(win) win.style.display='';
   const map={};
   BAR_DATA.forEach(x=>{map[x.d]=Number(x.t)||0;});
   const today=new Date(); today.setHours(0,0,0,0);
@@ -1040,7 +1068,13 @@ function renderBars(){
   el.innerHTML=days.map(x=>{
     const h=x.v?Math.max(2, Math.round(x.v/max*100)):0;
     const label=x.key.slice(5).replace('-','/');
-    return `<div class="bar-item" title="${x.key} · ${fmtTok(x.v)} Token">
+    let tip=`${x.key} · ${fmtTok(x.v)} Token`;
+    if(DAILY_VIEW==='key'){
+      const day=(BAR_DATA||[]).find(d=>d.d===x.key);
+      if(day&&day.keys&&day.keys.length) tip=day.keys.map(k=>`${k.name}：${fmtTok(k.t)}`).join('\n');
+      else tip=x.key+'：无数据';
+    }
+    return `<div class="bar-item" title="${esc(tip)}">
       <div class="bar-val">${x.v?fmtTok(x.v):''}</div>
       <div class="bar-fill${x.v?'':' zero'}" style="height:${h}%"></div>
       <div class="bar-x">${label}</div>
@@ -1054,8 +1088,28 @@ function renderBars(){
   }
 }
 
-function renderHeatmap(daily){
-  BAR_DATA=daily||[];
+let DAILY_VIEW='model';
+function setDailyView(v){
+  DAILY_VIEW=v;
+  document.querySelectorAll('#dailyViewSeg button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));
+  if(LAST_STATE) renderHeatmap(LAST_STATE.usage.daily||[], LAST_STATE);
+}
+let TODAY_KEY_DATA=[];
+function renderHeatmap(daily, s){
+  if(DAILY_VIEW==='key' && s){
+    const rows=s.today_by_key_account||[];
+    const byKey={};
+    rows.forEach(r=>{
+      const id=r.api_key_id||'unknown';
+      byKey[id]=byKey[id]||{label:r.api_key_name||'–', v:0, accounts:[]};
+      byKey[id].v+=Number(r.t)||0;
+      byKey[id].accounts.push({name:r.account_name||'–', t:Number(r.t)||0});
+    });
+    TODAY_KEY_DATA=Object.values(byKey).sort((a,b)=>b.v-a.v);
+    BAR_DATA=[];
+  } else {
+    BAR_DATA=daily||[];
+  }
   const slider=document.getElementById('barSlider');
   const keys=BAR_DATA.map(x=>x.d).sort();
   const today=new Date(); today.setHours(0,0,0,0);

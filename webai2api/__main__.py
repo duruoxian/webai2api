@@ -2,9 +2,19 @@
 from __future__ import annotations
 
 import argparse
+import sys
+
+
+def _force_utf8() -> None:
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 
 def main() -> None:
+    _force_utf8()
     parser = argparse.ArgumentParser(description="webai2api —— 网页版 AI 反代为 OpenAI 兼容 API")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8800)

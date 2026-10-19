@@ -450,6 +450,12 @@ class Store:
                 "FROM usage_log WHERE ts>=? GROUP BY d ORDER BY d",
                 (_now() - 86400 * 182,),
             ).fetchall()
+            daily_by_key = c.execute(
+                "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, "
+                "api_key_id, api_key_name, COALESCE(SUM(total_tokens),0) t "
+                "FROM usage_log WHERE ts>=? GROUP BY d, api_key_id ORDER BY d",
+                (_now() - 86400 * 182,),
+            ).fetchall()
             errors = c.execute(
                 "SELECT CASE WHEN error_code<>'' THEN error_code ELSE status END code, "
                 "COUNT(*) n FROM usage_log" + where +
@@ -471,6 +477,7 @@ class Store:
             "by_key": [dict(r) for r in by_key],
             "last24h": dict(last24),
             "daily": [dict(r) for r in daily],
+            "daily_by_key": [dict(r) for r in daily_by_key],
             "errors": [dict(r) for r in errors],
             "latency": dict(lat) if lat else {"avg_ms": 0, "avg_ttft": 0},
         }
@@ -521,6 +528,20 @@ class Store:
             row = c.execute("SELECT COUNT(*) n FROM usage_log" + where, tuple(args)).fetchone()
         return int(row["n"]) if row else 0
 
+    def today_by_key_account(self) -> list[dict]:
+        """今日按 Key × 账号 聚合，用于每日图表的按 Key 视图。"""
+        import datetime as _dt
+        now = _dt.datetime.now()
+        day0 = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT api_key_id, api_key_name, account_id, account_name, "
+                "COALESCE(SUM(total_tokens),0) t, COUNT(*) n "
+                "FROM usage_log WHERE ts>=? GROUP BY api_key_id, account_id "
+                "ORDER BY t DESC", (day0,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def key_usage_map(self) -> dict[str, dict]:
         """每个 Key 今日/本月 Token 用量（额度看板用）。"""
         import datetime as _dt
@@ -570,6 +591,22 @@ class Store:
                 "prompt_tokens, completion_tokens, total_tokens, status, "
                 "latency_ms, first_token_ms, error_code "
                 "FROM usage_log" + where + " ORDER BY id DESC LIMIT 100000",
+                tuple(args),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def key_daily_by_account(self, key_id: str, day_start: float | None = None) -> list[dict]:
+        """某 Key 当日（或自 day_start 起）每个账号的 Token 消耗。"""
+        conds, args = ["api_key_id=?"], [key_id]
+        if day_start is not None:
+            conds.append("ts>=?")
+            args.append(day_start)
+        where = " WHERE " + " AND ".join(conds)
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT account_id, account_name, COUNT(*) n, "
+                "COALESCE(SUM(total_tokens),0) t "
+                "FROM usage_log" + where + " GROUP BY account_id ORDER BY t DESC",
                 tuple(args),
             ).fetchall()
         return [dict(r) for r in rows]
