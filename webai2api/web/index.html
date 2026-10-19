@@ -173,6 +173,7 @@
           </div>
         </div>
         <div id="barchart" class="barchart"></div>
+        <div id="barLegend" class="bar-legend" style="display:none"></div>
         <div class="bar-slider">
           <div class="bar-range-label" id="barRangeLabel"></div>
           <input type="range" id="barSlider" min="0" max="0" value="0" oninput="onBarSlide(this.value)">
@@ -1013,33 +1014,10 @@ function onBarSlide(v){
 }
 function renderBars(){
   const el=document.getElementById('barchart'); if(!el)return;
-  const slider2=document.getElementById('barSlider');
-  if(DAILY_VIEW==='key'){
-    const data=TODAY_KEY_DATA||[];
-    if(slider2){ slider2.style.display='none'; const box=slider2.closest('.bar-slider'); if(box) box.style.display='none'; }
-    const win=document.getElementById('barWinSeg'); if(win) win.style.display='none';
-    const max=Math.max(1,...data.map(x=>x.v));
-    el.innerHTML=data.length?data.map(x=>{
-      const h=x.v?Math.max(2,Math.round(x.v/max*100)):0;
-      const tip=x.accounts.map(a=>`${a.name}：${fmtTok(a.t)}`).join('\n');
-      const full=`${x.label} · 今日 ${fmtTok(x.v)}\n${tip}`;
-      return `<div class="bar-item" title="${esc(full)}">
-        <div class="bar-val">${x.v?fmtTok(x.v):''}</div>
-        <div class="bar-fill${x.v?'':' zero'}" style="height:${h}%"></div>
-        <div class="bar-x" style="max-width:80px;overflow:hidden;text-overflow:ellipsis">${esc(x.label)}</div>
-      </div>`;
-    }).join(''):'<div class="muted" style="padding:20px">今日暂无 Key 消耗</div>';
-    const lab=document.getElementById('barRangeLabel');
-    if(lab) lab.textContent='今日 · 按 Key';
-    return;
-  }
-  if(slider2){ slider2.style.display=''; const box=slider2.closest('.bar-slider'); if(box) box.style.display=''; }
-  const win=document.getElementById('barWinSeg'); if(win) win.style.display='';
   const map={};
   BAR_DATA.forEach(x=>{map[x.d]=Number(x.t)||0;});
   const today=new Date(); today.setHours(0,0,0,0);
 
-  // 用全部有数据的天数范围作为滑动轨道
   const keys=Object.keys(map).sort();
   let firstKey=today;
   if(keys.length){
@@ -1048,38 +1026,59 @@ function renderBars(){
   }
   const totalDays=Math.max(1, Math.floor((today-firstKey)/86400000)+1);
   const maxOffset=Math.max(0, totalDays-BAR_WIN);
-
   const slider=document.getElementById('barSlider');
-  if(slider){
-    slider.max=String(maxOffset);
-    slider.value=String(Math.min(BAR_OFFSET,maxOffset));
-    BAR_OFFSET=Number(slider.value)||0;
-  }
+  if(slider){ slider.max=String(maxOffset); slider.value=String(Math.min(BAR_OFFSET,maxOffset)); BAR_OFFSET=Number(slider.value)||0; }
 
   const end=new Date(today); end.setDate(end.getDate()-BAR_OFFSET);
   const start=new Date(end); start.setDate(start.getDate()-(BAR_WIN-1));
-
   const days=[];
   for(let d=new Date(start); d<=end; d.setDate(d.getDate()+1)){
     days.push({key:ymdLocal(d), v:map[ymdLocal(d)]||0, date:new Date(d)});
   }
   const max=Math.max(1,...days.map(x=>x.v));
 
-  el.innerHTML=days.map(x=>{
-    const h=x.v?Math.max(2, Math.round(x.v/max*100)):0;
-    const label=x.key.slice(5).replace('-','/');
-    let tip=`${x.key} · ${fmtTok(x.v)} Token`;
-    if(DAILY_VIEW==='key'){
-      const day=(BAR_DATA||[]).find(d=>d.d===x.key);
-      if(day&&day.keys&&day.keys.length) tip=day.keys.map(k=>`${k.name}：${fmtTok(k.t)}`).join('\n');
-      else tip=x.key+'：无数据';
+  if(DAILY_VIEW==='key'){
+    const legend={};
+    const palette=DONUT_COLORS;
+    let ci=0;
+    const getColor=(id)=>{ if(!legend[id]){ legend[id]=palette[ci%palette.length]; ci++; } return legend[id]; };
+    const names={};
+    el.innerHTML=days.map(x=>{
+      const items=(KEY_DAILY[x.key]||[]).slice().sort((a,b)=>b.v-a.v);
+      if(!items.length) return `<div class="bar-item bar-day" title="${x.key}：无消耗">
+        <div class="bar-val"></div><div class="bar-stack zero"></div><div class="bar-x">${x.key.slice(5).replace('-','/')}</div></div>`;
+      let total=0; items.forEach(it=>{ total+=it.v; names[it.id]=it.name; getColor(it.id); });
+      const h=Math.max(2,Math.round(total/max*100));
+      const segs=items.map(it=>{
+        const share=it.v/total*100;
+        const tip=`${it.name} · ${x.key} · ${fmtTok(it.v)} Token\n`+
+          (it.accounts||[]).map(a=>`${a.name}：${fmtTok(a.t)}`).join('\n');
+        return `<div class="bar-seg" style="height:${share}%;background:${getColor(it.id)}" title="${esc(tip)}"></div>`;
+      }).join('');
+      return `<div class="bar-item bar-day">
+        <div class="bar-val">${fmtTok(total)}</div>
+        <div class="bar-stack" style="height:${h}%">${segs}</div>
+        <div class="bar-x">${x.key.slice(5).replace('-','/')}</div>
+      </div>`;
+    }).join('');
+    const lg=document.getElementById('barLegend');
+    if(lg){
+      lg.innerHTML=Object.entries(names).map(([id,name])=>
+        `<span class="lg-item"><i style="background:${getColor(id)}"></i>${esc(name)}</span>`).join('');
+      lg.style.display=Object.keys(names).length?'flex':'none';
     }
-    return `<div class="bar-item" title="${esc(tip)}">
-      <div class="bar-val">${x.v?fmtTok(x.v):''}</div>
-      <div class="bar-fill${x.v?'':' zero'}" style="height:${h}%"></div>
-      <div class="bar-x">${label}</div>
-    </div>`;
-  }).join('');
+  } else {
+    el.innerHTML=days.map(x=>{
+      const h=x.v?Math.max(2, Math.round(x.v/max*100)):0;
+      const label=x.key.slice(5).replace('-','/');
+      return `<div class="bar-item" title="${x.key} · ${fmtTok(x.v)} Token">
+        <div class="bar-val">${x.v?fmtTok(x.v):''}</div>
+        <div class="bar-fill${x.v?'':' zero'}" style="height:${h}%"></div>
+        <div class="bar-x">${label}</div>
+      </div>`;
+    }).join('');
+    const lg=document.getElementById('barLegend'); if(lg) lg.style.display='none';
+  }
 
   const lab=document.getElementById('barRangeLabel');
   if(lab){
@@ -1094,21 +1093,20 @@ function setDailyView(v){
   document.querySelectorAll('#dailyViewSeg button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));
   if(LAST_STATE) renderHeatmap(LAST_STATE.usage.daily||[], LAST_STATE);
 }
-let TODAY_KEY_DATA=[];
+let KEY_DAILY={};
 function renderHeatmap(daily, s){
-  if(DAILY_VIEW==='key' && s){
-    const rows=s.today_by_key_account||[];
-    const byKey={};
-    rows.forEach(r=>{
+  BAR_DATA=daily||[];
+  KEY_DAILY={};
+  if(s){
+    (s.daily_key_account||[]).forEach(r=>{
+      const d=r.d;
       const id=r.api_key_id||'unknown';
-      byKey[id]=byKey[id]||{label:r.api_key_name||'–', v:0, accounts:[]};
-      byKey[id].v+=Number(r.t)||0;
-      byKey[id].accounts.push({name:r.account_name||'–', t:Number(r.t)||0});
+      KEY_DAILY[d]=KEY_DAILY[d]||[];
+      let k=KEY_DAILY[d].find(x=>x.id===id);
+      if(!k){ k={id, name:r.api_key_name||'–', v:0, accounts:[]}; KEY_DAILY[d].push(k); }
+      k.v+=Number(r.t)||0;
+      k.accounts.push({name:r.account_name||'–', t:Number(r.t)||0});
     });
-    TODAY_KEY_DATA=Object.values(byKey).sort((a,b)=>b.v-a.v);
-    BAR_DATA=[];
-  } else {
-    BAR_DATA=daily||[];
   }
   const slider=document.getElementById('barSlider');
   const keys=BAR_DATA.map(x=>x.d).sort();
@@ -1120,6 +1118,7 @@ function renderHeatmap(daily, s){
   if(slider){ slider.max=String(maxOffset); if(BAR_OFFSET>maxOffset) BAR_OFFSET=maxOffset; }
   renderBars();
 }
+
 
 function renderAccounts(s){
   const tb=document.querySelector('#accTable tbody');tb.innerHTML='';

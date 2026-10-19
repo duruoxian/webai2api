@@ -753,3 +753,11 @@ html.modal-open,html.modal-open body{overflow:hidden;overscroll-behavior:none}
 .alert-bar div{display:flex;gap:6px}
 
 #keyEditModal .date-btn{height:44px}
+
+.bar-stack{width:100%;max-width:44px;display:flex;flex-direction:column-reverse;border-radius:6px 6px 2px 2px;overflow:hidden;min-height:2px;box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}
+.bar-stack.zero{background:var(--heat0);box-shadow:none}
+.bar-seg{width:100%;min-height:1px;transition:filter .12s}
+.bar-seg:hover{filter:brightness(1.15)}
+.bar-legend{display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:10px;font-size:12px;color:var(--text3)}
+.lg-item{display:inline-flex;align-items:center;gap:6px}
+.lg-item i{width:9px;height:9px;border-radius:3px;display:inline-block}

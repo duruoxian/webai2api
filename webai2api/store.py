@@ -528,6 +528,20 @@ class Store:
             row = c.execute("SELECT COUNT(*) n FROM usage_log" + where, tuple(args)).fetchone()
         return int(row["n"]) if row else 0
 
+    def daily_key_account(self, days: int = 182) -> list[dict]:
+        """按日 × Key × 账号 聚合，用于每日 Token 的按 Key 堆叠图。"""
+        since = _now() - 86400 * max(1, int(days))
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, "
+                "api_key_id, api_key_name, account_name, "
+                "COALESCE(SUM(total_tokens),0) t "
+                "FROM usage_log WHERE ts>=? "
+                "GROUP BY d, api_key_id, account_name ORDER BY d",
+                (since,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def today_by_key_account(self) -> list[dict]:
         """今日按 Key × 账号 聚合，用于每日图表的按 Key 视图。"""
         import datetime as _dt
