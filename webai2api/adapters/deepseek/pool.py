@@ -151,8 +151,9 @@ class ClientPool:
             self._sync()
             return list(self._clients.values())
 
-    def pick(self, exclude: set[str] | None = None) -> AccountClient | None:
-        """轮询选一个"健康"的可用账号，可排除指定账号。"""
+    def pick(self, exclude: set[str] | None = None,
+             allowed: set[str] | None = None) -> AccountClient | None:
+        """轮询选一个"健康"的可用账号，可排除 / 限定账号范围。"""
         exclude = exclude or set()
         with self._lock:
             self._sync()
@@ -162,6 +163,8 @@ class ClientPool:
                 # 都冷却了就放开健康限制，总比没有强
                 items = [c for c in self._clients.values()
                          if c.account["id"] not in exclude]
+            if allowed:
+                items = [c for c in items if c.account["id"] in allowed]
             if not items:
                 return None
             self._rr = (self._rr + 1) % len(items)
