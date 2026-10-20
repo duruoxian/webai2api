@@ -18,6 +18,12 @@ data/
 current_port.txt
 .test_state
 
+# Lite 授权私钥/公钥与构建标记（绝不能提交）
+tools/private_key.txt
+tools/public_key.txt
+edition.txt
+dist-lite/
+
 # PoW 文件：需自行从 DeepSeek 网页端提取（见 README），不随仓库分发
 sha3_wasm_bg.wasm
 
