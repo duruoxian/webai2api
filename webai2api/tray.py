@@ -40,11 +40,6 @@ def start_tray(admin_url: str, logger: Logger) -> None:
 
     def _quit(icon=None, item=None):
         try:
-            from webai2api.tunnel import stop_all
-            stop_all()
-        except Exception:
-            pass
-        try:
             from webai2api.paths import user_data_dir as _ud
             from webai2api.store import Store as _Store
             _Store(_ud() / "webai2api.db").checkpoint()

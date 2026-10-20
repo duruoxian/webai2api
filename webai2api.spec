@@ -19,10 +19,6 @@ import os
 if os.path.exists("sha3_wasm_bg.wasm"):
     datas.append(("sha3_wasm_bg.wasm", "."))
 
-# Cloudflare 隧道客户端（可选）：有则打进 _internal，供「外网访问」使用
-if os.path.exists("cloudflared.exe"):
-    datas.append(("cloudflared.exe", "."))
-
 # 应用图标：既作为 exe 文件图标，也供运行期窗口图标使用
 APP_ICON = "assets/webai2api.ico"
 if os.path.exists(APP_ICON):

@@ -372,20 +372,6 @@
         <button class="btn" onclick="saveGeneralSettings()">保存</button>
 
         <div class="set-group" style="margin-top:18px">
-          <div class="set-group-title">外网访问（给异地朋友用）</div>
-          <p class="hint" style="margin:0 0 10px">开启后会通过 Cloudflare 临时隧道生成一个公网地址（trycloudflare.com），把「地址 + Key」发给朋友即可。地址每次开启都会变，关闭后立即失效。</p>
-          <div class="fld-row" style="align-items:center;gap:10px">
-            <button class="btn sm" id="tunnelBtn" onclick="toggleTunnel()">开启外网访问</button>
-            <span class="hint" id="tunnelHint" style="margin:0"></span>
-          </div>
-          <div id="tunnelBox" style="display:none;margin-top:12px">
-            <div class="guide-row"><span>公网地址</span><code id="tunnelUrl">—</code>
-              <button class="btn gray sm" onclick="copyText(document.getElementById('tunnelUrl').textContent)">复制</button></div>
-            <div class="hint" style="margin-top:8px">朋友在客户端里填这个地址 + 你创建的 Key。建议给对方的 Key 设置日/月额度，避免被刷。</div>
-          </div>
-        </div>
-
-        <div class="set-group" style="margin-top:18px">
           <div class="set-group-title">系统</div>
           <label class="chk"><input type="checkbox" id="setTray" onchange="saveTray()"> 显示系统托盘图标（可打开面板 / 退出）</label>
           <label class="chk"><input type="checkbox" id="setAutostart" onchange="saveAutostart()"> 开机自动启动</label>
@@ -1593,43 +1579,7 @@ async function loadSystem(){
       }
       uh.textContent=`当前 ${fmt(u.rows)} 条${span} · 数据库 ${size}`;
     }
-    applyTunnelState(j.tunnel);
   }catch(e){}
-}
-function applyTunnelState(t){
-  const btn=document.getElementById('tunnelBtn');
-  const hint=document.getElementById('tunnelHint');
-  const box=document.getElementById('tunnelBox');
-  const url=document.getElementById('tunnelUrl');
-  if(!btn) return;
-  const running=!!(t&&t.running);
-  btn.textContent=running?'关闭外网访问':'开启外网访问';
-  btn.classList.toggle('danger',running);
-  btn.disabled=false;
-  if(running){
-    url.textContent=(t.url||'')+'/v1';
-    box.style.display='';
-    hint.textContent='已开启';
-  }else{
-    box.style.display='none';
-    hint.textContent = (t&&t.error) ? t.error : ((t&&t.binary===false)?'未找到 cloudflared.exe':'未开启');
-  }
-}
-async function toggleTunnel(){
-  const btn=document.getElementById('tunnelBtn');
-  const hint=document.getElementById('tunnelHint');
-  const running=btn.textContent.includes('关闭');
-  btn.disabled=true;
-  hint.textContent=running?'正在关闭…':'正在建立隧道（首次约 10–30 秒）…';
-  const j=await api('/system/tunnel','POST',{enabled:!running});
-  btn.disabled=false;
-  if(j&&j.ok){
-    if(!running) toast('外网地址已生成');
-    loadSystem();
-  }else{
-    hint.textContent=(j&&j.error)||'操作失败';
-    toast((j&&j.error)||'操作失败');
-  }
 }
 async function cleanUsageNow(){
   const days=Number((document.getElementById('setRetain').value||'0').trim())||0;
