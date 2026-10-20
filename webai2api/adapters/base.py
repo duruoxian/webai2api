@@ -16,6 +16,14 @@ from ..store import Store
 COOLDOWN_SECONDS = 300
 
 
+def account_ready(account: dict) -> bool:
+    """账号至少要有一种可用凭证，否则选了也只会报错、白等重试。"""
+    return bool(
+        str(account.get("auth_token") or "").strip()
+        or str(account.get("cookie") or "").strip()
+    )
+
+
 def _is_rate_limited(exc: Exception) -> bool:
     low = str(exc).lower()
     return any(w in low for w in ("429", "rate limit", "too many", "限流", "频繁"))
@@ -29,18 +37,24 @@ class AccountClient:
         self.client = client
         self.config = config
         self.cooldown_until = 0.0
+        self.rate_hits = 0
 
     def healthy(self) -> bool:
         return self.cooldown_until < time.time()
 
+    def cooldown_left(self) -> int:
+        return max(0, int(self.cooldown_until - time.time()))
+
     def mark_bad(self, seconds: int = COOLDOWN_SECONDS, exc: Exception | None = None) -> None:
-        # 被限流的账号冷却更久，否则会一直撞墙
+        # 限流：首次 60 秒，连续命中逐步翻倍，最长 15 分钟
         if exc is not None and _is_rate_limited(exc):
-            seconds = max(seconds, 900)
+            self.rate_hits += 1
+            seconds = min(900, 60 * (2 ** (self.rate_hits - 1)))
         self.cooldown_until = time.time() + seconds
 
     def mark_ok(self) -> None:
         self.cooldown_until = 0.0
+        self.rate_hits = 0
 
 
 class GenericClientPool:
@@ -99,6 +113,7 @@ class GenericClientPool:
                 ac = AccountClient(a, client, cfg)
                 if old:
                     ac.cooldown_until = old.cooldown_until
+                    ac.rate_hits = old.rate_hits
                 self._clients[a["id"]] = ac
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning("账号 %s 初始化失败: %s", a.get("name"), exc)
@@ -115,23 +130,41 @@ class GenericClientPool:
             return list(self._clients.values())
 
     def pick(self, exclude: set[str] | None = None,
-             allowed: set[str] | None = None) -> AccountClient | None:
-        """轮询选一个"健康"的可用账号，可排除指定账号 / 限定账号范围。"""
+             allowed: set[str] | None = None,
+             prefer: str | None = None) -> AccountClient | None:
+        """轮询选一个"健康"的可用账号，可排除 / 限定范围 / 优先指定。
+
+        全部处于冷却时，只有冷却快结束（≤45 秒）才勉强放行，
+        否则返回 None，让上层直接告诉用户"稍后再试"，避免继续撞限流。
+        """
         exclude = exclude or set()
         with self._lock:
             self._sync()
             items = [c for c in self._clients.values()
-                     if c.account["id"] not in exclude and c.healthy()]
+                     if c.account["id"] not in exclude and c.healthy()
+                     and account_ready(c.account)]
             if not items:
-                # 都冷却了就放开健康限制，总比没有强
-                items = [c for c in self._clients.values()
-                         if c.account["id"] not in exclude]
+                cooling = [c for c in self._clients.values()
+                           if c.account["id"] not in exclude and account_ready(c.account)]
+                cooling = [c for c in cooling if c.cooldown_left() <= 45]
+                items = cooling
             if allowed:
                 items = [c for c in items if c.account["id"] in allowed]
             if not items:
                 return None
+            if prefer:
+                for c in items:
+                    if c.account["id"] == prefer:
+                        return c
             self._rr = (self._rr + 1) % len(items)
             return items[self._rr]
+
+    def cooldowns(self) -> dict[str, int]:
+        """各账号剩余冷却秒数（>0 表示正在休息）。"""
+        with self._lock:
+            self._sync()
+            return {aid: c.cooldown_left() for aid, c in self._clients.items()
+                    if c.cooldown_left() > 0}
 
     def pick_by_id(self, account_id: str) -> AccountClient | None:
         with self._lock:

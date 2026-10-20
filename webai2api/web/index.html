@@ -1084,6 +1084,7 @@ function renderHeatmap(s){
 
 function renderAccounts(s){
   const tb=document.querySelector('#accTable tbody');tb.innerHTML='';
+  const cd=s.cooldowns||{};
   s.accounts.forEach(a=>{
     const cred=[a.has_token&&'token',a.has_device&&'device',a.has_settings&&'settings',a.has_cookie&&'cookie']
       .filter(Boolean).join(' · ')||'未填写';
@@ -1094,6 +1095,8 @@ function renderAccounts(s){
     else if(a.health==='expired') healthBadge='<span class="tag err">凭证失效</span>';
     else if(a.health==='error') healthBadge='<span class="tag err">检查失败</span>';
     else healthBadge='<span class="tag off">未检查</span>';
+    const left=Number(cd[a.id])||0;
+    const cdBadge=left>0?`<span class="tag off">冷却 ${left>=60?Math.ceil(left/60)+' 分':left+' 秒'}</span>`:'';
     const lg = (s.login&&s.login[a.id])||{};
     let loginBadge='';
     if(lg.status==='opening') loginBadge='<span class="tag off">正在打开…</span>';
@@ -1101,7 +1104,7 @@ function renderAccounts(s){
     else if(lg.status==='success') loginBadge='<span class="tag on">登录成功</span>';
     else if(lg.status==='error') loginBadge='<span class="tag err">'+esc(lg.message||'失败')+'</span>';
     tb.innerHTML+=`<tr><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
-      <td class="muted mono">${cred} ${loginBadge} ${healthBadge}</td>
+      <td class="muted mono">${cred} ${loginBadge} ${healthBadge} ${cdBadge}</td>
       <td><span class="tag ${a.enabled?'on':'off'}">${a.enabled?'启用':'停用'}</span></td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn sm" onclick="browserLogin('${a.id}')">浏览器登录</button>

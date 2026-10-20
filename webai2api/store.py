@@ -69,6 +69,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_log(model);
 CREATE INDEX IF NOT EXISTS idx_usage_ts_model ON usage_log(ts, model);
 CREATE INDEX IF NOT EXISTS idx_usage_ts_account ON usage_log(ts, account_id);
 CREATE INDEX IF NOT EXISTS idx_usage_ts_key ON usage_log(ts, api_key_id);
+CREATE INDEX IF NOT EXISTS idx_usage_key_ts ON usage_log(api_key_id, ts);
 CREATE INDEX IF NOT EXISTS idx_usage_status ON usage_log(status);
 
 CREATE TABLE IF NOT EXISTS settings (

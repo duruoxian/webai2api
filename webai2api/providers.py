@@ -80,8 +80,19 @@ class ProviderRegistry:
         return self.deepseek
 
     def pick(self, model: str | None, exclude: set[str] | None = None,
-             allowed: set[str] | None = None) -> AccountClient | None:
-        return self.pool_for_model(model).pick(exclude, allowed=allowed)
+             allowed: set[str] | None = None,
+             prefer: str | None = None) -> AccountClient | None:
+        return self.pool_for_model(model).pick(exclude, allowed=allowed, prefer=prefer)
+
+    def cooldowns(self) -> dict[str, int]:
+        """各账号剩余冷却秒数（跨 provider 合并）。"""
+        out: dict[str, int] = {}
+        for pool in self._pools.values():
+            try:
+                out.update(pool.cooldowns())
+            except Exception:  # noqa: BLE001
+                pass
+        return out
 
     def note_auth_failure(self, account_id: str) -> bool:
         """连续两次鉴权失败 → 自动停用账号，避免继续浪费请求。"""

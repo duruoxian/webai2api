@@ -12,9 +12,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
+import threading
 import time
+from collections import OrderedDict
 from logging import Logger
 
 from fastapi import APIRouter, Request
@@ -123,13 +126,24 @@ def _estimate_tokens(text: str) -> int:
     return max(1, int(cjk / 1.5 + other / 4))
 
 
-def _estimate_usage(payload: dict, status: str) -> tuple[int, int]:
-    """上游没返回 usage 时的兜底估算。"""
+def _messages_text(payload: dict) -> str:
     msgs = payload.get("messages") or []
-    text = "".join(
-        str(m.get("content") or "") for m in msgs if isinstance(m, dict)
-    )
-    return _estimate_tokens(text), 0
+    return "".join(str(m.get("content") or "") for m in msgs if isinstance(m, dict))
+
+
+def _estimate_prompt(payload: dict) -> int:
+    """上游没返回 usage 时，按 messages 估算输入 token。"""
+    return _estimate_tokens(_messages_text(payload))
+
+
+def _estimate_completion(payload: dict, text: str = "") -> int:
+    """上游没返回 usage 时，按实际输出估算 completion；没有输出再退回 max_tokens 的一半。"""
+    if text:
+        return _estimate_tokens(text)
+    try:
+        return max(1, int(payload.get("max_tokens") or 0) // 2)
+    except Exception:
+        return 0
 
 
 def _usage_from_openai(resp: dict) -> tuple[int, int, int]:
@@ -138,6 +152,145 @@ def _usage_from_openai(resp: dict) -> tuple[int, int, int]:
     c = int(u.get("completion_tokens") or 0)
     t = int(u.get("total_tokens") or (p + c))
     return p, c, t
+
+
+def _response_text(resp: dict) -> str:
+    """从非流式响应里拼出输出文本（用于估算 completion）。"""
+    out = []
+    for ch in resp.get("choices") or []:
+        msg = ch.get("message") or {}
+        out.append(str(msg.get("content") or ""))
+        out.append(str(msg.get("reasoning_content") or ""))
+    return "".join(out)
+
+
+def _classify_error(exc: Exception | None) -> str:
+    """把上游异常分类，决定「换号 / 冷却 / 直接失败」。"""
+    if exc is None:
+        return "unknown"
+    text = str(exc)
+    low = text.lower()
+
+    def has(*words: str) -> bool:
+        return any(w in low for w in words)
+
+    if has("429", "rate limit", "too many", "限流", "频繁"):
+        return "rate"
+    if (re.search(r"\b401\b", text) or has("unauthorized", "refresh_token", "40102",
+                                         "token 已过期", "token expired", "invalid token",
+                                         "access token", "登录", "凭证")):
+        return "auth"
+    if has("content", "sensitive", "审核", "违规"):
+        return "content"
+    if has("timeout", "timed out", "超时", "connection", "connect",
+           "network", "unreachable", "ssl", "握手"):
+        return "network"
+    if re.search(r"\b5\d\d\b", text):
+        return "server"
+    return "unknown"
+
+
+def _apply_failure(registry: ProviderRegistry, ac, exc: Exception) -> str:
+    """按错误类型更新账号状态，返回分类结果。"""
+    kind = _classify_error(exc)
+    if kind == "auth":
+        registry.note_auth_failure(ac.account["id"])
+        ac.mark_bad(600, exc=exc)
+    elif kind == "rate":
+        registry.note_auth_ok(ac.account["id"])
+        ac.mark_bad(exc=exc)
+    elif kind == "content":
+        ac.mark_ok()
+    else:
+        registry.note_auth_ok(ac.account["id"])
+        ac.mark_bad(30, exc=exc)
+    return kind
+
+
+# ── 会话粘性：同一段对话尽量固定在同一账号，避免会话缓存失效 ──
+_STICKY_MAX = 2000
+_STICKY_TTL = 6 * 3600
+_STICKY: "OrderedDict[str, tuple[str, float]]" = OrderedDict()
+_STICKY_LOCK = threading.Lock()
+
+
+def _conv_key(payload: dict, key_id: str) -> str:
+    """用「Key + 模型 + 对话开头」做指纹，整段对话保持一致。"""
+    msgs = payload.get("messages") or []
+    head = []
+    for m in msgs[:2]:
+        if isinstance(m, dict):
+            head.append([m.get("role"), str(m.get("content") or "")[:2000]])
+    raw = json.dumps([key_id, payload.get("model"), head], ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _sticky_get(ck: str) -> str:
+    if not ck:
+        return ""
+    with _STICKY_LOCK:
+        item = _STICKY.get(ck)
+        if not item:
+            return ""
+        aid, ts = item
+        if time.time() - ts > _STICKY_TTL:
+            _STICKY.pop(ck, None)
+            return ""
+        _STICKY.move_to_end(ck)
+        return aid
+
+
+def _sticky_set(ck: str, account_id: str) -> None:
+    if not ck:
+        return
+    with _STICKY_LOCK:
+        _STICKY[ck] = (account_id, time.time())
+        _STICKY.move_to_end(ck)
+        while len(_STICKY) > _STICKY_MAX:
+            _STICKY.popitem(last=False)
+
+
+# ── 额度预占：并发请求不会同时挤过同一个额度检查 ──
+_QUOTA_INFLIGHT: dict[str, tuple[int, float]] = {}
+_QUOTA_LOCK = threading.Lock()
+_QUOTA_STALE = 30 * 60
+
+
+def _quota_sweep() -> None:
+    """清理异常路径（客户端秒断、进程内异常）遗留的预占。调用方需持锁。"""
+    now = time.time()
+    for kid in [k for k, (_, ts) in _QUOTA_INFLIGHT.items()
+                if now - ts > _QUOTA_STALE]:
+        _QUOTA_INFLIGHT.pop(kid, None)
+
+
+def _quota_inflight(key_id: str) -> int:
+    with _QUOTA_LOCK:
+        _quota_sweep()
+        item = _QUOTA_INFLIGHT.get(key_id)
+        return item[0] if item else 0
+
+
+def _quota_reserve(key_id: str, amount: int) -> None:
+    amount = max(0, int(amount))
+    if not amount:
+        return
+    with _QUOTA_LOCK:
+        _quota_sweep()
+        cur = _QUOTA_INFLIGHT.get(key_id, (0, 0.0))[0]
+        _QUOTA_INFLIGHT[key_id] = (cur + amount, time.time())
+
+
+def _quota_release(key_id: str, amount: int) -> None:
+    amount = max(0, int(amount))
+    if not amount:
+        return
+    with _QUOTA_LOCK:
+        cur = _QUOTA_INFLIGHT.get(key_id, (0, 0.0))[0] - amount
+        if cur > 0:
+            _QUOTA_INFLIGHT[key_id] = (cur, time.time())
+        else:
+            _QUOTA_INFLIGHT.pop(key_id, None)
 
 
 MAX_ACCOUNT_TRIES = 5
@@ -196,27 +349,51 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
 
         daily_quota = int(key_row.get("quota_daily") or 0)
         monthly_quota = int(key_row.get("quota_monthly") or 0)
+        # 预占额度：并发请求在「检查通过但还没记账」的窗口里不会同时挤过去。
+        # 预占量取「估算输入」与「剩余额度」的较小值，保证最后一个请求仍能放行。
+        reserve = 0
         if daily_quota or monthly_quota:
             used_today, used_month = await run_in_threadpool(
                 store.key_quota_status, key_row["id"])
-            if daily_quota and used_today >= daily_quota:
+            inflight = _quota_inflight(key_row["id"])
+            left_day = (daily_quota - used_today - inflight) if daily_quota else None
+            left_month = (monthly_quota - used_month - inflight) if monthly_quota else None
+            if left_day is not None and left_day <= 0:
                 return _error(429, f"该 Key 今日额度已用完（{used_today}/{daily_quota} tokens）",
                               "rate_limit_error")
-            if monthly_quota and used_month >= monthly_quota:
+            if left_month is not None and left_month <= 0:
                 return _error(429, f"该 Key 本月额度已用完（{used_month}/{monthly_quota} tokens）",
                               "rate_limit_error")
+            lefts = [x for x in (left_day, left_month) if x is not None]
+            reserve = max(1, min(_estimate_prompt(payload), min(lefts)))
+            _quota_reserve(key_row["id"], reserve)
 
         allowed_accs, allowed_models = _key_scope(key_row)
         if allowed_models and str(model).strip().lower() not in allowed_models:
+            _quota_release(key_row["id"], reserve)
             return _error(403, f"该 API Key 无权使用模型 {model}", "permission_error")
 
         started = time.perf_counter()
         want_acc = request.headers.get("x-account-id", "").strip()
         if want_acc and allowed_accs and want_acc not in allowed_accs:
+            _quota_release(key_row["id"], reserve)
             return _error(403, "该 API Key 无权使用指定账号", "permission_error")
-        ac = registry.pick_by_id(want_acc) if want_acc else registry.pick(
-            model, allowed=allowed_accs or None)
+        conv = _conv_key(payload, key_row["id"])
+        sticky = _sticky_get(conv) if not want_acc else ""
+        try:
+            ac = registry.pick_by_id(want_acc) if want_acc else registry.pick(
+                model, allowed=allowed_accs or None, prefer=sticky or None)
+        except Exception as exc:  # noqa: BLE001
+            _quota_release(key_row["id"], reserve)
+            logger.error("选号失败: %s", exc)
+            return _error(500, "内部错误：账号池异常", "internal_error")
         if ac is None:
+            _quota_release(key_row["id"], reserve)
+            cds = registry.cooldowns()
+            wait = max(cds.values()) if cds else 0
+            if wait:
+                mins = max(1, int(wait // 60))
+                return _error(429, f"账号都在冷却中，请约 {mins} 分钟后重试", "rate_limit_error")
             msg = ("该 Key 绑定的账号暂无可用，请检查账号状态"
                    if allowed_accs else "没有可用的账号，请先在面板添加并启用账号")
             return _error(503, msg, "unavailable")
@@ -237,6 +414,7 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                     resp = await run_in_threadpool(ac.client.chat_completion, payload)
                     ac.mark_ok()
                     registry.note_auth_ok(ac.account["id"])
+                    _sticky_set(conv, ac.account["id"])
                     break
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
@@ -244,32 +422,28 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                         "非流式请求失败(账号 %s, 第%d次): %s",
                         ac.account["name"], attempt + 1, exc,
                     )
-                    low = str(exc).lower()
-                    if any(w in low for w in ("401", "unauthorized", "token", "凭证", "登录")):
-                        registry.note_auth_failure(ac.account["id"])
-                    else:
-                        registry.note_auth_ok(ac.account["id"])
-                    if want_acc:
+                    kind = _apply_failure(registry, ac, exc)
+                    # 内容审核 / 凭证失效：换号也没用，直接返回
+                    if want_acc or kind in ("content", "auth"):
                         break
-                    # 先尝试换一个「没试过」的账号；没有别的账号时，
-                    # 就等一会儿重试同一个账号（单账号也能重试）。
                     tried.add(ac.account["id"])
                     nxt = registry.pick(model, exclude=tried,
                                         allowed=allowed_accs or None)
                     if nxt is None:
                         if attempt + 1 >= MAX_ACCOUNT_TRIES:
-                            ac.mark_bad(exc=exc)
+                            break
+                        # 没有别的账号：只有网络/5xx 才值得原地重试
+                        if kind not in ("network", "server"):
                             break
                         await asyncio.sleep(min(2 ** attempt, 8))
-                        ac.mark_bad(exc=exc)
                         continue
-                    ac.mark_bad(exc=exc)
                     ac = nxt
                     base.update(
                         account_id=ac.account["id"], account_name=ac.account["name"],
                         provider=ac.account["provider"],
                     )
             if resp is None:
+                _quota_release(key_row["id"], reserve)
                 await run_in_threadpool(
                     store.log_usage,
                     status=f"error:{type(last_exc).__name__}", **base,
@@ -279,6 +453,13 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                 code, msg = _friendly_error(last_exc) if last_exc else (502, "上游服务异常")
                 return _error(code, msg, "upstream_error")
             p, c, t = _usage_from_openai(resp)
+            if not p:
+                p = _estimate_prompt(payload)
+            if not c:
+                c = _estimate_completion(payload, _response_text(resp))
+            if not t:
+                t = p + c
+            _quota_release(key_row["id"], reserve)
             await run_in_threadpool(
                 store.log_usage, prompt_tokens=p, completion_tokens=c,
                 total_tokens=t, **base,
@@ -291,10 +472,12 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
         # 这样上游失败时可以换账号重试（而不是已经 200 了才发现失败）。
         started = time.perf_counter()
         first_chunk, ac, base = await _stream_with_retry(
-            registry, store, payload, model, ac, base, want_acc, allowed_accs or None, logger
+            registry, store, payload, model, ac, base, want_acc,
+            allowed_accs or None, logger, conv,
         )
         ttft_ms = int((time.perf_counter() - started) * 1000)
         if first_chunk is None:
+            _quota_release(key_row["id"], reserve)
             return _error(502, "所有可用账号均请求失败，请稍后重试", "upstream_error")
         async def gen():
             import asyncio
@@ -302,19 +485,36 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
 
             prompt_t = completion_t = total_t = 0
             status = "ok"
+            out_parts: list[str] = []
             aq: "asyncio.Queue" = asyncio.Queue()
             loop = asyncio.get_event_loop()
             _DONE = object()
+            cancelled = threading.Event()
+
+            def _push(item):
+                try:
+                    loop.call_soon_threadsafe(aq.put_nowait, item)
+                except RuntimeError:
+                    pass
 
             def _producer():
                 # 继续消费「已经拿到前缀」的那个流（不要重新发起请求）。
                 try:
                     for chunk in first_chunk:
-                        loop.call_soon_threadsafe(aq.put_nowait, chunk)
+                        if cancelled.is_set():
+                            break
+                        _push(chunk)
                 except Exception as exc:  # noqa: BLE001
-                    loop.call_soon_threadsafe(aq.put_nowait, ("error", exc))
+                    _push(("error", exc))
                 finally:
-                    loop.call_soon_threadsafe(aq.put_nowait, _DONE)
+                    # 客户端断开时在这里关闭上游流（必须由迭代线程自己关）
+                    close = getattr(first_chunk, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            pass
+                    _push(_DONE)
 
             threading.Thread(target=_producer, daemon=True).start()
             try:
@@ -325,6 +525,7 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                     if isinstance(item, tuple):
                         status = f"error:{type(item[1]).__name__}"
                         logger.warning("流式请求失败: %s", item[1])
+                        _apply_failure(registry, ac, item[1])
                         _, msg = _friendly_error(item[1])
                         err = {"error": {"message": msg, "type": "upstream_error"}}
                         yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
@@ -341,31 +542,62 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                                 total_t = int(u.get("total_tokens") or total_t)
                         except Exception:
                             pass
+                    elif line.startswith("data:"):
+                        # 攒输出文本，供上游不给 usage 时估算 completion
+                        body = line[5:].strip()
+                        if body and body != "[DONE]" and len(out_parts) < 20000:
+                            try:
+                                obj = json.loads(body)
+                                for ch in obj.get("choices") or []:
+                                    d = ch.get("delta") or {}
+                                    piece = d.get("content") or d.get("reasoning_content") or ""
+                                    if piece:
+                                        out_parts.append(str(piece))
+                            except Exception:
+                                pass
                     yield line
+            except asyncio.CancelledError:
+                # 客户端断开：通知上游线程停止拉取，避免继续消耗额度
+                cancelled.set()
+                status = "cancelled"
+                raise
             finally:
+                _quota_release(key_row["id"], reserve)
                 # 上游没给 usage 时用估算兜底，保证面板/客户端都有数
-                if not prompt_t and not completion_t:
-                    prompt_t, completion_t = _estimate_usage(payload, status)
+                if not prompt_t:
+                    prompt_t = _estimate_prompt(payload)
+                if not completion_t:
+                    completion_t = _estimate_completion(payload, "".join(out_parts))
                 if not total_t:
                     total_t = prompt_t + completion_t
-                try:
-                    await run_in_threadpool(
-                        store.log_usage, prompt_tokens=prompt_t,
-                        completion_tokens=completion_t, total_tokens=total_t,
-                        status=status, **base,
-                        latency_ms=int((time.perf_counter() - started) * 1000),
-                        first_token_ms=ttft_ms,
-                        error_code=("upstream" if status != "ok" else ""),
-                    )
-                except Exception:
-                    pass
+                _log = dict(
+                    prompt_tokens=prompt_t,
+                    completion_tokens=completion_t,
+                    total_tokens=total_t,
+                    status=status, **base,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    first_token_ms=ttft_ms,
+                    error_code=("" if status == "ok" else
+                                ("cancelled" if status == "cancelled" else "upstream")),
+                )
+                if status == "cancelled":
+                    # 任务已被取消，不能再 await，交给后台线程落库
+                    threading.Thread(
+                        target=lambda: store.log_usage(**_log), daemon=True
+                    ).start()
+                else:
+                    try:
+                        await run_in_threadpool(store.log_usage, **_log)
+                    except Exception:
+                        pass
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     return router
 
 
-async def _stream_with_retry(registry, store, payload, model, ac, base, want_acc, allowed, logger):
+async def _stream_with_retry(registry, store, payload, model, ac, base, want_acc,
+                             allowed, logger, conv=""):
     """流式请求：先取到第一块「有内容」的数据，失败则换账号重试。
 
     注意：客户端生成器一开始只发一个空的 role chunk，所以不能拿第一块就判定成功，
@@ -380,24 +612,26 @@ async def _stream_with_retry(registry, store, payload, model, ac, base, want_acc
             if prefix is None:
                 raise RuntimeError("上游未返回任何内容")
             ac.mark_ok()
+            registry.note_auth_ok(ac.account["id"])
+            _sticky_set(conv, ac.account["id"])
             return _ChainPrefix(prefix, it), ac, base
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             logger.warning(
                 "流式请求失败(账号 %s, 第%d次): %s", ac.account["name"], attempt + 1, exc
             )
-            if want_acc:
+            kind = _apply_failure(registry, ac, exc)
+            if want_acc or kind in ("content", "auth"):
                 break
             tried.add(ac.account["id"])
             nxt = registry.pick(model, exclude=tried, allowed=allowed)
             if nxt is None:
                 if attempt + 1 >= MAX_ACCOUNT_TRIES:
-                    ac.mark_bad(exc=exc)
+                    break
+                if kind not in ("network", "server", "unknown"):
                     break
                 await asyncio.sleep(min(2 ** attempt, 8))
-                ac.mark_bad(exc=exc)
                 continue
-            ac.mark_bad(exc=exc)
             ac = nxt
             base.update(
                 account_id=ac.account["id"], account_name=ac.account["name"],
@@ -456,4 +690,9 @@ class _ChainPrefix:
     def __iter__(self):
         yield from self._prefix
         yield from self._rest
+
+    def close(self) -> None:
+        close = getattr(self._rest, "close", None)
+        if callable(close):
+            close()
 
