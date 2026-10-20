@@ -190,7 +190,7 @@
         <div class="card-head"><h2>API Key</h2><div class="sp"></div>
           <button class="btn sm" onclick="openKeyModal()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>生成 Key</button>
         </div>
-        <p class="card-sub">把 Key 发给朋友，填进 opencode 等客户端即可。接口地址：<b id="baseHint">http://127.0.0.1:8800/v1</b></p>
+        <p class="card-sub">把 Key 发给朋友，填进 opencode 等客户端即可。接口地址：<b id="baseHint">/v1</b></p>
         <div class="tbl-scroll tall">
           <table id="keyTable"><thead><tr><th>名称</th><th>创建时间</th><th>状态</th><th>最近使用</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
         </div>
@@ -198,7 +198,7 @@
       <div class="card">
         <div class="card-head"><h2>快速接入</h2></div>
         <div class="hint" style="line-height:2;margin-bottom:14px">
-          <div>接口地址&nbsp;&nbsp;<b id="baseHint2">http://127.0.0.1:8800/v1</b></div>
+          <div>接口地址&nbsp;&nbsp;<b id="baseHint2">/v1</b></div>
           <div>可用模型&nbsp;&nbsp;<b id="modelHint">deepseek-chat</b></div>
           <div>API Key&nbsp;&nbsp;在上方生成</div>
         </div>
@@ -343,7 +343,7 @@
         <div class="guide">
           <div class="guide-row"><span>提供商 ID</span><code>webai2api</code><button class="btn gray sm" onclick="copyText('webai2api')">复制</button></div>
           <div class="guide-row"><span>显示名称</span><code>webai2api</code><button class="btn gray sm" onclick="copyText('webai2api')">复制</button></div>
-          <div class="guide-row"><span>基础 URL</span><code id="guideBase">http://127.0.0.1:8800/v1</code><button class="btn gray sm" onclick="copyText(document.getElementById('guideBase').textContent)">复制</button></div>
+          <div class="guide-row"><span>基础 URL</span><code id="guideBase">/v1</code><button class="btn gray sm" onclick="copyText(document.getElementById('guideBase').textContent)">复制</button></div>
           <div class="guide-row"><span>API 密钥</span><code>在「API Key」页创建，形如 sk-…</code><button class="btn gray sm" onclick="switchTab('keys')">去创建</button></div>
           <div class="guide-row"><span>模型</span>
             <div class="guide-models">
@@ -362,7 +362,11 @@
         <div class="card-head"><h2>通用 / 数据</h2></div>
         <label class="fld"><span>用量数据保留天数（0 = 永久保留）</span>
           <input id="setRetain" placeholder="0" inputmode="numeric">
-          <span class="hint" style="display:block;margin-top:6px">启动时自动清理超过该天数的历史记录，避免数据库无限增长。</span></label>
+          <span class="hint" style="display:block;margin-top:6px">每 6 小时自动清理超过该天数的历史记录；改完保存后立即生效，无需重启。</span></label>
+        <div class="fld-row" style="align-items:center;gap:10px;margin-bottom:16px">
+          <button class="btn gray sm" onclick="cleanUsageNow()">立即清理历史用量</button>
+          <span class="hint" id="usageDbHint" style="margin:0"></span>
+        </div>
         <label class="fld"><span>管理员密码</span>
           <input id="setPw" type="password" placeholder="留空则不修改"></label>
         <button class="btn" onclick="saveGeneralSettings()">保存</button>
@@ -1562,7 +1566,30 @@ async function loadSystem(){
     if(tr && LAST_STATE) tr.checked=(LAST_STATE.settings.tray_enabled||'true')!=='false';
     const h=document.getElementById('sysHint');
     if(h) h.textContent='数据目录：'+j.data_dir+(j.backups&&j.backups.length?(' · 最近备份：'+j.backups[0].name):'');
+    const u=j.usage_db;
+    const uh=document.getElementById('usageDbHint');
+    if(uh && u){
+      const mb=(Number(u.bytes)||0)/1048576;
+      const size=mb>=1?(mb.toFixed(1)+' MB'):(Math.max(1,Math.round((Number(u.bytes)||0)/1024))+' KB');
+      let span='';
+      if(u.oldest){
+        const d0=new Date(Number(u.oldest)*1000), d1=new Date(Number(u.newest||u.oldest)*1000);
+        const fmt=d=>`${d.getMonth()+1}/${d.getDate()}`;
+        span=` · 数据范围 ${fmt(d0)}–${fmt(d1)}`;
+      }
+      uh.textContent=`当前 ${fmt(u.rows)} 条${span} · 数据库 ${size}`;
+    }
   }catch(e){}
+}
+async function cleanUsageNow(){
+  const days=Number((document.getElementById('setRetain').value||'0').trim())||0;
+  if(days<=0){ toast('请先把保留天数设为大于 0 的值'); return; }
+  if(!confirm(`将删除 ${days} 天前的历史用量记录，确定继续？`)) return;
+  const j=await api('/system/usage/clean','POST',{days});
+  if(j&&j.ok){
+    toast(j.removed?`已清理 ${j.removed} 条`:'没有需要清理的记录');
+    loadSystem();
+  }else toast((j&&j.error)||'清理失败');
 }
 async function saveAutostart(){
   const on=document.getElementById('setAutostart').checked;

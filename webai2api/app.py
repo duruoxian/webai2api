@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from fastapi import FastAPI, Request
@@ -27,6 +28,30 @@ from .store import Store
 WEB_DIR = resource_path("webai2api", "web")
 if not WEB_DIR.exists():
     WEB_DIR = resource_path("web")
+
+USAGE_CLEAN_INTERVAL = 6 * 3600
+
+
+def start_usage_cleaner(store: Store, logger: logging.Logger) -> threading.Thread:
+    """后台线程：每 6 小时按 usage_retain_days 清理一次历史用量。
+
+    保留天数改成 0 时线程继续活着但不删数据，所以改设置无需重启。
+    """
+    def _run() -> None:
+        while True:
+            time.sleep(USAGE_CLEAN_INTERVAL)
+            try:
+                retain = int(store.get_setting("usage_retain_days", "0") or 0)
+                if retain > 0:
+                    removed = store.prune_usage(retain)
+                    if removed:
+                        logger.info("用量清理：删除 %s 条超过 %s 天的记录", removed, retain)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("用量清理失败: %s", exc)
+
+    th = threading.Thread(target=_run, name="usage-cleaner", daemon=True)
+    th.start()
+    return th
 
 
 def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) -> FastAPI:
@@ -125,6 +150,9 @@ def create_default_app() -> FastAPI:
                 logger.info("用量清理：删除 %s 条超过 %s 天的记录", removed, retain)
     except Exception as exc:  # noqa: BLE001
         logger.warning("用量清理失败: %s", exc)
+
+    # 常驻清理：长期运行也不会让用量表无限增长
+    start_usage_cleaner(store, logger)
 
     logger.info("webai2api %s 初始化完成，数据库: %s", __version__, store.db_path)
 

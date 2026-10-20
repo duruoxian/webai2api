@@ -101,6 +101,7 @@ def create_system_router(store: Store, logger: Logger) -> APIRouter:
             "autostart": autostart_enabled(),
             "backups": backups,
             "data_dir": str(store.db_path.parent),
+            "usage_db": store.usage_db_size(),
         }
 
     @router.post("/system/autostart")
@@ -120,6 +121,25 @@ def create_system_router(store: Store, logger: Logger) -> APIRouter:
             return g
         path = await run_in_threadpool(store.auto_backup)
         return {"ok": True, "file": path.name if path else ""}
+
+    @router.post("/system/usage/clean")
+    async def clean_usage(request: Request):
+        """立即按当前保留天数清理用量，并回收空间。"""
+        g = _guard(request)
+        if g:
+            return g
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        retain = int(body.get("days", 0) or 0)
+        if retain <= 0:
+            return {"ok": False, "error": "请先把保留天数设为大于 0 的值"}
+        removed = await run_in_threadpool(store.prune_usage, retain)
+        await run_in_threadpool(store.checkpoint)
+        if removed:
+            await run_in_threadpool(store.vacuum)
+        return {"ok": True, "removed": removed, "usage_db": await run_in_threadpool(store.usage_db_size)}
 
     @router.get("/system/logs")
     async def logs(request: Request, lines: int = 200):

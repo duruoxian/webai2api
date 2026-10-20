@@ -148,6 +148,22 @@ class Store:
             cur = c.execute("DELETE FROM usage_log WHERE ts < ?", (cutoff,))
             return cur.rowcount or 0
 
+    def usage_db_size(self) -> dict:
+        """数据库与用量表占用情况（面板展示 / 排障用）。"""
+        try:
+            size = self.db_path.stat().st_size
+        except Exception:
+            size = 0
+        with self._conn() as c:
+            row = c.execute("SELECT COUNT(*) n, MIN(ts) oldest, MAX(ts) newest "
+                            "FROM usage_log").fetchone()
+        return {
+            "bytes": size,
+            "rows": int(row["n"] or 0) if row else 0,
+            "oldest": float(row["oldest"] or 0) if row else 0,
+            "newest": float(row["newest"] or 0) if row else 0,
+        }
+
     def vacuum(self) -> None:
         """整理数据库文件（清理后调用可回收空间）。"""
         with self._conn() as c:
