@@ -65,12 +65,24 @@ def _run(cmd: list[str]) -> str:
 
 def _win_hw_ids() -> list[str]:
     ids: list[str] = []
+    # 1) Windows 安装 ID：读取注册表，不依赖 PowerShell，重装系统才会变
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Cryptography",
+            0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY,
+        ) as k:
+            guid, _ = winreg.QueryValueEx(k, "MachineGuid")
+            if guid:
+                ids.append(str(guid).strip())
+    except Exception:
+        pass
+    # 2) CPU / 主板：硬件标识（不含硬盘，换盘不影响授权）
     ps = (
         "$ErrorActionPreference='SilentlyContinue';"
         "(Get-CimInstance Win32_Processor | Select-Object -First 1).ProcessorId;"
-        "(Get-CimInstance Win32_BaseBoard | Select-Object -First 1).SerialNumber;"
-        "(Get-CimInstance Win32_DiskDrive | Where-Object {$_.Index -eq 0} | "
-        "Select-Object -First 1).SerialNumber"
+        "(Get-CimInstance Win32_BaseBoard | Select-Object -First 1).SerialNumber"
     )
     out = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps])
     for line in out.splitlines():
@@ -106,8 +118,15 @@ def machine_code() -> str:
     parts = _win_hw_ids() if os.name == "nt" else _generic_hw_ids()
     parts = [p for p in parts if p]
     if not parts:
-        # 兜底：主机名 + MAC + 平台
-        parts = [platform.node(), str(platform.machine()), f"{id(platform)}"]
+        # 兜底：主机名 + MAC + 平台（必须稳定，不能用 id()）
+        parts = [platform.node(), str(platform.machine()), sys.platform]
+        try:
+            import uuid
+            mac = uuid.getnode()
+            if mac and (mac >> 40) % 2 == 0:  # 跳过随机生成的 MAC
+                parts.append(f"{mac:012x}")
+        except Exception:
+            pass
     raw = "|".join(parts).encode("utf-8", "ignore")
     h = hashlib.sha256(raw).hexdigest().upper()
     code = "-".join(h[i:i + 4] for i in range(0, 16, 4))
@@ -126,17 +145,40 @@ def _payload_of(doc: dict) -> bytes:
                       separators=(",", ":")).encode("utf-8")
 
 
+_LIC_CACHE: dict = {"key": None, "doc": None}
+
+
 def load_license(data_dir: Path) -> dict:
-    """读取并校验授权文件，返回 {valid, reason, machine, expires, days_left, name}。"""
+    """读取并校验授权文件，返回 {valid, reason, machine, expires, days_left, name}。
+
+    结果按文件 (mtime, size) 缓存：验签约 0.2s，不能每个请求都做。
+    """
     path = license_path(data_dir)
     if not path.exists():
         return {"valid": False, "reason": "未找到授权文件", "code": "missing"}
+
+    try:
+        stt = path.stat()
+        cache_key = (str(path), stt.st_mtime_ns, stt.st_size)
+    except OSError:
+        cache_key = None
+
+    if cache_key is not None and _LIC_CACHE["key"] == cache_key:
+        return _LIC_CACHE["doc"]
 
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {"valid": False, "reason": "授权文件格式错误", "code": "bad_format"}
 
+    result = _verify_doc(doc)
+    if cache_key is not None:
+        _LIC_CACHE["key"] = cache_key
+        _LIC_CACHE["doc"] = result
+    return result
+
+
+def _verify_doc(doc: dict) -> dict:
     pk = public_key()
     if pk is None:
         # 未配置公钥（开发模式）：只校验到期时间
@@ -184,11 +226,16 @@ def _check_expiry(doc: dict, skip_signature: bool = False) -> dict:
 
 
 # ── 防改系统时钟 ────────────────────────────────────
+_CLOCK_LAST_WRITE = 0.0
+_CLOCK_WRITE_INTERVAL = 60.0  # 最多每分钟落库一次，避免每个请求都写数据库
+
+
 def check_clock(store) -> dict:
     """记录上次运行时间；若系统时间被往回拨，累计异常次数。
 
     返回 {ok, rollback, strikes}。strikes >= 3 视为可疑。
     """
+    global _CLOCK_LAST_WRITE
     now = time.time()
     try:
         last = float(store.get_setting("license_last_seen", "0") or 0)
@@ -200,14 +247,17 @@ def check_clock(store) -> dict:
         strikes += 1
     elif now > last:
         strikes = 0
+        if now - _CLOCK_LAST_WRITE >= _CLOCK_WRITE_INTERVAL:
+            try:
+                store.set_setting("license_last_seen", str(now))
+                _CLOCK_LAST_WRITE = now
+            except Exception:
+                pass
+    if rollback:
         try:
-            store.set_setting("license_last_seen", str(now))
+            store.set_setting("license_clock_strikes", str(strikes))
         except Exception:
             pass
-    try:
-        store.set_setting("license_clock_strikes", str(strikes))
-    except Exception:
-        pass
     return {"ok": not rollback, "rollback": rollback, "strikes": strikes}
 
 
