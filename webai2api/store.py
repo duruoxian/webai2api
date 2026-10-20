@@ -385,7 +385,9 @@ class Store:
         with self._conn() as c:
             def _agg(since, until=None):
                 sql = "SELECT COUNT(*) n, COALESCE(SUM(total_tokens),0) t, " \
-                      "COALESCE(SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END),0) ok " \
+                      "COALESCE(SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END),0) ok, " \
+                      "COALESCE(AVG(latency_ms),0) avg_ms, " \
+                      "COALESCE(AVG(NULLIF(first_token_ms,0)),0) avg_ttft " \
                       "FROM usage_log WHERE ts>=?"
                 args = [since]
                 if until is not None:
@@ -452,7 +454,8 @@ class Store:
             ).fetchall()
             daily_by_key = c.execute(
                 "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, "
-                "api_key_id, api_key_name, COALESCE(SUM(total_tokens),0) t "
+                "api_key_id, api_key_name, COUNT(*) n, "
+                "COALESCE(SUM(total_tokens),0) t "
                 "FROM usage_log WHERE ts>=? GROUP BY d, api_key_id ORDER BY d",
                 (_now() - 86400 * 182,),
             ).fetchall()
@@ -527,34 +530,6 @@ class Store:
         with self._conn() as c:
             row = c.execute("SELECT COUNT(*) n FROM usage_log" + where, tuple(args)).fetchone()
         return int(row["n"]) if row else 0
-
-    def daily_key_account(self, days: int = 182) -> list[dict]:
-        """按日 × Key × 账号 聚合，用于每日 Token 的按 Key 堆叠图。"""
-        since = _now() - 86400 * max(1, int(days))
-        with self._conn() as c:
-            rows = c.execute(
-                "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, "
-                "api_key_id, api_key_name, account_name, "
-                "COALESCE(SUM(total_tokens),0) t "
-                "FROM usage_log WHERE ts>=? "
-                "GROUP BY d, api_key_id, account_name ORDER BY d",
-                (since,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def today_by_key_account(self) -> list[dict]:
-        """今日按 Key × 账号 聚合，用于每日图表的按 Key 视图。"""
-        import datetime as _dt
-        now = _dt.datetime.now()
-        day0 = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        with self._conn() as c:
-            rows = c.execute(
-                "SELECT api_key_id, api_key_name, account_id, account_name, "
-                "COALESCE(SUM(total_tokens),0) t, COUNT(*) n "
-                "FROM usage_log WHERE ts>=? GROUP BY api_key_id, account_id "
-                "ORDER BY t DESC", (day0,),
-            ).fetchall()
-        return [dict(r) for r in rows]
 
     def key_usage_map(self) -> dict[str, dict]:
         """每个 Key 今日/本月 Token 用量（额度看板用）。"""

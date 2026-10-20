@@ -181,8 +181,6 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
             "today": await run_in_threadpool(store.today_summary),
             "key_usage": await run_in_threadpool(store.key_usage_map),
-            "today_by_key_account": await run_in_threadpool(store.today_by_key_account),
-            "daily_key_account": await run_in_threadpool(store.daily_key_account),
             "recent": await run_in_threadpool(
                 store.recent_usage, limit, offset, "", "", key_id, account_id),
             "recent_total": await run_in_threadpool(
