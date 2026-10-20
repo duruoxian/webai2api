@@ -14,7 +14,19 @@ import threading
 import time
 
 HOST = "127.0.0.1"
-DEFAULT_PORT = int(os.environ.get("WEBAI2API_PORT", "8800"))
+
+
+def _default_port() -> int:
+    if os.environ.get("WEBAI2API_PORT"):
+        return int(os.environ["WEBAI2API_PORT"])
+    try:
+        from webai2api.edition import is_lite
+        return 8802 if is_lite() else 8800
+    except Exception:
+        return 8800
+
+
+DEFAULT_PORT = _default_port()
 WINDOW_TITLE = "webai2api 控制台"
 
 
@@ -151,11 +163,31 @@ class WindowApi:
             self._win.destroy()
 
 
+def _open_log(log_dir: str):
+    """尝试在 log_dir 写日志；无权限时回退到用户数据目录。"""
+    candidates = [log_dir]
+    try:
+        from webai2api.paths import user_data_dir as _ud
+        candidates.append(str(_ud()))
+    except Exception:
+        pass
+    candidates.append(os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "webai2api"))
+    last_exc = None
+    for d in candidates:
+        try:
+            os.makedirs(d, exist_ok=True)
+            return open(os.path.join(d, "webai2api.log"), "a", encoding="utf-8", buffering=1)
+        except OSError as exc:
+            last_exc = exc
+    raise last_exc  # type: ignore[misc]
+
+
 def main() -> None:
     log_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__)
-    log_path = os.path.join(log_dir, "webai2api.log")
     # windowed exe 下 sys.stdout/stderr 为 None，会让 uvicorn / logging 报错。
-    log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+    log_file = _open_log(log_dir)
+    log_path = log_file.name
+    log_dir = os.path.dirname(log_path)
     if sys.stdout is None:
         sys.stdout = log_file
     if sys.stderr is None:
@@ -174,8 +206,12 @@ def main() -> None:
 
     logger = logging.getLogger("webai2api")
 
-    # 单实例锁：同一个 data 目录只允许一个进程写库
-    data_dir = os.path.join(log_dir, "data")
+    # 单实例锁：与数据库同目录（程序目录不可写时 paths 会回退到用户数据目录）
+    try:
+        from webai2api.paths import user_data_dir as _udd
+        data_dir = str(_udd())
+    except Exception:
+        data_dir = os.path.join(log_dir, "data")
     os.makedirs(data_dir, exist_ok=True)
     lock_path = os.path.join(data_dir, "webai2api.lock")
     lock_file = open(lock_path, "a+", encoding="utf-8")

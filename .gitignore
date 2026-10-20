@@ -32,3 +32,4 @@ sha3_wasm_bg.wasm
 .idea/
 .DS_Store
 build-lite/
+dist-installer/
