@@ -13,8 +13,6 @@
 
 不想折腾环境？直接到 **[Releases](https://github.com/duruoxian/webai2api/releases)** 下载 `webai2api-win64.zip`，解压后双击 `webai2api.exe` 即可（无需安装 Python）。详见下方「打包成 exe」。
 
-> 仓库同时包含两个版本：**专业版（Pro）** 是上面的多租户运营面板；**客户端版（Lite）** 是给普通用户的三步向导版（自带账号、一键接入 opencode、离线授权），见下方「客户端版（Lite）」。
-
 ## 特点
 
 | 功能 | 说明 |
@@ -165,29 +163,6 @@ build-exe.cmd
 > 只有"登录拿凭证"那一下需要浏览器，这里用**系统已装的 WebView2**（pywebview 内嵌窗口），
 > 不打包上百 MB 的 Chromium，**也不调用你日常浏览器的 profile**（零冲突）。
 
-### 客户端版（Lite）
-
-给最终用户的三步向导版：选平台 → 登录自己的账号 → 一键接入 opencode。用户自带 DeepSeek / 智谱账号，不需要买 Key、不需要服务器。
-
-```powershell
-# 构建（产物在 dist-lite/webai2api/）
-.venv\Scripts\pyinstaller.exe webai2api-lite.spec --noconfirm --distpath dist-lite --workpath build-lite
-```
-
-安装包脚本在 `installer/webai2api-lite.iss`，需本地安装 [Inno Setup 6](https://jrsoftware.org/isdl.php) 后用 `ISCC.exe` 编译。
-
-**离线授权（作者侧签发）**：
-
-```powershell
-# 首次：生成 Ed25519 密钥对（私钥在 tools/private_key.txt，已 gitignore，绝不能提交）
-.venv\Scripts\python.exe tools\keygen.py init
-
-# 给客户签发一年授权（机器码由客户在 Lite 设置页复制）
-.venv\Scripts\python.exe tools\keygen.py issue 6B28-C09F-F80B-2E05 2027-10-20 客户名 -o license.key
-```
-
-客户在 Lite「设置 → 授权」里粘贴 `license.key` 内容即可。授权绑定机器码、含到期日，签名在本地校验，**不联网**。未授权时 Lite 的 `/v1/*` 一律返回 403。
-
 ## 目录结构
 
 ```
@@ -215,7 +190,6 @@ webai2api/
 - [x] 打包成 Windows exe（PyInstaller）
 - [x] 原生桌面窗口（pywebview + 系统 WebView2，关闭窗口即退出）
 - [x] 接入智谱清言（chatglm.cn）：GLM-5.3 / GLM-5.3-Flash
-- [x] 客户端版（Lite）：三步向导 + 一键接入 opencode + 离线授权
 - [ ] 接入更多平台：Kimi / Qwen …
 
 ## 更新记录

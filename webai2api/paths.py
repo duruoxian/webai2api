@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -32,39 +31,10 @@ def _exe_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def _fallback_data_dir() -> Path:
-    """exe 目录不可写时（如装在 Program Files）回退到用户本地数据目录。"""
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    name = "webai2api-lite" if _is_lite() else "webai2api"
-    return Path(base) / name / "data"
-
-
-def _is_lite() -> bool:
-    try:
-        from .edition import is_lite
-        return is_lite()
-    except Exception:
-        return False
-
-
-def _writable(d: Path) -> bool:
-    try:
-        d.mkdir(parents=True, exist_ok=True)
-        probe = d / ".write_test"
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink()
-        return True
-    except Exception:
-        return False
-
-
 def user_data_dir() -> Path:
     d = _exe_dir() / "data"
-    if _writable(d):
-        return d
-    alt = _fallback_data_dir()
-    alt.mkdir(parents=True, exist_ok=True)
-    return alt
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def default_wasm_path() -> str:

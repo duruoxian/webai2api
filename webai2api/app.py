@@ -114,12 +114,7 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
         return await call_next(request)
 
     app.include_router(create_gateway_router(store, registry, logger))
-    from .edition import is_lite
-    if is_lite():
-        from .lite_api import create_lite_router
-        app.include_router(create_lite_router(store, registry, login_mgr, logger))
-    else:
-        app.include_router(create_admin_router(store, registry, login_mgr, logger))
+    app.include_router(create_admin_router(store, registry, login_mgr, logger))
     from .system_api import create_system_router
     app.include_router(create_system_router(store, logger))
 
@@ -135,10 +130,7 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
     # 面板静态页
     @app.get("/admin")
     async def admin_index():
-        name = "lite.html" if is_lite() else "index.html"
-        idx = WEB_DIR / name
-        if not idx.exists():
-            idx = WEB_DIR / "index.html"
+        idx = WEB_DIR / "index.html"
         if not idx.exists():
             return JSONResponse(status_code=404, content={"error": "面板文件缺失"})
         return FileResponse(

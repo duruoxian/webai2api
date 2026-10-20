@@ -297,23 +297,8 @@ MAX_ACCOUNT_TRIES = 5
 
 
 def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logger) -> APIRouter:
-    def _license_block() -> JSONResponse | None:
-        """lite 版：授权无效时拒绝所有请求。pro 版直接放行。"""
-        from .edition import is_lite
-        if not is_lite():
-            return None
-        from .license import status
-        st = status(store.db_path.parent, store)
-        if st.get("valid"):
-            return None
-        return _error(403, f"授权不可用：{st.get('reason') or '请检查授权文件'}",
-                      "permission_error")
-
     @router.get("/v1/models")
     async def list_models(request: Request):
-        blocked = _license_block()
-        if blocked is not None:
-            return blocked
         key = _extract_api_key(request)
         row = await run_in_threadpool(store.find_key, key) if key else None
         if not key or not row:
@@ -333,9 +318,6 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
 
     @router.post("/v1/chat/completions")
     async def chat_completions(request: Request):
-        blocked = _license_block()
-        if blocked is not None:
-            return blocked
         key = _extract_api_key(request)
         key_row = await run_in_threadpool(store.find_key, key) if key else None
         if not key_row:
