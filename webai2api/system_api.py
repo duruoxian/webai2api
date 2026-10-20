@@ -75,6 +75,11 @@ def set_autostart(enabled: bool) -> bool:
     return os.path.exists(lnk)
 
 
+def _tunnel_state(request: Request, logger: Logger) -> dict:
+    from .tunnel import get_tunnel
+    return get_tunnel(request.url.port or 8800, logger).state()
+
+
 def create_system_router(store: Store, logger: Logger) -> APIRouter:
     # 复用管理端 token：延迟导入避免循环依赖
     from .admin_api import _TOKENS
@@ -102,6 +107,7 @@ def create_system_router(store: Store, logger: Logger) -> APIRouter:
             "backups": backups,
             "data_dir": str(store.db_path.parent),
             "usage_db": store.usage_db_size(),
+            "tunnel": _tunnel_state(request, logger),
         }
 
     @router.post("/system/autostart")
@@ -164,6 +170,35 @@ def create_system_router(store: Store, logger: Logger) -> APIRouter:
         return {"ok": True, "errors": list(reversed(getattr(
             request.app.state, "recent_errors", [])[-20:]))}
 
+    @router.get("/system/tunnel")
+    async def tunnel_state(request: Request):
+        g = _guard(request)
+        if g:
+            return g
+        from .tunnel import get_tunnel
+        t = get_tunnel(request.url.port or 8800, logger)
+        return {"ok": True, **t.state()}
+
+    @router.post("/system/tunnel")
+    async def tunnel_toggle(request: Request):
+        g = _guard(request)
+        if g:
+            return g
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        on = bool(body.get("enabled"))
+        from .tunnel import get_tunnel
+        t = get_tunnel(request.url.port or 8800, logger)
+        if not on:
+            await run_in_threadpool(t.stop)
+            return {"ok": True, "running": False, "url": ""}
+        res = await run_in_threadpool(t.start)
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error", "启动失败")}
+        return {"ok": True, "running": True, "url": res.get("url", "")}
+
     @router.post("/system/shutdown")
     async def shutdown(request: Request):
         g = _guard(request)
@@ -174,6 +209,11 @@ def create_system_router(store: Store, logger: Logger) -> APIRouter:
 
         def _exit():
             time.sleep(0.3)
+            try:
+                from .tunnel import stop_all
+                stop_all()
+            except Exception:
+                pass
             os._exit(0)
 
         threading.Thread(target=_exit, daemon=True).start()

@@ -19,7 +19,12 @@ WINDOW_TITLE = "webai2api 控制台"
 
 
 def _graceful_exit() -> None:
-    """退出前把 WAL 落盘，再结束进程。"""
+    """退出前关掉隧道、把 WAL 落盘，再结束进程。"""
+    try:
+        from webai2api.tunnel import stop_all
+        stop_all()
+    except Exception:
+        pass
     try:
         from webai2api.paths import user_data_dir
         from webai2api.store import Store

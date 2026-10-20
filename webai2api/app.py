@@ -92,6 +92,27 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
 
     app.state.recent_errors = recent_errors
 
+    @app.middleware("http")
+    async def _guard_admin(request: Request, call_next):
+        # 面板只允许本机访问：经由隧道 / 反代进来的请求一律拒绝，
+        # 避免把管理界面暴露到公网（API Key 网关本身仍可访问）。
+        path = request.url.path
+        if path == "/admin" or path.startswith("/admin/"):
+            via_proxy = bool(
+                request.headers.get("cf-connecting-ip")
+                or request.headers.get("cf-ray")
+                or request.headers.get("x-forwarded-for")
+            )
+            client = request.client.host if request.client else ""
+            if via_proxy or client not in ("127.0.0.1", "::1", "localhost"):
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": {"message": "管理面板仅允许本机访问",
+                                       "type": "permission_error",
+                                       "code": "permission_error"}},
+                )
+        return await call_next(request)
+
     app.include_router(create_gateway_router(store, registry, logger))
     app.include_router(create_admin_router(store, registry, login_mgr, logger))
     from .system_api import create_system_router
