@@ -551,10 +551,12 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
 
     @router.post("/license/issue")
     async def issue_license(request: Request):
-        """仅当本机存在作者私钥时可用。"""
+        """仅开发端且本机存在作者私钥时可用。"""
         g = _guard(request)
         if g:
             return g
+        if not await run_in_threadpool(_issuer_available):
+            return {"ok": False, "error": "当前版本不提供签发功能"}
         from . import issuer
         seed = await run_in_threadpool(issuer.load_author_seed)
         if seed is None:
@@ -601,6 +603,9 @@ def _issuer_log_path():
 
 def _issuer_available() -> bool:
     try:
+        from .edition import is_lite
+        if is_lite():
+            return False  # 客户版永远不显示、不提供签发
         from . import issuer
         return issuer.load_author_seed() is not None
     except Exception:
