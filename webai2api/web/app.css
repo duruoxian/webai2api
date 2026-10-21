@@ -136,8 +136,8 @@ input[type=checkbox]{accent-color:var(--accent)}
 }
 .brand{display:flex;align-items:center;gap:9px;font-weight:600;font-size:15.5px;letter-spacing:-.02em}
 .brand-logo{width:23px;height:23px;border-radius:7px;display:grid;place-items:center;
-  background:linear-gradient(155deg,#57b0ff,#0a7cff 58%,#0062d1);
-  box-shadow:0 2px 8px rgba(10,124,255,.35),inset 0 1px 0 rgba(255,255,255,.5)}
+  background:linear-gradient(160deg,#6ec8ff,#2e9dff 55%,#0a84ff);
+  box-shadow:0 2px 8px rgba(10,132,255,.38),inset 0 1px 0 rgba(255,255,255,.55)}
 .brand-logo svg{width:13px;height:13px}
 .nav-pill{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);
   background:var(--surface-flat);padding:5px 12px;border-radius:999px}
@@ -585,7 +585,7 @@ html[data-theme=dark] .modal{border-color:rgba(255,255,255,.10)}
 
 .login-wrap{max-width:360px;margin:0 auto;padding:10vh 24px 40px;text-align:center;min-height:100vh;display:flex;flex-direction:column;justify-content:center}
 .login-wrap .brand-logo{width:60px;height:60px;border-radius:18px;margin:0 auto 20px;
-  box-shadow:0 10px 30px -8px rgba(10,124,255,.55),inset 0 1px 0 rgba(255,255,255,.5)}
+  box-shadow:0 10px 30px -8px rgba(10,132,255,.58),inset 0 1px 0 rgba(255,255,255,.55)}
 .login-wrap .brand-logo svg{width:32px;height:32px}
 .login-wrap h1{font-size:24px;font-weight:600;letter-spacing:-.03em;margin-bottom:6px}
 .login-wrap p{color:var(--text3);font-size:14px;margin-bottom:26px}

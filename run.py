@@ -26,8 +26,17 @@ def _default_port() -> int:
         return 8800
 
 
+def _is_lite_edition() -> bool:
+    try:
+        from webai2api.edition import is_lite
+        return is_lite()
+    except Exception:
+        return False
+
+
 DEFAULT_PORT = _default_port()
-WINDOW_TITLE = "webai2api 控制台"
+WINDOW_TITLE = "webai2api 客户版" if _is_lite_edition() else "webai2api 控制台"
+APP_ICON_NAME = "webai2api-lite.ico" if _is_lite_edition() else "webai2api.ico"
 
 
 def _graceful_exit() -> None:
@@ -300,7 +309,7 @@ def main() -> None:
             width=1180, height=800, min_size=(900, 600),
             background_color="#eceef1",
         )
-        icon = resource_path("assets", "webai2api.ico")
+        icon = resource_path("assets", APP_ICON_NAME)
         webview.start(icon=str(icon) if icon.exists() else None)
         logger.info("窗口已关闭，退出")
         _graceful_exit()

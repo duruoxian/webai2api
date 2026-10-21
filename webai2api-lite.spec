@@ -29,9 +29,12 @@ datas = [
 if os.path.exists("sha3_wasm_bg.wasm"):
     datas.append(("sha3_wasm_bg.wasm", "."))
 
-APP_ICON = "assets/webai2api.ico"
+APP_ICON = "assets/webai2api-lite.ico"
 if os.path.exists(APP_ICON):
     datas.append((APP_ICON, "assets"))
+    _legacy_icon = "assets/webai2api.ico"
+    if os.path.exists(_legacy_icon):
+        datas.append((_legacy_icon, "assets"))
 
 for pkg in ("uvicorn", "fastapi", "starlette", "anyio", "click", "h11", "websockets"):
     d, b, h = collect_all(pkg)

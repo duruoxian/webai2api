@@ -2,7 +2,7 @@
 ; 用法：先构建 Lite 版到 dist-lite\webai2api，然后用 ISCC.exe 编译本文件。
 ;   & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\webai2api-lite.iss
 
-#define MyAppName "webai2api Lite"
+#define MyAppName "webai2api 客户版"
 #define MyAppVersion "0.1.8"
 #define MyAppPublisher "DuRuoxian"
 #define MyAppURL "https://github.com/duruoxian/webai2api"
@@ -29,7 +29,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
-SetupIconFile=..\assets\webai2api.ico
+SetupIconFile=..\assets\webai2api-lite.ico
 CloseApplications=yes
 
 [Languages]
