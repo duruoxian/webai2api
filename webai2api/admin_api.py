@@ -6,6 +6,7 @@ token 有有效期（默认 12 小时），并且登录失败有简单限速。
 from __future__ import annotations
 
 import hmac
+import json
 import secrets
 import time
 from logging import Logger
@@ -517,7 +518,86 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             pass
         return {"ok": True}
 
+    # ── 授权签发（仅作者本机，需私钥） ──
+    @router.get("/license/issuer")
+    async def issuer_state(request: Request):
+        g = _guard(request)
+        if g:
+            return g
+        return {"ok": True, "available": await run_in_threadpool(_issuer_available)}
+
+    @router.post("/license/issue")
+    async def issue_license(request: Request):
+        g = _guard(request)
+        if g:
+            return g
+        from . import issuer
+        seed = await run_in_threadpool(issuer.load_author_seed)
+        if seed is None:
+            return {"ok": False, "error": "未找到作者私钥，无法签发"}
+        b = await _json(request)
+        if b is None:
+            return {"ok": False, "error": "请求格式错误"}
+        try:
+            days = int(b.get("days") or 7)
+            count = max(1, min(int(b.get("count") or 1), 100))
+        except Exception:
+            return {"ok": False, "error": "参数错误"}
+        note = str(b.get("note") or "").strip()
+        out = []
+        for _ in range(count):
+            info = issuer.make_code(seed, days)
+            out.append({"code": info["code"], "id": info["id"],
+                        "days": info["days"], "issued": info["issued"], "note": note})
+        await run_in_threadpool(_issuer_log, out)
+        return {"ok": True, "items": out}
+
+    @router.get("/license/issued")
+    async def issued_list(request: Request):
+        g = _guard(request)
+        if g:
+            return g
+        return {"ok": True, "items": await run_in_threadpool(_issuer_read_log)}
+
     return router
+
+
+# ── 签发记录（仅作者本机） ──────────────────────────
+def _issuer_log_path():
+    from .paths import user_data_dir
+    return user_data_dir() / "issued_codes.json"
+
+
+def _issuer_available() -> bool:
+    try:
+        from . import issuer
+        return issuer.load_author_seed() is not None
+    except Exception:
+        return False
+
+
+def _issuer_read_log() -> list[dict]:
+    try:
+        p = _issuer_log_path()
+        if not p.exists():
+            return []
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _issuer_log(items: list[dict]) -> None:
+    try:
+        p = _issuer_log_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        existing = _issuer_read_log()
+        existing.extend({**it, "created": time.strftime("%Y-%m-%d %H:%M:%S")}
+                        for it in items)
+        p.write_text(json.dumps(existing[-5000:], ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _safe_account(a: dict) -> dict:

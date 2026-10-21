@@ -384,6 +384,24 @@
         </div>
       </div>
 
+      <div class="card" id="issuerCard" hidden>
+        <div class="card-head"><h2>授权签发</h2><div class="sp"></div>
+          <span class="hint" style="margin:0">仅本机可见（检测到作者私钥）</span></div>
+        <div class="fld-row" style="align-items:flex-end">
+          <label class="fld"><span>有效天数</span>
+            <input id="issueDays" inputmode="numeric" value="7"></label>
+          <label class="fld"><span>数量</span>
+            <input id="issueCount" inputmode="numeric" value="1"></label>
+          <label class="fld" style="flex:1"><span>备注（客户名 / 订单号）</span>
+            <input id="issueNote" placeholder="可选"></label>
+        </div>
+        <div class="btn-row">
+          <button class="btn" onclick="issueCodes()">生成授权码</button>
+          <button class="btn gray" onclick="exportIssued()">导出记录 CSV</button>
+        </div>
+        <div id="issueResult" class="issue-list"></div>
+      </div>
+
       <div class="card about">
         <div class="card-head"><h2>关于</h2></div>
         <div class="about-row"><span>作者</span><b>DuRuoxian</b></div>
@@ -1277,6 +1295,42 @@ function renderSettings(s){
   const gx=document.getElementById('setGlmAntiMax'); if(gx) gx.value=s.settings.glm_anti_max||'3.0';
   const gs=document.getElementById('setGlmSearch'); if(gs) gs.checked=(s.settings.glm_search||'false')==='true';
   const gc=document.getElementById('setGlmCache'); if(gc) gc.checked=(s.settings.glm_session_cache||'true')!=='false';
+  loadIssuer();
+}
+let ISSUER_OK=false;
+async function loadIssuer(){
+  if(ISSUER_OK) return;
+  const j=await api('/license/issuer');
+  const card=document.getElementById('issuerCard');
+  if(card) card.hidden = !(j && j.available);
+  ISSUER_OK = !!(j && j.available);
+}
+async function issueCodes(){
+  const days=Number(document.getElementById('issueDays').value||7);
+  const count=Number(document.getElementById('issueCount').value||1);
+  const note=document.getElementById('issueNote').value.trim();
+  const j=await api('/license/issue','POST',{days,count,note});
+  const box=document.getElementById('issueResult');
+  if(!j||!j.ok){ toast((j&&j.error)||'签发失败'); return; }
+  box.innerHTML=j.items.map(it=>`<div class="issue-row">
+    <code>${esc(it.code)}</code>
+    <button class="btn gray sm" onclick="copyText('${esc(it.code)}')">复制</button>
+    <span class="muted">${it.days} 天 · ${esc(it.id)}${it.note?' · '+esc(it.note):''}</span>
+  </div>`).join('');
+  toast(`已生成 ${j.items.length} 个授权码`);
+}
+async function exportIssued(){
+  const j=await api('/license/issued');
+  if(!j||!j.ok||!j.items||!j.items.length){ toast('暂无签发记录'); return; }
+  const rows=[['授权码','码ID','天数','签发日','备注','生成时间']];
+  j.items.forEach(it=>rows.push([it.code,it.id,it.days,it.issued,it.note||'',it.created||'']));
+  const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');
+  const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='webai2api-issued-codes.csv';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),3000);
 }
 /* 恢复默认：只改表单，点保存才真正写入 */
 const DEEPSEEK_DEFAULTS={
