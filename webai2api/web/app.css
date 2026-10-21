@@ -671,6 +671,10 @@ html[data-theme=dark] .sel-menu{
 .about-row b{font-weight:600;color:var(--text)}
 .about-row a{color:#0a84ff;text-decoration:none}
 .about-row a:hover{text-decoration:underline}
+.lic-info{margin-bottom:14px;font-size:13.5px}
+.lic-info .lic-ok{color:var(--green);font-weight:600}
+.lic-info .lic-bad{color:var(--red);font-weight:600}
+.lic-info .muted{color:var(--text3)}
 .notice{margin-top:18px;padding:18px 20px;border-radius:14px;
   background:linear-gradient(165deg,rgba(255,255,255,.42),rgba(255,255,255,.18));
   border:1px solid rgba(255,255,255,.55)}

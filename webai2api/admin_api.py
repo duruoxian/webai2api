@@ -6,6 +6,7 @@ token 有有效期（默认 12 小时），并且登录失败有简单限速。
 from __future__ import annotations
 
 import hmac
+import json
 import secrets
 import time
 from logging import Logger
@@ -228,6 +229,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                     store.get_setting, "glm_output_limit", "128000"),
                 "admin_password": "******",
             },
+            "license": await run_in_threadpool(_license_info),
         }
 
     # ── 账号 ──
@@ -517,6 +519,52 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             pass
         return {"ok": True}
 
+    # ── 授权（Lite） ──
+    @router.get("/license")
+    async def get_license(request: Request):
+        g = _guard(request)
+        if g:
+            return g
+        info = await run_in_threadpool(_license_info)
+        try:
+            from .license import machine_code
+            info["machine"] = await run_in_threadpool(machine_code)
+        except Exception:
+            info["machine"] = ""
+        return {"ok": True, **info}
+
+    @router.post("/license/install")
+    async def install_license(request: Request):
+        g = _guard(request)
+        if g:
+            return g
+        b = await _json(request)
+        if b is None:
+            return {"ok": False, "error": "请求格式错误"}
+        text = str(b.get("content") or "").strip()
+        if not text:
+            return {"ok": False, "error": "请粘贴授权内容"}
+        try:
+            doc = json.loads(text)
+        except Exception:
+            return {"ok": False, "error": "授权内容不是合法 JSON"}
+        from .license import license_path, status as lic_status
+        from .paths import user_data_dir
+        path = license_path(user_data_dir())
+        try:
+            path.write_text(json.dumps(doc, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"写入失败：{exc}"}
+        st = await run_in_threadpool(lic_status, user_data_dir(), store)
+        if not st.get("valid"):
+            try:
+                path.unlink()
+            except Exception:
+                pass
+            return {"ok": False, "error": st.get("reason") or "授权无效"}
+        return {"ok": True, **st}
+
     return router
 
 
@@ -540,6 +588,20 @@ def _safe_account(a: dict) -> dict:
         "profile": profile,
         "created_at": a["created_at"], "updated_at": a["updated_at"],
     }
+
+
+def _license_info() -> dict:
+    """Lite 版授权信息（Pro 版无授权，返回空）。"""
+    try:
+        from .edition import is_lite
+        if not is_lite():
+            return {"enabled": False}
+        from .license import status
+        from .paths import user_data_dir
+        st = status(user_data_dir(), store=None)
+        return {"enabled": True, **st}
+    except Exception:
+        return {"enabled": False}
 
 
 def _safe_accounts(items: list[dict]) -> list[dict]:

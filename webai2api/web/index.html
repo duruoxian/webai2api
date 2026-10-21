@@ -54,9 +54,6 @@
       <button data-tab="keys" onclick="switchTab('keys')">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-3 0 3 3m-5 1 2 2"/></svg>
         API Key</button>
-      <button data-tab="usage" onclick="switchTab('usage')">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 5-7"/></svg>
-        用量</button>
       <button data-tab="settings" onclick="switchTab('settings')">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.2 4.2l2.1 2.1m11.4 11.4 2.1 2.1M2 12h3m14 0h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
         设置</button>
@@ -169,6 +166,32 @@
           <input type="range" id="barSlider" min="0" max="0" value="0" oninput="onBarSlide(this.value)">
         </div>
       </div>
+      <div class="card">
+        <div class="card-head"><h2>最近请求</h2><div class="sp"></div>
+          <div class="sel sel-sm" id="sel-recentKey">
+            <select id="recentKey" class="sel-native" onchange="onRecentFilter()"></select>
+            <button type="button" class="sel-btn" onclick="selToggle('recentKey')">
+              <span id="lbl-recentKey">全部 Key</span>
+              <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="sel-menu" id="menu-recentKey"></div>
+          </div>
+          <div class="sel sel-sm" id="sel-recentAcc">
+            <select id="recentAcc" class="sel-native" onchange="onRecentFilter()"></select>
+            <button type="button" class="sel-btn" onclick="selToggle('recentAcc')">
+              <span id="lbl-recentAcc">全部账号</span>
+              <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="sel-menu" id="menu-recentAcc"></div>
+          </div>
+          <span class="muted" id="recentInfo" style="font-size:12.5px"></span>
+          <button class="btn gray sm" onclick="recentPage(-1)">上一页</button>
+          <button class="btn gray sm" onclick="recentPage(1)">下一页</button>
+        </div>
+        <div class="tbl-scroll tall">
+          <table id="recentTable"><thead><tr><th>时间</th><th>Key</th><th>账号</th><th>模型</th><th>输入</th><th>输出</th><th>合计</th><th>耗时</th><th>状态</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
     </div>
 
 
@@ -208,135 +231,7 @@
       </div>
     </div>
 
-    <div id="tab-usage" class="tabpane">
-      <div class="card">
-        <div class="card-head"><h2>今日概览</h2><div class="sp"></div>
-          <button class="btn gray sm" onclick="exportCsv()">导出 CSV</button></div>
-        <div class="today-grid" id="todayGrid"></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>按 Key 用量</h2></div>
-        <div class="tbl-scroll">
-          <table id="keyUsageTable"><thead><tr><th>API Key</th><th>请求数</th><th>Token 合计</th><th>今日</th><th>本月</th><th>额度</th></tr></thead><tbody></tbody></table>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>按账号</h2></div>
-        <div class="tbl-scroll">
-          <table id="accUsageTable"><thead><tr><th>账号</th><th>平台</th><th>请求数</th><th>Token 合计</th></tr></thead><tbody></tbody></table>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>失败原因</h2></div>
-        <div id="errList" class="err-list"></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>最近请求</h2><div class="sp"></div>
-          <div class="sel sel-sm" id="sel-recentKey">
-            <select id="recentKey" class="sel-native" onchange="onRecentFilter()"></select>
-            <button type="button" class="sel-btn" onclick="selToggle('recentKey')">
-              <span id="lbl-recentKey">全部 Key</span>
-              <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
-            </button>
-            <div class="sel-menu" id="menu-recentKey"></div>
-          </div>
-          <div class="sel sel-sm" id="sel-recentAcc">
-            <select id="recentAcc" class="sel-native" onchange="onRecentFilter()"></select>
-            <button type="button" class="sel-btn" onclick="selToggle('recentAcc')">
-              <span id="lbl-recentAcc">全部账号</span>
-              <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
-            </button>
-            <div class="sel-menu" id="menu-recentAcc"></div>
-          </div>
-          <span class="muted" id="recentInfo" style="font-size:12.5px"></span>
-          <button class="btn gray sm" onclick="recentPage(-1)">上一页</button>
-          <button class="btn gray sm" onclick="recentPage(1)">下一页</button>
-        </div>
-        <div class="tbl-scroll tall">
-          <table id="recentTable"><thead><tr><th>时间</th><th>Key</th><th>账号</th><th>模型</th><th>输入</th><th>输出</th><th>合计</th><th>耗时</th><th>状态</th></tr></thead><tbody></tbody></table>
-        </div>
-      </div>
-    </div>
-
     <div id="tab-settings" class="tabpane">
-      <div class="card">
-        <div class="card-head"><h2>模型设置</h2><div class="sp"></div>
-          <div class="seg seg-sm" id="setProvSeg">
-            <button class="active" data-prov="deepseek" onclick="setSettingsProvider('deepseek')">DeepSeek</button>
-            <button data-prov="glm" onclick="setSettingsProvider('glm')">智谱清言</button>
-          </div>
-        </div>
-
-        <div id="dsSettings">
-          <div class="set-group">
-            <div class="set-group-title">额度</div>
-            <div class="fld-row">
-              <label class="fld"><span>上下文长度（tokens，上限 1,000,000）</span>
-                <input id="setDsContext" inputmode="numeric" placeholder="1000000" max="1000000" data-cap="1000000"></label>
-              <label class="fld"><span>最大输出（tokens，上限 384,000）</span>
-                <input id="setDsOutput" inputmode="numeric" placeholder="384000" max="384000" data-cap="384000"></label>
-            </div>
-          </div>
-          <div class="set-group">
-            <div class="set-group-title">性能</div>
-            <label class="chk"><input type="checkbox" id="setCache"> 启用会话缓存：多轮只发增量，更快、更不易被限流</label>
-            <label class="chk"><input type="checkbox" id="setSearch"> 联网搜索：模型按需检索，不是每次都搜</label>
-          </div>
-          <div class="set-group">
-            <div class="set-group-title">风控 / 高级</div>
-            <div class="fld-row">
-              <label class="fld"><span>防风控延迟下限（秒）</span>
-                <input id="setAntiMin" placeholder="1.5"></label>
-              <label class="fld"><span>防风控延迟上限（秒）</span>
-                <input id="setAntiMax" placeholder="3.0"></label>
-            </div>
-            <label class="fld"><span>PoW WASM 文件路径</span>
-              <input id="setWasm" placeholder="./sha3_wasm_bg.wasm"></label>
-          </div>
-          <div class="btn-row">
-            <button class="btn" onclick="saveDeepSeekSettings()">保存</button>
-            <button class="btn gray" onclick="resetDeepSeekSettings()">恢复默认</button>
-          </div>
-        </div>
-
-        <div id="glmSettings" style="display:none">
-          <div class="set-group">
-            <div class="set-group-title">额度</div>
-            <div class="fld-row">
-              <label class="fld"><span>上下文长度（tokens，上限 1,000,000）</span>
-                <input id="setGlmContext" inputmode="numeric" placeholder="1000000" max="1000000" data-cap="1000000"></label>
-              <label class="fld"><span>最大输出（tokens，上限 128,000）</span>
-                <input id="setGlmOutput" inputmode="numeric" placeholder="128000" max="128000" data-cap="128000"></label>
-            </div>
-          </div>
-          <div class="set-group">
-            <div class="set-group-title">性能</div>
-            <label class="chk"><input type="checkbox" id="setGlmCache"> 启用会话缓存：多轮复用同一会话，更快、更省</label>
-            <label class="chk"><input type="checkbox" id="setGlmSearch"> 联网搜索：模型按需检索</label>
-          </div>
-          <div class="set-group">
-            <div class="set-group-title">风控</div>
-            <div class="fld-row">
-              <label class="fld"><span>防风控延迟下限（秒）</span>
-                <input id="setGlmAntiMin" placeholder="1.5"></label>
-              <label class="fld"><span>防风控延迟上限（秒）</span>
-                <input id="setGlmAntiMax" placeholder="3.0"></label>
-            </div>
-          </div>
-          <div class="set-group">
-            <div class="set-group-title">思考强度</div>
-            <span class="hint" style="display:block;line-height:1.9">
-              在客户端里选（opencode 的推理强度下拉）：<br>
-              <b>Low</b>（或不选）→ 快速&nbsp;·&nbsp;<b>Medium / High</b> → 深度&nbsp;·&nbsp;<b>Max</b> → 极致
-            </span>
-          </div>
-          <div class="btn-row">
-            <button class="btn" onclick="saveGlmSettings()">保存</button>
-            <button class="btn gray" onclick="resetGlmSettings()">恢复默认</button>
-          </div>
-        </div>
-      </div>
-
       <div class="card">
         <div class="card-head"><h2>在其他客户端中接入</h2></div>
         <p class="muted" style="margin:-2px 0 12px">在任意支持「自定义提供商 / OpenAI 兼容」的客户端里新建提供商，按下表填写。填完点「提交」，再到客户端里添加模型即可。</p>
@@ -384,11 +279,24 @@
         </div>
       </div>
 
+      <div class="card">
+        <div class="card-head"><h2>授权</h2></div>
+        <div id="licInfo" class="lic-info"></div>
+        <div class="fld-row" style="align-items:flex-end">
+          <label class="fld" style="flex:1"><span>本机机器码</span>
+            <input id="machineCode" readonly value="—"></label>
+          <button class="btn gray sm" onclick="copyText(document.getElementById('machineCode').value)">复制</button>
+        </div>
+        <label class="fld"><span>授权码（到期日以授权码内为准）</span>
+          <textarea id="licInput" rows="4" placeholder="把作者发给你的授权内容粘贴到这里"></textarea></label>
+        <button class="btn" onclick="installLicense()">验证并保存</button>
+        <span class="hint" style="display:block;margin-top:8px" id="licHint"></span>
+      </div>
+
       <div class="card about">
         <div class="card-head"><h2>关于</h2></div>
         <div class="about-row"><span>作者</span><b>DuRuoxian</b></div>
-        <div class="about-row"><span>GitHub 仓库</span>
-          <a href="https://github.com/duruoxian/webai2api" target="_blank" rel="noopener noreferrer">github.com/duruoxian/webai2api</a></div>
+        <div class="about-row"><span>QQ</span><b>2483724214</b></div>
         <div class="about-row"><span>版本</span><b id="aboutVer">—</b></div>
 
         <div class="notice">
@@ -823,8 +731,8 @@ async function refresh(){
   document.getElementById('navKey').innerHTML =
     `Key <b>${s.keys.length}</b>`;
   renderOverview(s);renderAccounts(s);renderKeys(s);renderUsage(s);renderSettings(s);
-  bindLimitInputs();
-  loadSystem();
+  renderOverview(s);renderAccounts(s);renderKeys(s);renderUsage(s);renderSettings(s);
+
   if(window.__setLimits) window.__setLimits(s.settings||{});
   try{
     const key=(s.keys||[]).find(k=>k.enabled);
@@ -1143,46 +1051,9 @@ function renderKeys(s){
 }
 function renderUsage(s){
   syncRecentFilters(s);
-  const td=(s.today&&s.today.today)||{n:0,t:0,ok:0};
-  const yd=(s.today&&s.today.yesterday)||{n:0,t:0,ok:0};
-  const diff=(a,b)=>b?(((a-b)/b)*100).toFixed(0):'–';
-  const tg=document.getElementById('todayGrid');
-  if(tg) tg.innerHTML=`
-    <div class="today-item"><span>今日请求</span><b>${fmt(td.n)}</b><em>昨日 ${fmt(yd.n)} · ${diff(td.n,yd.n)}%</em></div>
-    <div class="today-item"><span>今日 Token</span><b>${fmtTok(td.t)}</b><em>昨日 ${fmtTok(yd.t)} · ${diff(td.t,yd.t)}%</em></div>
-    <div class="today-item"><span>成功率</span><b>${td.n?((td.ok/td.n*100).toFixed(1)+'%'):'–'}</b><em>昨日 ${yd.n?((yd.ok/yd.n*100).toFixed(1)+'%'):'–'}</em></div>
-    <div class="today-item"><span>平均耗时</span><b>${td.avg_ms?((td.avg_ms/1000).toFixed(2)+'s'):'–'}</b><em>首 Token ${td.avg_ttft?((td.avg_ttft/1000).toFixed(2)+'s'):'–'}</em></div>`;
-  const el=document.getElementById('errList');
-  if(el){
-    const errs=s.usage.errors||[];
-    el.innerHTML=errs.length?errs.map(e=>`<div class="err-row"><span class="tag err">${esc(e.code)}</span><b>${fmt(e.n)}</b></div>`).join(''):'<div class="muted">当前时间范围内没有失败请求</div>';
-  }
   const kids=new Set((s.keys||[]).map(k=>k.id));
   const keyName=(id,name)=>keyNameHTML(id,name,kids);
-  const ku=s.key_usage||{};
-  let tb=document.querySelector('#keyUsageTable tbody');tb.innerHTML='';
-  (s.usage.by_key||[]).forEach(k=>{
-    const u=ku[k.api_key_id]||{today:0,month:0};
-    const kk=(s.keys||[]).find(x=>x.id===k.api_key_id)||{};
-    const dq=kk.quota_daily||0, mq=kk.quota_monthly||0;
-    const dp=dq?Math.min(100,Math.round(u.today/dq*100)):0;
-    const mp=mq?Math.min(100,Math.round(u.month/mq*100)):0;
-    const quota = (dq||mq)
-      ? `<div class="quota-cell">
-           ${dq?`<div class="quota-bar"><span>今日</span><i class="${dp>=90?'hot':''}" style="width:${dp}%"></i><em>${fmtTok(u.today)} / ${fmtTok(dq)}</em></div>`:''}
-           ${mq?`<div class="quota-bar"><span>本月</span><i class="${mp>=90?'hot':''}" style="width:${mp}%"></i><em>${fmtTok(u.month)} / ${fmtTok(mq)}</em></div>`:''}
-         </div>`
-      : '<span class="muted">不限</span>';
-    tb.innerHTML+=`<tr><td>${keyName(k.api_key_id,k.api_key_name)}</td>
-      <td class="num-t">${fmt(k.n)}</td><td class="num-t"><b>${fmtTok(k.t)}</b></td>
-      <td class="num-t">${fmtTok(u.today)}</td><td class="num-t">${fmtTok(u.month)}</td>
-      <td style="min-width:150px">${quota}</td></tr>`;});
-  if(!(s.usage.by_key||[]).length)tb.innerHTML='<tr><td colspan="6" class="empty">暂无数据</td></tr>';
-  tb=document.querySelector('#accUsageTable tbody');tb.innerHTML='';
-  (s.usage.by_account||[]).forEach(a=>{tb.innerHTML+=`<tr><td><b>${esc(a.account_name||'–')}</b></td>
-    <td class="muted">${esc(a.provider||'')}</td><td class="num-t">${fmt(a.n)}</td><td class="num-t"><b>${fmtTok(a.t)}</b></td></tr>`;});
-  if(!(s.usage.by_account||[]).length)tb.innerHTML=empty('暂无数据');
-  tb=document.querySelector('#recentTable tbody');tb.innerHTML='';
+  let tb=document.querySelector('#recentTable tbody');tb.innerHTML='';
   (s.recent||[]).forEach(r=>{tb.innerHTML+=`<tr><td class="muted">${fmtTime(r.ts)}</td>
     <td>${keyName(r.api_key_id,r.api_key_name)}</td><td>${esc(r.account_name||'–')}</td>
     <td class="mono">${esc(r.model)}</td><td class="num-t">${fmtTok(r.prompt_tokens)}</td>
@@ -1263,62 +1134,41 @@ function renderSettings(s){
   if(gb) gb.textContent=location.origin+'/v1';
   const tr=document.getElementById('setTray');
   if(tr) tr.checked=(s.settings.tray_enabled||'true')!=='false';
-  document.getElementById('setWasm').value=s.settings.deepseek_wasm_path||'';
-  document.getElementById('setCache').checked=(s.settings.deepseek_session_cache||'true')!=='false';
-  const se=document.getElementById('setSearch'); if(se) se.checked=(s.settings.deepseek_search||'false')==='true';
-  document.getElementById('setAntiMin').value=s.settings.deepseek_anti_min||'1.5';
-  document.getElementById('setAntiMax').value=s.settings.deepseek_anti_max||'3.0';
   const rt=document.getElementById('setRetain'); if(rt) rt.value=s.settings.usage_retain_days||'0';
-  const dc=document.getElementById('setDsContext'); if(dc) dc.value=s.settings.deepseek_context_limit||'1000000';
-  const dof=document.getElementById('setDsOutput'); if(dof) dof.value=s.settings.deepseek_output_limit||'384000';
-  const gc2=document.getElementById('setGlmContext'); if(gc2) gc2.value=s.settings.glm_context_limit||'1000000';
-  const go2=document.getElementById('setGlmOutput'); if(go2) go2.value=s.settings.glm_output_limit||'128000';
-  const gn=document.getElementById('setGlmAntiMin'); if(gn) gn.value=s.settings.glm_anti_min||'1.5';
-  const gx=document.getElementById('setGlmAntiMax'); if(gx) gx.value=s.settings.glm_anti_max||'3.0';
-  const gs=document.getElementById('setGlmSearch'); if(gs) gs.checked=(s.settings.glm_search||'false')==='true';
-  const gc=document.getElementById('setGlmCache'); if(gc) gc.checked=(s.settings.glm_session_cache||'true')!=='false';
+  renderLicense(s.license);
 }
-/* 恢复默认：只改表单，点保存才真正写入 */
-const DEEPSEEK_DEFAULTS={
-  session_cache:true, search:false,
-  anti_min:'1.5', anti_max:'3.0',
-  context:'1000000', output:'384000'
-};
-const GLM_DEFAULTS={
-  context:'1000000', output:'128000',
-  anti_min:'1.5', anti_max:'3.0',
-  search:false, cache:true
-};
-function resetDeepSeekSettings(){
-  document.getElementById('setCache').checked=DEEPSEEK_DEFAULTS.session_cache;
-  document.getElementById('setSearch').checked=DEEPSEEK_DEFAULTS.search;
-  document.getElementById('setAntiMin').value=DEEPSEEK_DEFAULTS.anti_min;
-  document.getElementById('setAntiMax').value=DEEPSEEK_DEFAULTS.anti_max;
-  document.getElementById('setDsContext').value=DEEPSEEK_DEFAULTS.context;
-  document.getElementById('setDsOutput').value=DEEPSEEK_DEFAULTS.output;
-  toast('已还原为默认值，点「保存」生效');
+function renderLicense(lic){
+  const box=document.getElementById('licInfo');
+  const mc=document.getElementById('machineCode');
+  if(!box) return;
+  if(!lic || !lic.enabled){
+    box.innerHTML='<div class="muted">专业版无授权限制</div>';
+    return;
+  }
+  if(mc && lic.machine) mc.value=lic.machine;
+  if(lic.valid){
+    box.innerHTML=`<div class="lic-ok">授权有效 · 到期 ${esc(lic.expires)}（剩 ${lic.days_left} 天）${lic.name?' · '+esc(lic.name):''}</div>`;
+  }else{
+    box.innerHTML=`<div class="lic-bad">${esc(lic.reason||'未授权')}</div>`;
+  }
 }
-function resetGlmSettings(){
-  document.getElementById('setGlmContext').value=GLM_DEFAULTS.context;
-  document.getElementById('setGlmOutput').value=GLM_DEFAULTS.output;
-  document.getElementById('setGlmAntiMin').value=GLM_DEFAULTS.anti_min;
-  document.getElementById('setGlmAntiMax').value=GLM_DEFAULTS.anti_max;
-  document.getElementById('setGlmSearch').checked=GLM_DEFAULTS.search;
-  document.getElementById('setGlmCache').checked=GLM_DEFAULTS.cache;
-  toast('已还原为默认值，点「保存」生效');
+async function installLicense(){
+  const t=document.getElementById('licInput');
+  const hint=document.getElementById('licHint');
+  const content=(t&&t.value||'').trim();
+  if(!content){ toast('请粘贴授权内容'); return; }
+  if(hint) hint.textContent='正在校验…';
+  const j=await api('/license/install','POST',{content});
+  if(j&&j.ok){
+    if(hint) hint.textContent='';
+    if(t) t.value='';
+    toast('授权已生效');
+    refresh();
+  }else{
+    if(hint) hint.textContent=(j&&j.error)||'授权无效';
+    toast((j&&j.error)||'授权无效');
+  }
 }
-
-async function saveGlmSettings(){
-  const body={
-    glm_anti_min:document.getElementById('setGlmAntiMin').value.trim(),
-    glm_anti_max:document.getElementById('setGlmAntiMax').value.trim(),
-    glm_context_limit:document.getElementById('setGlmContext').value.trim()||'1000000',
-    glm_output_limit:document.getElementById('setGlmOutput').value.trim()||'128000',
-    glm_search:document.getElementById('setGlmSearch').checked,
-    glm_session_cache:document.getElementById('setGlmCache').checked};
-  await api('/settings','POST',body);toast('已保存并应用');refresh();
-}
-
 function openAccModal(acc){
   document.getElementById('accModalTitle').textContent=acc?'编辑账号':'添加账号';
   document.getElementById('accId').value=acc?acc.id:'';
@@ -1536,21 +1386,6 @@ function showKeyDaily(id){
   if(LAST_STATE) syncDailyKey(LAST_STATE);
   renderBars();
 }
-async function exportCsv(){
-  const qs=RANGE==='all'?'':('?range='+encodeURIComponent(RANGE)
-    +'&start='+encodeURIComponent(RANGE_START)+'&end='+encodeURIComponent(RANGE_END));
-  try{
-    const r=await fetch('/admin/api/usage/export'+qs,{headers:{'X-Admin-Token':TOKEN}});
-    if(!r.ok){toast('导出失败');return;}
-    const blob=await r.blob();
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(blob);
-    a.download='webai2api-usage.csv';
-    a.click();
-    setTimeout(()=>URL.revokeObjectURL(a.href),3000);
-    toast('已导出');
-  }catch(e){toast('导出失败');}
-}
 async function delKey(id){if(confirm('确定删除该 Key？')){await api('/keys/'+id,'DELETE');refresh();toast('已删除');}}
 async function saveTray(){
   const on=document.getElementById('setTray').checked;
@@ -1613,46 +1448,12 @@ async function doShutdown(){
   toast('已退出');
 }
 let SETTINGS_PROV='deepseek';
-function setSettingsProvider(p){
-  SETTINGS_PROV=p;
-  document.querySelectorAll('#setProvSeg button').forEach(b=>b.classList.toggle('active',b.dataset.prov===p));
-  const ds=document.getElementById('dsSettings'), gl=document.getElementById('glmSettings');
-  if(ds) ds.style.display=p==='deepseek'?'':'none';
-  if(gl) gl.style.display=p==='glm'?'':'none';
-}
-async function saveDeepSeekSettings(){
-  const body={deepseek_wasm_path:document.getElementById('setWasm').value.trim(),
-    deepseek_session_cache:document.getElementById('setCache').checked,
-    deepseek_search:document.getElementById('setSearch').checked,
-    deepseek_anti_min:document.getElementById('setAntiMin').value.trim(),
-    deepseek_anti_max:document.getElementById('setAntiMax').value.trim(),
-    deepseek_context_limit:document.getElementById('setDsContext').value.trim()||'1000000',
-    deepseek_output_limit:document.getElementById('setDsOutput').value.trim()||'384000'};
-  await api('/settings','POST',body);toast('DeepSeek 设置已保存');refresh();
-}
 async function saveGeneralSettings(){
   const body={tray_enabled:document.getElementById('setTray').checked,
     usage_retain_days:(document.getElementById('setRetain').value||'0').trim()};
   const pw=document.getElementById('setPw').value.trim();
   if(pw)body.admin_password=pw;
   await api('/settings','POST',body);toast('已保存');refresh();
-}
-function clampLimit(el){
-  const cap=Number(el.dataset.cap||0);
-  if(!cap) return;
-  let v=Number(el.value);
-  if(!Number.isFinite(v) || v<1){ el.value=String(cap); return; }
-  if(v>cap){ el.value=String(cap); toast('已按该模型上限收敛为 '+cap.toLocaleString()); }
-}
-function bindLimitInputs(){
-  ['setDsContext','setDsOutput','setGlmContext','setGlmOutput'].forEach(id=>{
-    const el=document.getElementById(id);
-    if(el && !el.dataset.bound){
-      el.dataset.bound='1';
-      el.addEventListener('change',()=>clampLimit(el));
-      el.addEventListener('blur',()=>clampLimit(el));
-    }
-  });
 }
 function _wapi(){ try{ return window.pywebview && window.pywebview.api; }catch(e){ return null; } }
 function winMinimize(){ const a=_wapi(); if(a&&a.minimize) a.minimize(); }
