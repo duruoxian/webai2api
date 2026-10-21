@@ -91,15 +91,15 @@
               <span>开始日期</span>
               <button type="button" class="date-btn" id="rangeStartBtn" onclick="openDatePicker('start',this)">
                 <span id="rangeStartText">选择日期</span>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 11h18"/></svg>
+                <i class="cal-ic"></i>
               </button>
             </div>
-            <div class="range-arrow">→</div>
+            <div class="range-arrow"></div>
             <div class="range-field">
               <span>结束日期</span>
               <button type="button" class="date-btn" id="rangeEndBtn" onclick="openDatePicker('end',this)">
                 <span id="rangeEndText">选择日期</span>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 11h18"/></svg>
+                <i class="cal-ic"></i>
               </button>
             </div>
           </div>
@@ -906,7 +906,7 @@ function renderOverview(s){
   (s.accounts||[]).forEach(a=>{ if(a.health==='expired') alerts.push(`账号「${a.name}」凭证已失效，请重新登录`); });
   const ab=document.getElementById('alertBar');
   if(ab){
-    if(alerts.length){ ab.style.display=''; ab.innerHTML=alerts.slice(0,5).map(x=>`<div>⚠ ${esc(x)}</div>`).join(''); }
+    if(alerts.length){ ab.style.display=''; ab.innerHTML=alerts.slice(0,5).map(x=>`<div class="alert-item">${esc(x)}</div>`).join(''); }
     else ab.style.display='none';
   }
   const t=s.usage.total||{};
@@ -1256,10 +1256,15 @@ function syncRecentFilters(s){
   const byKey=s.usage.by_key||[];
   if(RECENT_KEY && !byKey.some(k=>k.api_key_id===RECENT_KEY)) RECENT_KEY='';
   let opts='<option value="">全部 Key</option>';
+  // 仍存在的排前面，已删除的排后面
+  const keyAlive=[], keyGone=[];
   byKey.forEach(k=>{
     if(!k.api_key_id) return;
     const del=kids.size && !kids.has(k.api_key_id);
-    opts+=`<option value="${esc(k.api_key_id)}">${esc(k.api_key_name||'–')}${del?'（已删除）':''}</option>`;
+    (del?keyGone:keyAlive).push({...k, _del:del});
+  });
+  [...keyAlive, ...keyGone].forEach(k=>{
+    opts+=`<option value="${esc(k.api_key_id)}">${esc(k.api_key_name||'–')}${k._del?'（已删除）':''}</option>`;
   });
   const keyHost=document.getElementById('sel-recentKey');
   if(!keyHost.classList.contains('open')){
@@ -1277,12 +1282,17 @@ function syncRecentFilters(s){
   const nameCount={};
   byAcc.forEach(a=>{const n=a.account_name||'–';nameCount[n]=(nameCount[n]||0)+1;});
   let aopts='<option value="">全部账号</option>';
+  // 仍存在的排前面，已删除的排后面
+  const accAlive=[], accGone=[];
   byAcc.forEach(a=>{
     if(!a.account_id) return;
     const n=a.account_name||'–';
     const del=!accIds.has(a.account_id);
     const dup=nameCount[n]>1?' · '+a.account_id.slice(-4):'';
-    aopts+=`<option value="${esc(a.account_id)}">${esc(n)}${del?'（已删除）':''}${esc(dup)}</option>`;
+    (del?accGone:accAlive).push({...a, _n:n, _del:del, _dup:dup});
+  });
+  [...accAlive, ...accGone].forEach(a=>{
+    aopts+=`<option value="${esc(a.account_id)}">${esc(a._n)}${a._del?'（已删除）':''}${esc(a._dup)}</option>`;
   });
   const accHost=document.getElementById('sel-recentAcc');
   if(!accHost.classList.contains('open')){
