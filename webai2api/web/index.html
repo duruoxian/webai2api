@@ -387,25 +387,28 @@
       <div class="card" id="issuerCard" hidden>
         <div class="card-head"><h2>授权签发</h2><div class="sp"></div>
           <span class="hint" style="margin:0">仅本机可见（检测到作者私钥）</span></div>
-        <div class="fld-row" style="align-items:flex-end">
+
+        <div class="issue-form">
           <label class="fld"><span>有效天数</span>
             <input id="issueDays" inputmode="numeric" value="7"></label>
           <label class="fld"><span>数量</span>
             <input id="issueCount" inputmode="numeric" value="1"></label>
-          <label class="fld" style="flex:1"><span>备注（客户名 / 订单号）</span>
+          <label class="fld"><span>备注（客户名 / 订单号）</span>
             <input id="issueNote" placeholder="可选"></label>
+          <button class="btn issue-submit" onclick="issueCodes()">生成授权码</button>
         </div>
-        <div class="btn-row">
-          <button class="btn" onclick="issueCodes()">生成授权码</button>
-          <button class="btn gray" onclick="exportIssued()">导出记录 CSV</button>
+
+        <div class="issue-toolbar">
+          <div class="issue-toolbar-title">
+            <b>签发记录</b>
+            <span class="hint" id="issuedInfo"></span>
+          </div>
           <div class="sp"></div>
-          <label class="fld" style="margin:0;min-width:180px">
-            <input id="issueSearch" placeholder="搜索授权码 / 备注" oninput="loadIssued()">
-          </label>
+          <input id="issueSearch" class="input-sm" placeholder="搜索授权码 / 备注"
+                 oninput="loadIssued()">
+          <button class="btn gray sm" onclick="exportIssued()">导出 CSV</button>
         </div>
-        <div class="issued-head">
-          <span class="hint" id="issuedInfo" style="margin:0"></span>
-        </div>
+
         <div class="tbl-scroll tall">
           <table id="issuedTable">
             <thead><tr>

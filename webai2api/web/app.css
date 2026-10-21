@@ -685,6 +685,27 @@ html[data-theme=dark] .sel-menu{
   cursor:copy;color:var(--text2)}
 #issuedTable td{vertical-align:middle}
 #issuedTable .empty{text-align:center;color:var(--text3)}
+
+/* 授权签发：表单区 */
+.issue-form{display:grid;grid-template-columns:120px 90px minmax(180px,1fr) auto;
+  gap:12px;align-items:end;padding:16px;border-radius:14px;
+  background:var(--surface-flat);border:1px solid var(--hairline-soft)}
+.issue-form .fld{margin-bottom:0}
+.issue-submit{height:43px;white-space:nowrap}
+
+/* 授权签发：列表工具条 */
+.issue-toolbar{display:flex;align-items:center;gap:10px;margin:18px 0 10px;flex-wrap:wrap}
+.issue-toolbar .sp{flex:1;min-width:12px}
+.issue-toolbar-title{display:flex;align-items:baseline;gap:8px;min-width:0}
+.issue-toolbar-title b{font-size:13.5px;font-weight:600;color:var(--text)}
+.issue-toolbar-title .hint{margin:0}
+.input-sm{width:200px;height:34px;padding:6px 11px;font-size:13px;border-radius:9px}
+
+@media (max-width:720px){
+  .issue-form{grid-template-columns:1fr 1fr}
+  .issue-form .issue-submit{grid-column:1 / -1;width:100%}
+  .input-sm{width:100%}
+}
 .notice{margin-top:18px;padding:18px 20px;border-radius:14px;
   background:linear-gradient(165deg,rgba(255,255,255,.42),rgba(255,255,255,.18));
   border:1px solid rgba(255,255,255,.55)}
