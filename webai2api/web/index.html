@@ -286,7 +286,6 @@
           <textarea id="licInput" rows="3" placeholder="粘贴作者发给你的一行授权码（WB2. 开头）"></textarea></label>
         <div class="btn-row">
           <button class="btn" onclick="installLicense()">激活</button>
-          <button class="btn gray" onclick="copyMachineCode()" id="copyMachineBtn" hidden>复制本机识别码</button>
         </div>
         <span class="hint" style="display:block;margin-top:8px" id="licHint"></span>
       </div>
@@ -1171,18 +1170,9 @@ function renderLicense(lic){
   if(card) card.hidden = false;
   if(lic.valid){
     box.innerHTML=`<div class="lic-ok">授权有效 · ${esc(lic.activated)} 激活 · 到期 ${esc(lic.expires)}（剩 ${lic.days_left} 天）</div>`;
-  }else if(lic.code==='other_device' || lic.code==='missing'){
-    box.innerHTML=`<div class="lic-bad">${esc(lic.reason||'未授权')}</div>`;
   }else{
     box.innerHTML=`<div class="lic-bad">${esc(lic.reason||'未授权')}</div>`;
   }
-  const cm=document.getElementById('copyMachineBtn');
-  if(cm) cm.hidden = !(lic.code==='other_device');
-}
-function copyMachineCode(){
-  api('/license').then(j=>{
-    if(j && j.machine){ copyText(j.machine); }
-  });
 }
 async function installLicense(){
   const t=document.getElementById('licInput');
