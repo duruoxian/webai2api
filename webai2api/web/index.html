@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api 客户版</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%235cbeff'/><stop offset='1' stop-color='%230a84ff'/></linearGradient></defs><rect width='100' height='100' rx='24' fill='url(%23g)'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.9">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.10">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -16,7 +16,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.9"></script>
+<script src="/admin/static/hyalite.js?v=0.1.10"></script>
 </head>
 <body>
 
@@ -219,40 +219,48 @@
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>快速接入</h2></div>
+        <div class="card-head"><h2>接入方式</h2></div>
         <div class="hint" style="line-height:2;margin-bottom:14px">
           <div>接口地址&nbsp;&nbsp;<b id="baseHint2">/v1</b></div>
           <div>可用模型&nbsp;&nbsp;<b id="modelHint">deepseek-chat</b></div>
-          <div>API Key&nbsp;&nbsp;在上方生成</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">API Key
+            <select id="ocKeySel" onchange="onOcKeyChange()" style="min-width:180px"></select>
+            <button class="btn sm" id="ocConnectBtn" onclick="ocConnectCurrent()">接入</button>
+            <button class="btn gray sm" id="ocDisconnectBtn" onclick="ocDisconnectCurrent()">移除</button>
+          </div>
         </div>
-        <p class="hint" style="margin-bottom:8px">opencode 不会自动识别模型能力（上下文 / 推理 / 图片），请直接复制下面这段完整配置（已带好能力值），粘进 <code>~/.config/opencode/opencode.jsonc</code> 的 provider 里：</p>
-        <pre id="ocSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
-        <button class="btn sm" onclick="copyText(document.getElementById('ocSnippet').textContent)" style="margin-top:10px">复制配置片段</button>
+
+        <div class="set-group">
+          <div class="set-group-title">OpenCode 配置片段</div>
+          <p class="hint" style="margin-bottom:8px">opencode 不会自动识别模型能力（上下文 / 推理 / 图片），点「接入」可直接写入 <code>~/.config/opencode/opencode.jsonc</code>；也可以复制下面这段完整配置（已带好能力值）手动粘进 provider 里：</p>
+          <pre id="ocSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
+          <button class="btn sm" onclick="copyText(document.getElementById('ocSnippet').textContent)" style="margin-top:10px">复制配置片段</button>
+        </div>
+
+        <div class="set-group" style="margin-top:18px">
+          <div class="set-group-title">其他 OpenAI 兼容客户端</div>
+          <p class="muted" style="margin:-2px 0 12px">在任意支持「自定义提供商 / OpenAI 兼容」的客户端里新建提供商，按下表填写。填完点「提交」，再到客户端里添加模型即可。</p>
+          <div class="guide">
+            <div class="guide-row"><span>提供商 ID</span><code>webai2api</code><button class="btn gray sm" onclick="copyText('webai2api')">复制</button></div>
+            <div class="guide-row"><span>显示名称</span><code>webai2api</code><button class="btn gray sm" onclick="copyText('webai2api')">复制</button></div>
+            <div class="guide-row"><span>基础 URL</span><code id="guideBase">/v1</code><button class="btn gray sm" onclick="copyText(document.getElementById('guideBase').textContent)">复制</button></div>
+            <div class="guide-row"><span>API 密钥</span><code id="guideKeyHint">在上方列表中选择或生成</code><button class="btn gray sm" onclick="document.getElementById('keyTable').scrollIntoView({behavior:'smooth'})">去创建</button></div>
+            <div class="guide-row"><span>模型</span>
+              <div class="guide-models">
+                <div class="guide-model"><code>deepseek-chat</code><span>DeepSeek V4.1-Flash（非思考）</span><button class="btn gray sm" onclick="copyText('deepseek-chat')">复制 ID</button></div>
+                <div class="guide-model"><code>deepseek-reasoner</code><span>DeepSeek V4.1-Flash 思考</span><button class="btn gray sm" onclick="copyText('deepseek-reasoner')">复制 ID</button></div>
+                <div class="guide-model"><code>GLM-5.3</code><span>GLM-5.3（智谱）</span><button class="btn gray sm" onclick="copyText('GLM-5.3')">复制 ID</button></div>
+                <div class="guide-model"><code>GLM-5.3-Flash</code><span>GLM-5.3-Flash（智谱 · 快速）</span><button class="btn gray sm" onclick="copyText('GLM-5.3-Flash')">复制 ID</button></div>
+              </div>
+            </div>
+            <div class="guide-row"><span>请求头</span><code>留空</code></div>
+          </div>
+          <p class="muted" style="margin:12px 0 0">添加模型时：左边填<b>模型 ID</b>（照上表），右边填<b>显示名称</b>（可自定义）。注意：通过界面添加模型时，客户端只会保存名称，<b>不会自动带上上下文 / 推理 / 图片能力</b>；需要这些能力请用上方「OpenCode 配置片段」。GLM 模型需要先在「账号」页登录智谱账号。</p>
+        </div>
       </div>
     </div>
 
     <div id="tab-settings" class="tabpane">
-      <div class="card">
-        <div class="card-head"><h2>在其他客户端中接入</h2></div>
-        <p class="muted" style="margin:-2px 0 12px">在任意支持「自定义提供商 / OpenAI 兼容」的客户端里新建提供商，按下表填写。填完点「提交」，再到客户端里添加模型即可。</p>
-        <div class="guide">
-          <div class="guide-row"><span>提供商 ID</span><code>webai2api</code><button class="btn gray sm" onclick="copyText('webai2api')">复制</button></div>
-          <div class="guide-row"><span>显示名称</span><code>webai2api</code><button class="btn gray sm" onclick="copyText('webai2api')">复制</button></div>
-          <div class="guide-row"><span>基础 URL</span><code id="guideBase">/v1</code><button class="btn gray sm" onclick="copyText(document.getElementById('guideBase').textContent)">复制</button></div>
-          <div class="guide-row"><span>API 密钥</span><code>在「API Key」页创建，形如 sk-…</code><button class="btn gray sm" onclick="switchTab('keys')">去创建</button></div>
-          <div class="guide-row"><span>模型</span>
-            <div class="guide-models">
-              <div class="guide-model"><code>deepseek-chat</code><span>DeepSeek V4.1-Flash（非思考）</span><button class="btn gray sm" onclick="copyText('deepseek-chat')">复制 ID</button></div>
-              <div class="guide-model"><code>deepseek-reasoner</code><span>DeepSeek V4.1-Flash 思考</span><button class="btn gray sm" onclick="copyText('deepseek-reasoner')">复制 ID</button></div>
-              <div class="guide-model"><code>GLM-5.3</code><span>GLM-5.3（智谱）</span><button class="btn gray sm" onclick="copyText('GLM-5.3')">复制 ID</button></div>
-              <div class="guide-model"><code>GLM-5.3-Flash</code><span>GLM-5.3-Flash（智谱 · 快速）</span><button class="btn gray sm" onclick="copyText('GLM-5.3-Flash')">复制 ID</button></div>
-            </div>
-          </div>
-          <div class="guide-row"><span>请求头</span><code>留空</code></div>
-        </div>
-        <p class="muted" style="margin:12px 0 0">添加模型时：左边填<b>模型 ID</b>（照上表），右边填<b>显示名称</b>（可自定义）。注意：通过界面添加模型时，客户端只会保存名称，<b>不会自动带上上下文 / 推理 / 图片能力</b>；需要这些能力请用上方「快速接入」里的完整配置片段。GLM 模型需要先在「账号」页登录智谱账号。</p>
-      </div>
-
       <div class="card">
         <div class="card-head"><h2>通用 / 数据</h2></div>
         <label class="fld"><span>用量数据保留天数（0 = 永久保留）</span>
@@ -286,7 +294,7 @@
         <div class="lic-hero" id="licHero">
           <div class="lic-hero-main">
             <span class="lic-hero-num" id="licDays">—</span>
-            <span class="lic-hero-unit">天</span>
+            <span class="lic-hero-unit" id="licHeroUnit">剩余</span>
           </div>
           <div class="lic-hero-side">
             <div class="lic-meta"><span>状态</span><b id="licState">未激活</b></div>
@@ -404,7 +412,7 @@
     <label class="fld"><span>备注（发给谁用）</span><input id="keyName" placeholder="例如：小明"></label>
     <div class="modal-foot">
       <button class="btn gray" onclick="closeModal('keyModal')">取消</button>
-      <button class="btn" onclick="createKey()">生成</button>
+      <button class="btn" id="keyGenBtn" onclick="createKey()">生成</button>
     </div>
     <div id="keyResult" style="display:none">
       <p class="hint" style="margin-top:18px">复制这个 Key（仅显示一次）：</p>
@@ -1083,8 +1091,11 @@ function renderKeys(s){
         <button class="btn sm" onclick="openKeyView('${k.id}')">查看</button>
         <button class="btn gray sm" onclick="openKeyEdit('${k.id}')">编辑</button>
         <button class="btn gray sm" onclick="toggleKey('${k.id}',${k.enabled?0:1})">${k.enabled?'停用':'启用'}</button>
+        <button class="btn sm" onclick="ocConnect('${k.id}')">接入</button>
+        <button class="btn gray sm" onclick="ocDisconnect('${k.id}')">移除</button>
         <button class="btn danger sm" onclick="delKey('${k.id}')">删除</button></td></tr>`;});
   if(!s.keys.length)tb.innerHTML=empty('还没有 Key，点右上角生成');
+  if(typeof window.rebuildOcSel==='function') window.rebuildOcSel();
 }
 function renderUsage(s){
   syncRecentFilters(s);
@@ -1200,32 +1211,15 @@ function renderLicense(lic){
   const reason=document.getElementById('licReason');
 
   if(lic.valid){
-    const total=Number(lic.days)||0;
-    const left=Number(lic.days_left)||0;
-    const pct=total?Math.max(0,Math.min(100,Math.round(left/total*100))):0;
-    set('licDays', String(left));
-    set('licState','有效');
+    renderLicenseCountdown(lic);
+  }else{
+    LIC_TS=0;
+    set('licDays','—');
+    const hu=document.getElementById('licHeroUnit'); if(hu) hu.textContent='剩余';
+    set('licState', lic.code==='other_device'?'已锁定':(lic.code==='expired'?'已到期':'未激活'));
     set('licActivated', lic.activated||'—');
     set('licExpires', lic.expires||'—');
     set('licId', lic.code_id||'—');
-    if(chip){chip.textContent='有效'; chip.className='lic-chip ok';}
-    if(fill){
-      fill.style.width=pct+'%';
-      fill.className = pct<=15?'warn':(pct<=35?'mid':'');
-    }
-    if(reason){
-      reason.textContent = left<=7
-        ? `授权将在 ${left} 天后到期，到期后接口将停止，请联系作者续期`
-        : '';
-      reason.className = left<=7?'lic-note warn':'lic-note';
-      reason.hidden = left>7;
-    }
-  }else{
-    set('licDays','—');
-    set('licState', lic.code==='other_device'?'已锁定':'未激活');
-    set('licActivated','—');
-    set('licExpires','—');
-    set('licId','—');
     if(chip){chip.textContent='不可用'; chip.className='lic-chip bad';}
     if(fill){fill.style.width='0%'; fill.className='';}
     if(reason){
@@ -1234,6 +1228,51 @@ function renderLicense(lic){
       reason.hidden=false;
     }
   }
+}
+/* ── 授权精确倒计时：一律用后端 expires_ts 前端自己算（seconds_left 受缓存影响会冻结） ── */
+let LIC_TS=0, LIC_DAYS=0, LIC_EXPIRES_TEXT='', LIC_TIMER=null;
+function licPad(n){ return String(n).padStart(2,'0'); }
+function licTick(){
+  const ts=LIC_TS; if(!ts) return;
+  const now=Date.now()/1000;
+  const left=Math.max(0, Math.floor(ts-now));
+  const d=Math.floor(left/86400), h=Math.floor(left%86400/3600), m=Math.floor(left%3600/60);
+  const hero=document.getElementById('licDays');
+  if(hero) hero.textContent = left>0 ? `${d}天 ${h}小时 ${m}分` : '已到期';
+  const hu=document.getElementById('licHeroUnit'); if(hu) hu.textContent=left>0?'剩余':'';
+  const fillEl=document.getElementById('licBarFill');
+  if(fillEl){
+    const total=LIC_DAYS>0?(LIC_DAYS*86400):0;
+    const pct=total>0?Math.max(0,Math.min(100,(ts-now)/total*100)):0;
+    fillEl.style.width=pct.toFixed(2)+'%';
+    fillEl.className = pct<=15?'warn':(pct<=35?'mid':'');
+  }
+  const reason=document.getElementById('licReason');
+  if(reason){
+    if(left<=0){
+      reason.textContent = `授权已于 ${LIC_EXPIRES_TEXT||'—'} 到期，接口已停止，请联系作者续期`;
+      reason.className='lic-note bad'; reason.hidden=false;
+    }else if(left<=7*86400){
+      reason.textContent = `授权将于 ${LIC_EXPIRES_TEXT||'—'} 到期，还剩 ${d}天${licPad(h)}小时，请及时联系作者续期`;
+      reason.className='lic-note warn'; reason.hidden=false;
+    }else{
+      reason.textContent=''; reason.className='lic-note'; reason.hidden=true;
+    }
+  }
+}
+function renderLicenseCountdown(lic){
+  const set=(id,v)=>{const el=document.getElementById(id); if(el) el.textContent=v;};
+  const chip=document.getElementById('licChip');
+  LIC_TS=Number(lic.expires_ts)||0;
+  LIC_DAYS=Number(lic.days)||0;
+  LIC_EXPIRES_TEXT=lic.expires||'';
+  set('licState','有效');
+  set('licActivated', lic.activated||'—');
+  set('licExpires', lic.expires||'—');
+  set('licId', lic.code_id||'—');
+  if(chip){chip.textContent='有效'; chip.className='lic-chip ok';}
+  licTick();
+  if(!LIC_TIMER) LIC_TIMER=setInterval(licTick, 60000);
 }
 async function installLicense(){
   const t=document.getElementById('licInput');
@@ -1400,13 +1439,28 @@ async function checkAcc(id){
 }
 async function delAcc(id){if(confirm('确定删除该账号？')){await api('/accounts/'+id,'DELETE');refresh();toast('已删除');}}
 function openKeyModal(){document.getElementById('keyName').value='';
-  document.getElementById('keyResult').style.display='none';openModal('keyModal');
+  document.getElementById('keyResult').style.display='none';
+  const btn=document.getElementById('keyGenBtn');if(btn){btn.disabled=false;btn.textContent='生成';}
+  openModal('keyModal');
   setTimeout(()=>document.getElementById('keyName').focus(),30);}
+let KEY_CREATING=false;
 async function createKey(){
+  if(KEY_CREATING)return;
   const name=document.getElementById('keyName').value.trim()||'未命名 Key';
-  const j=await api('/keys','POST',{name});
-  if(j.ok){document.getElementById('keyResult').style.display='block';
-    document.getElementById('keyValue').textContent=j.key.key;refresh();}
+  const btn=document.getElementById('keyGenBtn');
+  KEY_CREATING=true;
+  if(btn){btn.disabled=true;btn.textContent='生成中…';}
+  let j;
+  try{j=await api('/keys','POST',{name});}
+  catch(e){j={ok:false,error:(e&&e.message)||'生成失败'};}
+  finally{KEY_CREATING=false;}
+  if(j&&j.ok){document.getElementById('keyResult').style.display='block';
+    document.getElementById('keyValue').textContent=j.key.key;refresh();
+    if(btn)btn.textContent='已生成';
+  }else{
+    if(btn){btn.disabled=false;btn.textContent='生成';}
+    toast((j&&j.error)||'生成失败');
+  }
 }
 async function toggleKey(id,en){await api('/keys/'+id,'PUT',{enabled:en});refresh();}
 let EDIT_KEY_ID='';
@@ -1614,7 +1668,7 @@ function tuneGlass(dark){
   document.getElementById('baseHint2').textContent=loc+'/v1';
   let OC_SNIP='';
   let LIMITS={deepseek:{context:1000000,output:384000},chatglm:{context:1000000,output:128000}};
-  function buildSnippet(models){
+  function buildSnippet(models,keyVal){
     const lines=[];
     for(const m of models){
       const isGlm=m.toLowerCase().startsWith('glm');
@@ -1632,7 +1686,7 @@ function tuneGlass(dark){
   "name": "webai2api 多账号网关",
   "options": {
     "baseURL": "${loc}/v1",
-    "apiKey": "你的Key",
+    "apiKey": ${JSON.stringify(keyVal||'')},
     "maxRetries": 0
   },
   "models": {
@@ -1646,17 +1700,97 @@ ${lines.join(',\n')}
             chatglm:{context:n(settings.glm_context_limit,1000000),output:n(settings.glm_output_limit,128000)}};
     if(window.__lastModels) window.__setSnippet(window.__lastModels);
   };
-  OC_SNIP=buildSnippet(['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash']);
+  const DEFAULT_MODELS=['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash'];
+  // sel.value 始终是 Key 的 id；明文 key 仅通过 LAST_STATE.keys 按 id 查找
+  function getOcKeys(){ return ((LAST_STATE&&LAST_STATE.keys)||[]).filter(k=>k.enabled); }
+  function maskKey(k){ const v=String((k&&k.key)||''); if(v.length<=12) return v; return v.slice(0,8)+'…'+v.slice(-4); }
+  function selectedKeyObj(){
+    const sel=document.getElementById('ocKeySel');
+    const id=sel?sel.value:'';
+    return getOcKeys().find(k=>k.id===id)||null;
+  }
+  function rebuildOcSel(){
+    const sel=document.getElementById('ocKeySel'); if(!sel) return;
+    const opts=getOcKeys();
+    const prev=sel.value;
+    sel.innerHTML=opts.length?opts.map((k,i)=>`<option value="${esc(k.id)}" ${(prev?k.id===prev:i===0)?'selected':''}>${esc(k.name)} ${esc(maskKey(k))}</option>`).join(''):'<option value="">无可用 Key</option>';
+    const gh=document.getElementById('guideKeyHint');
+    if(gh){ const ok=sel.value?(opts.find(k=>k.id===sel.value)||opts[0]):opts[0]; gh.textContent=ok?maskKey(ok):'在上方列表中选择或生成'; }
+    const cb=document.getElementById('ocConnectBtn');
+    if(cb){ cb.disabled=!opts.length; cb.title=opts.length?'':'请先在「API Key」卡中创建并启用一个 Key'; }
+    const db=document.getElementById('ocDisconnectBtn');
+    if(db) db.disabled=!opts.length;
+    rebuildSnippet();
+  }
+  function rebuildSnippet(){
+    const models=window.__lastModels||DEFAULT_MODELS;
+    const k=selectedKeyObj();
+    OC_SNIP=buildSnippet(models, k?k.key:'');
+    const el=document.getElementById('ocSnippet'); if(el) el.textContent=OC_SNIP;
+  }
+  window.rebuildOcSel=rebuildOcSel;
+  window.rebuildSnippet=rebuildSnippet;
+  window.onOcKeyChange=function(){
+    const gh=document.getElementById('guideKeyHint');
+    if(gh){ const ok=selectedKeyObj(); gh.textContent=ok?maskKey(ok):'在上方列表中选择或生成'; }
+    rebuildSnippet();
+  };
+  function openOcResultModal(title,snippet){
+    let m=document.getElementById('ocResultModal');
+    if(!m){
+      m=document.createElement('div'); m.id='ocResultModal'; m.className='modal-bg';
+      m.innerHTML=`<div class="modal"><div class="modal-head"><h3 id="ocResultTitle"></h3><div class="sp"></div><button class="modal-x" onclick="closeModal('ocResultModal')" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><pre id="ocResultPre" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace;max-height:60vh"></pre><div class="modal-foot"><button class="btn" onclick="copyText(document.getElementById('ocResultPre').textContent)">复制</button><button class="btn gray" onclick="closeModal('ocResultModal')">关闭</button></div></div>`;
+      document.body.appendChild(m);
+    }
+    document.getElementById('ocResultTitle').textContent=title||'结果';
+    document.getElementById('ocResultPre').textContent=snippet||'';
+    openModal('ocResultModal');
+  }
+  async function ocConnect(id){
+    if(!id){ toast('请先创建并启用一个 Key'); return; }
+    if(!confirm('确定将该 Key 写入 opencode 配置？')) return;
+    try{
+      const r=await api('/keys/'+id+'/opencode/connect','POST');
+      if(r&&r.ok){ toast('已写入 opencode 配置，重启 opencode 生效'); rebuildSnippet(); }
+      else if(r&&r.snippet){ openOcResultModal(r.error||'写入失败，可手动复制配置', r.snippet); }
+      else { toast((r&&r.error)||'接入失败'); }
+    }catch(e){ toast('接入失败：'+((e&&e.message)||e)); }
+  }
+  async function ocDisconnect(id){
+    if(!id){ toast('请先创建并启用一个 Key'); return; }
+    try{
+      const r=await api('/keys/'+id+'/opencode/disconnect','POST');
+      if(r&&r.ok){ toast('已移除 opencode 配置'); }
+      else { toast((r&&r.error)||'移除失败'); }
+    }catch(e){ toast('移除失败：'+((e&&e.message)||e)); }
+  }
+  function ocConnectCurrent(){
+    const sel=document.getElementById('ocKeySel');
+    if(!sel||!sel.value){ toast('请先选择或创建一个启用中的 Key'); return; }
+    ocConnect(sel.value);
+  }
+  function ocDisconnectCurrent(){
+    const sel=document.getElementById('ocKeySel');
+    if(!sel||!sel.value){ toast('请先选择 Key'); return; }
+    ocDisconnect(sel.value);
+  }
+  // 供 renderKeys / inline onclick 使用（本文件在 IIFE 内定义函数，必须显式挂 window）
+  window.ocConnect=ocConnect;
+  window.ocDisconnect=ocDisconnect;
+  window.ocConnectCurrent=ocConnectCurrent;
+  window.ocDisconnectCurrent=ocDisconnectCurrent;
+
+  OC_SNIP=buildSnippet(DEFAULT_MODELS,'');
   const el = document.getElementById('ocSnippet');
   if(el) el.textContent = OC_SNIP;
   window.__setSnippet=function(models){
     if(!models||!models.length) return;
     window.__lastModels=models;
-    OC_SNIP=buildSnippet(models);
-    if(el) el.textContent=OC_SNIP;
+    rebuildSnippet();
     const mh=document.getElementById('modelHint');
     if(mh) mh.textContent=models.join(' / ');
   };
+  rebuildOcSel();
   ['accProvider'].forEach(selBuild);
   if(TOKEN){try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
   setInterval(()=>{

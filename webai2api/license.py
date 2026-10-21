@@ -390,18 +390,21 @@ def _verify_record(rec: dict) -> dict:
     base = {
         "code_id": info["id"],
         "days": days,
-        "activated": time.strftime("%Y-%m-%d", time.localtime(activated)),
-        "expires": time.strftime("%Y-%m-%d", time.localtime(expires_ts - 1)),
+        "activated": time.strftime("%Y-%m-%d %H:%M", time.localtime(activated)),
+        "expires": time.strftime("%Y-%m-%d %H:%M", time.localtime(expires_ts)),
         "machine": cur,
+        "activated_at": activated,
+        "expires_ts": expires_ts,
+        "seconds_left": max(0, int(expires_ts - now)),
     }
 
     if now >= expires_ts:
         return {**base, "valid": False, "code": "expired",
-                "reason": f"授权已于 {base['expires']} 到期"}
+                "reason": f"授权已于 {base['expires']} 到期", "seconds_left": 0}
 
     left = max(0, int((expires_ts - now) // 86400))
     return {**base, "valid": True, "code": "ok", "reason": "",
-            "days_left": left, "expires_ts": expires_ts}
+            "days_left": left}
 
 
 # ── 激活 ────────────────────────────────────────────
@@ -488,4 +491,7 @@ def status(data_dir: Path, store=None) -> dict:
         "code_id": lic.get("code_id", ""),
         "machine": machine_code(),
         "clock_ok": clock.get("ok", True),
+        "activated_at": lic.get("activated_at", 0.0),
+        "expires_ts": lic.get("expires_ts", 0.0),
+        "seconds_left": lic.get("seconds_left", 0),
     }
