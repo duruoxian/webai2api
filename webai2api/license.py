@@ -156,6 +156,129 @@ def _read_record(data_dir: Path) -> dict | None:
     return rec if isinstance(rec, dict) else None
 
 
+# ── 多副本保存：防止删除 data 目录重置计时 ──────────────
+REG_KEY = r"Software\webai2api\license"
+SHADOW_FILE = ".activation.json"
+
+
+def _shadow_path() -> Path | None:
+    """影子文件：放在数据目录的上一级（删 data 不会带走）。"""
+    try:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        try:
+            from .edition import is_lite
+            name = "webai2api-lite" if is_lite() else "webai2api"
+        except Exception:
+            name = "webai2api"
+        return Path(base) / name / SHADOW_FILE
+    except Exception:
+        return None
+
+
+def _reg_read() -> dict | None:
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_KEY) as k:
+            raw, _ = winreg.QueryValueEx(k, "record")
+        rec = json.loads(raw)
+        return rec if isinstance(rec, dict) else None
+    except Exception:
+        return None
+
+
+def _reg_write(rec: dict) -> None:
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, REG_KEY, 0,
+                                winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, "record", 0, winreg.REG_SZ,
+                              json.dumps(rec, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _shadow_read() -> dict | None:
+    p = _shadow_path()
+    if p is None:
+        return None
+    try:
+        if not p.exists():
+            return None
+        rec = json.loads(p.read_text(encoding="utf-8"))
+        return rec if isinstance(rec, dict) else None
+    except Exception:
+        return None
+
+
+def _shadow_write(rec: dict) -> None:
+    p = _shadow_path()
+    if p is None:
+        return
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+        if os.name == "nt":
+            import ctypes
+            ctypes.windll.kernel32.SetFileAttributesW(str(p), 0x02)  # 隐藏
+    except Exception:
+        pass
+
+
+def _record_ok(rec: dict | None) -> bool:
+    """副本本身是否可信：签名正确且属于本机。"""
+    if not isinstance(rec, dict):
+        return False
+    if int(rec.get("v") or 0) != LICENSE_VERSION:
+        return False
+    try:
+        if not hmac.compare_digest(_sign_record(rec), str(rec.get("sig") or "")):
+            return False
+    except Exception:
+        return False
+    rec_machine = str(rec.get("machine") or "").upper()
+    return not rec_machine or rec_machine == machine_code()
+
+
+def _best_record(data_dir: Path) -> dict | None:
+    """合并三份副本：同码取最早激活时间，续费取最新一波。
+
+    - 先按码 ID 分组（不同码 = 续费或换码）
+    - 选激活时间最晚的那一组（最近一次激活/续费）
+    - 组内取最早的激活时间（防止靠删副本把时间往后挪）
+    """
+    candidates = [_read_record(data_dir), _shadow_read(), _reg_read()]
+    groups: dict[str, list[dict]] = {}
+    for rec in candidates:
+        if not _record_ok(rec):
+            continue
+        try:
+            cid = str(rec.get("code_id") or rec.get("code") or "")
+            activated = float(rec.get("activated_at") or 0)
+        except Exception:
+            continue
+        if not cid or activated <= 0:
+            continue
+        groups.setdefault(cid, []).append(rec)
+    if not groups:
+        return None
+    best_group = max(groups.values(),
+                     key=lambda g: max(float(r.get("activated_at") or 0) for r in g))
+    return min(best_group, key=lambda r: float(r.get("activated_at") or 0))
+
+
+def _mirror(rec: dict) -> None:
+    """把权威记录写回所有副本。"""
+    for writer in (_shadow_write, _reg_write):
+        try:
+            writer(rec)
+        except Exception:
+            pass
+
+
 def write_record(data_dir: Path, code_info: dict, activated_at: float | None = None) -> dict:
     data_dir.mkdir(parents=True, exist_ok=True)
     rec = {
@@ -172,6 +295,7 @@ def write_record(data_dir: Path, code_info: dict, activated_at: float | None = N
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
+    _mirror(rec)
     _LIC_CACHE["key"] = None
     return rec
 
@@ -180,15 +304,13 @@ _LIC_CACHE: dict = {"key": None, "doc": None}
 
 
 def load_license(data_dir: Path) -> dict:
-    """读取并校验授权文件，返回状态字典。
+    """读取并校验授权，返回状态字典。
 
+    三份副本（data / 影子文件 / 注册表）合并取权威记录，
+    任一缺失会自动补回——删 data 无法重置计时。
     结果按文件 (mtime, size) 缓存：验签约 0.2s，不能每个请求都做。
     """
     path = license_path(data_dir)
-    if not path.exists():
-        return {"valid": False, "reason": "未授权，请在设置里输入授权码",
-                "code": "missing"}
-
     try:
         stt = path.stat()
         cache_key = (str(path), stt.st_mtime_ns, stt.st_size)
@@ -198,11 +320,28 @@ def load_license(data_dir: Path) -> dict:
     if cache_key is not None and _LIC_CACHE["key"] == cache_key:
         return _LIC_CACHE["doc"]
 
-    rec = _read_record(data_dir)
+    rec = _best_record(data_dir)
     if rec is None:
-        result = {"valid": False, "reason": "授权文件格式错误", "code": "bad_format"}
+        if not path.exists() and _shadow_path() and not _shadow_path().exists() \
+                and _reg_read() is None:
+            result = {"valid": False, "reason": "未授权，请在设置里输入授权码",
+                      "code": "missing"}
+        else:
+            result = {"valid": False, "reason": "授权文件格式错误", "code": "bad_format"}
     else:
         result = _verify_record(rec)
+        # 自愈：把权威记录补回 data 与其它副本
+        try:
+            cur = _read_record(data_dir)
+            if cur != rec:
+                data_dir.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+                tmp.replace(path)
+        except Exception:
+            pass
+        _mirror(rec)
 
     if cache_key is not None:
         _LIC_CACHE["key"] = cache_key
@@ -272,15 +411,21 @@ def activate(data_dir: Path, code: str) -> dict:
     if info is None:
         return {"ok": False, "error": "授权码无效，请确认复制完整"}
 
-    rec = _read_record(data_dir)
+    # 从三份副本里取记录（data 被删也能拿到原来的激活时间）
+    rec = _best_record(data_dir)
     if rec is not None:
         cur = machine_code()
         rec_machine = str(rec.get("machine") or "").upper()
         if rec_machine and rec_machine != cur:
             return {"ok": False, "error": "此授权码已在其他设备激活"}
-        same = _verify_record(rec)
-        if same.get("valid") and str(rec.get("code_id")) == info["id"]:
-            return {"ok": True, "renewed": False, **same}
+        if str(rec.get("code_id") or "") == info["id"]:
+            # 同一个码：沿用最早的激活时间，不允许重置
+            write_record(data_dir, info,
+                         activated_at=float(rec.get("activated_at") or 0) or None)
+            st = load_license(data_dir)
+            if not st.get("valid"):
+                return {"ok": False, "error": st.get("reason") or "授权无效"}
+            return {"ok": True, "renewed": False, **st}
 
     write_record(data_dir, info)
     st = load_license(data_dir)
