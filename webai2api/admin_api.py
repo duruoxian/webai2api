@@ -526,11 +526,9 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if g:
             return g
         info = await run_in_threadpool(_license_info)
-        try:
-            from .license import machine_code
-            info["machine"] = await run_in_threadpool(machine_code)
-        except Exception:
-            info["machine"] = ""
+        info["machine"] = await run_in_threadpool(lambda: __import__(
+            "webai2api.license", fromlist=["machine_code"]).machine_code())
+        info["issuer"] = await run_in_threadpool(_issuer_available)
         return {"ok": True, **info}
 
     @router.post("/license/install")
@@ -543,29 +541,94 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             return {"ok": False, "error": "请求格式错误"}
         text = str(b.get("content") or "").strip()
         if not text:
-            return {"ok": False, "error": "请粘贴授权内容"}
-        try:
-            doc = json.loads(text)
-        except Exception:
-            return {"ok": False, "error": "授权内容不是合法 JSON"}
-        from .license import license_path, status as lic_status
+            return {"ok": False, "error": "请粘贴授权码"}
+        from .license import activate
         from .paths import user_data_dir
-        path = license_path(user_data_dir())
+        res = await run_in_threadpool(activate, user_data_dir(), text)
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "授权码无效"}
+        return {"ok": True, **res}
+
+    @router.post("/license/issue")
+    async def issue_license(request: Request):
+        """仅当本机存在作者私钥时可用。"""
+        g = _guard(request)
+        if g:
+            return g
+        from . import issuer
+        seed = await run_in_threadpool(issuer.load_author_seed)
+        if seed is None:
+            return {"ok": False, "error": "未找到作者私钥，无法签发"}
+        b = await _json(request)
+        if b is None:
+            return {"ok": False, "error": "请求格式错误"}
         try:
-            path.write_text(json.dumps(doc, ensure_ascii=False, indent=2),
-                            encoding="utf-8")
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": f"写入失败：{exc}"}
-        st = await run_in_threadpool(lic_status, user_data_dir(), store)
-        if not st.get("valid"):
-            try:
-                path.unlink()
-            except Exception:
-                pass
-            return {"ok": False, "error": st.get("reason") or "授权无效"}
-        return {"ok": True, **st}
+            days = int(b.get("days") or 7)
+            count = max(1, min(int(b.get("count") or 1), 100))
+        except Exception:
+            return {"ok": False, "error": "参数错误"}
+        note = str(b.get("note") or "").strip()
+        out = []
+        for _ in range(count):
+            info = issuer.make_code(seed, days)
+            out.append({
+                "code": info["code"], "id": info["id"], "days": info["days"],
+                "issued": info["issued"], "note": note,
+            })
+        _issuer_log(out)
+        return {"ok": True, "items": out}
+
+    @router.get("/license/issued")
+    async def issued_list(request: Request):
+        g = _guard(request)
+        if g:
+            return g
+        return {"ok": True, "items": _issuer_read_log()}
+
+    @router.post("/license/activate")
+    async def activate_license(request: Request):
+        """专业版自用：给自己开一个授权（不绑定机器码校验失败时用）。"""
+        return await install_license(request)  # type: ignore[misc]
 
     return router
+
+
+# ── 签发记录（仅作者本机） ──────────────────────────
+def _issuer_log_path():
+    from .paths import user_data_dir
+    return user_data_dir() / "issued_codes.json"
+
+
+def _issuer_available() -> bool:
+    try:
+        from . import issuer
+        return issuer.load_author_seed() is not None
+    except Exception:
+        return False
+
+
+def _issuer_read_log() -> list[dict]:
+    try:
+        p = _issuer_log_path()
+        if not p.exists():
+            return []
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _issuer_log(items: list[dict]) -> None:
+    try:
+        p = _issuer_log_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        existing = _issuer_read_log()
+        existing.extend({**it, "created": time.strftime("%Y-%m-%d %H:%M:%S")}
+                        for it in items)
+        p.write_text(json.dumps(existing[-5000:], ensure_ascii=False, indent=2),
+                     encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _safe_account(a: dict) -> dict:
@@ -591,17 +654,18 @@ def _safe_account(a: dict) -> dict:
 
 
 def _license_info() -> dict:
-    """Lite 版授权信息（Pro 版无授权，返回空）。"""
+    """授权信息。客户版会校验；专业版只决定是否显示签发卡。"""
+    issuer_ok = _issuer_available()
     try:
         from .edition import is_lite
         if not is_lite():
-            return {"enabled": False}
+            return {"enabled": False, "issuer": issuer_ok}
         from .license import status
         from .paths import user_data_dir
         st = status(user_data_dir(), store=None)
-        return {"enabled": True, **st}
+        return {"enabled": True, "issuer": issuer_ok, **st}
     except Exception:
-        return {"enabled": False}
+        return {"enabled": False, "issuer": issuer_ok}
 
 
 def _safe_accounts(items: list[dict]) -> list[dict]:

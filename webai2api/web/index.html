@@ -279,18 +279,34 @@
         </div>
       </div>
 
-      <div class="card">
+      <div class="card" id="licenseCard">
         <div class="card-head"><h2>授权</h2></div>
         <div id="licInfo" class="lic-info"></div>
-        <div class="fld-row" style="align-items:flex-end">
-          <label class="fld" style="flex:1"><span>本机机器码</span>
-            <input id="machineCode" readonly value="—"></label>
-          <button class="btn gray sm" onclick="copyText(document.getElementById('machineCode').value)">复制</button>
+        <label class="fld"><span>授权码</span>
+          <textarea id="licInput" rows="3" placeholder="粘贴作者发给你的一行授权码（WB2. 开头）"></textarea></label>
+        <div class="btn-row">
+          <button class="btn" onclick="installLicense()">激活</button>
+          <button class="btn gray" onclick="copyMachineCode()" id="copyMachineBtn" hidden>复制本机识别码</button>
         </div>
-        <label class="fld"><span>授权码（到期日以授权码内为准）</span>
-          <textarea id="licInput" rows="4" placeholder="把作者发给你的授权内容粘贴到这里"></textarea></label>
-        <button class="btn" onclick="installLicense()">验证并保存</button>
         <span class="hint" style="display:block;margin-top:8px" id="licHint"></span>
+      </div>
+
+      <div class="card" id="issuerCard" hidden>
+        <div class="card-head"><h2>授权签发</h2><div class="sp"></div>
+          <span class="hint" style="margin:0">仅本机可见（检测到作者私钥）</span></div>
+        <div class="fld-row" style="align-items:flex-end">
+          <label class="fld"><span>有效天数</span>
+            <input id="issueDays" inputmode="numeric" value="7"></label>
+          <label class="fld"><span>数量</span>
+            <input id="issueCount" inputmode="numeric" value="1"></label>
+          <label class="fld" style="flex:1"><span>备注（客户名 / 订单号）</span>
+            <input id="issueNote" placeholder="可选"></label>
+        </div>
+        <div class="btn-row">
+          <button class="btn" onclick="issueCodes()">生成授权码</button>
+          <button class="btn gray" onclick="exportIssued()">导出记录 CSV</button>
+        </div>
+        <div id="issueResult" class="issue-list"></div>
       </div>
 
       <div class="card about">
@@ -771,6 +787,11 @@ function renderOverview(s){
     if(k.quota_monthly&&u.month>=k.quota_monthly*0.8) alerts.push(`Key「${k.name}」本月额度已用 ${Math.round(u.month/k.quota_monthly*100)}%`);
   });
   (s.accounts||[]).forEach(a=>{ if(a.health==='expired') alerts.push(`账号「${a.name}」凭证已失效，请重新登录`); });
+  const lic=s.license||{};
+  if(lic.enabled){
+    if(!lic.valid) alerts.push(`授权不可用：${lic.reason||'请到设置里输入授权码'}`);
+    else if(lic.days_left<=7) alerts.push(`授权还剩 ${lic.days_left} 天，到期后接口将停止，请及时续期`);
+  }
   const ab=document.getElementById('alertBar');
   if(ab){
     if(alerts.length){ ab.style.display=''; ab.innerHTML=alerts.slice(0,5).map(x=>`<div>⚠ ${esc(x)}</div>`).join(''); }
@@ -1139,35 +1160,73 @@ function renderSettings(s){
 }
 function renderLicense(lic){
   const box=document.getElementById('licInfo');
-  const mc=document.getElementById('machineCode');
+  const card=document.getElementById('licenseCard');
+  const ic=document.getElementById('issuerCard');
+  if(ic) ic.hidden = !(lic && lic.issuer);
   if(!box) return;
   if(!lic || !lic.enabled){
-    box.innerHTML='<div class="muted">专业版无授权限制</div>';
+    if(card) card.hidden = true;
     return;
   }
-  if(mc && lic.machine) mc.value=lic.machine;
+  if(card) card.hidden = false;
   if(lic.valid){
-    box.innerHTML=`<div class="lic-ok">授权有效 · 到期 ${esc(lic.expires)}（剩 ${lic.days_left} 天）${lic.name?' · '+esc(lic.name):''}</div>`;
+    box.innerHTML=`<div class="lic-ok">授权有效 · ${esc(lic.activated)} 激活 · 到期 ${esc(lic.expires)}（剩 ${lic.days_left} 天）</div>`;
+  }else if(lic.code==='other_device' || lic.code==='missing'){
+    box.innerHTML=`<div class="lic-bad">${esc(lic.reason||'未授权')}</div>`;
   }else{
     box.innerHTML=`<div class="lic-bad">${esc(lic.reason||'未授权')}</div>`;
   }
+  const cm=document.getElementById('copyMachineBtn');
+  if(cm) cm.hidden = !(lic.code==='other_device');
+}
+function copyMachineCode(){
+  api('/license').then(j=>{
+    if(j && j.machine){ copyText(j.machine); }
+  });
 }
 async function installLicense(){
   const t=document.getElementById('licInput');
   const hint=document.getElementById('licHint');
   const content=(t&&t.value||'').trim();
-  if(!content){ toast('请粘贴授权内容'); return; }
+  if(!content){ toast('请粘贴授权码'); return; }
   if(hint) hint.textContent='正在校验…';
   const j=await api('/license/install','POST',{content});
   if(j&&j.ok){
     if(hint) hint.textContent='';
     if(t) t.value='';
-    toast('授权已生效');
+    toast(j.renewed?'授权已更新':'激活成功');
     refresh();
   }else{
-    if(hint) hint.textContent=(j&&j.error)||'授权无效';
-    toast((j&&j.error)||'授权无效');
+    if(hint) hint.textContent=(j&&j.error)||'授权码无效';
+    toast((j&&j.error)||'授权码无效');
   }
+}
+async function issueCodes(){
+  const days=Number(document.getElementById('issueDays').value||7);
+  const count=Number(document.getElementById('issueCount').value||1);
+  const note=document.getElementById('issueNote').value.trim();
+  const j=await api('/license/issue','POST',{days,count,note});
+  const box=document.getElementById('issueResult');
+  if(!j||!j.ok){ toast((j&&j.error)||'签发失败'); return; }
+  box.innerHTML=j.items.map(it=>`<div class="issue-row">
+    <code>${esc(it.code)}</code>
+    <button class="btn gray sm" onclick="copyText('${esc(it.code)}')">复制</button>
+    <span class="muted">${it.days} 天 · ${esc(it.id)}${it.note?' · '+esc(it.note):''}</span>
+  </div>`).join('');
+  toast(`已生成 ${j.items.length} 个授权码`);
+}
+async function exportIssued(){
+  const j=await api('/license/issued');
+  if(!j||!j.ok||!j.items.length){ toast('暂无签发记录'); return; }
+  const rows=[['授权码','码ID','天数','签发日','备注','生成时间']];
+  j.items.forEach(it=>rows.push([it.code,it.id,it.days,it.issued,it.note||'',it.created||'']));
+  const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');
+  const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='webai2api-issued-codes.csv';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),3000);
 }
 function openAccModal(acc){
   document.getElementById('accModalTitle').textContent=acc?'编辑账号':'添加账号';

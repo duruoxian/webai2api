@@ -1,21 +1,18 @@
-"""离线授权：机器码 + Ed25519 签名授权文件 + 到期校验。
+"""离线授权：授权码（天数）+ 首次激活锁定本机 + 剩余天数校验。
 
-授权文件（license.key）是 JSON：
-    {
-      "machine": "ABCD-EFGH-IJKL-MNOP",
-      "expires": "2027-10-20",
-      "edition": "lite",
-      "name": "张三",
-      "sig": "<base64 64字节签名>"
-    }
-签名覆盖除 sig 之外所有字段的规范化 JSON。
+授权流程：
+1. 作者签发授权码（一行文本，见 issuer.py），码里只有「有效天数 + 签发日 + 码 ID」
+2. 客户在设置页粘贴授权码 → 本地验签 → 记录「激活时间 + 本机机器码」
+3. 之后每次启动：剩余天数 = 有效天数 - (今天 - 激活日)
+4. 同一个码换到别的机器 → 机器码不符 → 拒绝（提示已在其他设备激活）
+5. 续费：新码覆盖旧记录，重新从激活当天计算
 
-私钥只留在作者本地（tools/keygen.py），软件内置公钥。
+授权文件 license.key 是 JSON，字段用 HMAC 保护，手改会失效。
 """
 from __future__ import annotations
 
-import base64
 import hashlib
+import hmac
 import json
 import os
 import platform
@@ -24,20 +21,18 @@ import sys
 import time
 from pathlib import Path
 
-from . import ed25519
+from . import ed25519, issuer
 
-# 内置公钥（base64）。私钥对应的公钥在 tools/keygen.py 生成后填入。
+# 内置公钥（base64），与作者私钥配对。
 PUBLIC_KEY_B64 = "KALlewBGC52ZocSmOiE8sQ/SyJQWLbyHUS0W94ybcaY="
 
 LICENSE_FILE = "license.key"
+LICENSE_VERSION = 2
 CLOCK_SKEW_TOLERANCE = 6 * 3600  # 允许系统时间比上次运行早 6 小时
 
 
-def _b64e(b: bytes) -> str:
-    return base64.b64encode(b).decode("ascii")
-
-
 def _b64d(s: str) -> bytes:
+    import base64
     return base64.b64decode(s.encode("ascii"))
 
 
@@ -111,7 +106,7 @@ _CACHE: str | None = None
 
 
 def machine_code() -> str:
-    """CPU + 主板 + 系统盘序列号的哈希，形如 ABCD-EFGH-IJKL-MNOP。"""
+    """CPU + 主板 + Windows 安装 ID 的哈希，形如 ABCD-EFGH-IJKL-MNOP。"""
     global _CACHE
     if _CACHE:
         return _CACHE
@@ -139,23 +134,60 @@ def license_path(data_dir: Path) -> Path:
     return data_dir / LICENSE_FILE
 
 
-def _payload_of(doc: dict) -> bytes:
-    body = {k: v for k, v in doc.items() if k != "sig"}
-    return json.dumps(body, ensure_ascii=False, sort_keys=True,
-                      separators=(",", ":")).encode("utf-8")
+def _hmac_key() -> bytes:
+    return hashlib.sha256(("wb2:" + machine_code()).encode("utf-8")).digest()
+
+
+def _sign_record(rec: dict) -> str:
+    body = {k: v for k, v in rec.items() if k != "sig"}
+    raw = json.dumps(body, ensure_ascii=False, sort_keys=True,
+                     separators=(",", ":")).encode("utf-8")
+    return hmac.new(_hmac_key(), raw, hashlib.sha256).hexdigest()
+
+
+def _read_record(data_dir: Path) -> dict | None:
+    path = license_path(data_dir)
+    if not path.exists():
+        return None
+    try:
+        rec = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def write_record(data_dir: Path, code_info: dict, activated_at: float | None = None) -> dict:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    rec = {
+        "v": LICENSE_VERSION,
+        "code": code_info["code"],
+        "code_id": code_info["id"],
+        "days": int(code_info["days"]),
+        "issued": code_info["issued"],
+        "activated_at": float(activated_at if activated_at is not None else time.time()),
+        "machine": machine_code(),
+    }
+    rec["sig"] = _sign_record(rec)
+    path = license_path(data_dir)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    _LIC_CACHE["key"] = None
+    return rec
 
 
 _LIC_CACHE: dict = {"key": None, "doc": None}
 
 
 def load_license(data_dir: Path) -> dict:
-    """读取并校验授权文件，返回 {valid, reason, machine, expires, days_left, name}。
+    """读取并校验授权文件，返回状态字典。
 
     结果按文件 (mtime, size) 缓存：验签约 0.2s，不能每个请求都做。
     """
     path = license_path(data_dir)
     if not path.exists():
-        return {"valid": False, "reason": "未找到授权文件", "code": "missing"}
+        return {"valid": False, "reason": "未授权，请在设置里输入授权码",
+                "code": "missing"}
 
     try:
         stt = path.stat()
@@ -166,63 +198,95 @@ def load_license(data_dir: Path) -> dict:
     if cache_key is not None and _LIC_CACHE["key"] == cache_key:
         return _LIC_CACHE["doc"]
 
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {"valid": False, "reason": "授权文件格式错误", "code": "bad_format"}
+    rec = _read_record(data_dir)
+    if rec is None:
+        result = {"valid": False, "reason": "授权文件格式错误", "code": "bad_format"}
+    else:
+        result = _verify_record(rec)
 
-    result = _verify_doc(doc)
     if cache_key is not None:
         _LIC_CACHE["key"] = cache_key
         _LIC_CACHE["doc"] = result
     return result
 
 
-def _verify_doc(doc: dict) -> dict:
-    pk = public_key()
-    if pk is None:
-        # 未配置公钥（开发模式）：只校验到期时间
-        return _check_expiry(doc, skip_signature=True)
+def _verify_record(rec: dict) -> dict:
+    if int(rec.get("v") or 0) != LICENSE_VERSION:
+        return {"valid": False, "reason": "授权文件版本过旧，请重新输入授权码",
+                "code": "legacy"}
 
-    sig = doc.get("sig") or ""
+    # 1) 机器码一致（授权码只能在首台机器上用）
+    #    先查机器码，再验 HMAC：换机后 HMAC 必然对不上，要给出正确原因
+    rec_machine = str(rec.get("machine") or "").upper()
+    cur = machine_code()
+    if rec_machine and rec_machine != cur:
+        return {"valid": False, "code": "other_device",
+                "reason": "此授权码已在其他设备激活", "machine": rec_machine}
+
+    # 2) 本地记录没有被改过
     try:
-        ok = ed25519.verify(pk, _payload_of(doc), _b64d(sig))
+        expect = _sign_record(rec)
     except Exception:
-        ok = False
-    if not ok:
-        return {"valid": False, "reason": "授权签名无效（文件被修改过）",
-                "code": "bad_signature"}
+        expect = ""
+    if not hmac.compare_digest(expect, str(rec.get("sig") or "")):
+        return {"valid": False, "reason": "授权文件被修改，请重新输入授权码",
+                "code": "tampered"}
 
-    return _check_expiry(doc)
+    # 3) 授权码签名有效
+    info = issuer.verify_code(str(rec.get("code") or ""), public_key())
+    if info is None:
+        return {"valid": False, "reason": "授权码无效", "code": "bad_code"}
 
-
-def _check_expiry(doc: dict, skip_signature: bool = False) -> dict:
-    exp = str(doc.get("expires") or "").strip()
-    name = str(doc.get("name") or "").strip()
-    base = {"machine": str(doc.get("machine") or ""), "expires": exp,
-            "name": name, "edition": str(doc.get("edition") or "lite"),
-            "unverified": skip_signature}
-
-    # 机器码
-    if base["machine"] and base["machine"].upper() != machine_code():
-        return {**base, "valid": False, "code": "wrong_machine",
-                "reason": "授权与本机不匹配，请把本机机器码发给作者"}
-
-    if not exp:
-        return {**base, "valid": False, "code": "no_expiry", "reason": "授权缺少到期日期"}
-
+    days = int(info["days"])
     try:
-        end = time.mktime(time.strptime(exp, "%Y-%m-%d")) + 86400  # 当天 23:59:59
+        activated = float(rec.get("activated_at") or 0)
     except Exception:
-        return {**base, "valid": False, "code": "bad_expiry", "reason": "到期日期格式错误"}
+        activated = 0.0
+    if activated <= 0:
+        return {"valid": False, "reason": "授权记录缺少激活时间，请重新输入授权码",
+                "code": "bad_record"}
 
+    expires_ts = activated + days * 86400
     now = time.time()
-    if now >= end:
+    base = {
+        "code_id": info["id"],
+        "days": days,
+        "activated": time.strftime("%Y-%m-%d", time.localtime(activated)),
+        "expires": time.strftime("%Y-%m-%d", time.localtime(expires_ts - 1)),
+        "machine": cur,
+    }
+
+    if now >= expires_ts:
         return {**base, "valid": False, "code": "expired",
-                "reason": f"授权已于 {exp} 到期"}
-    days = max(0, int((end - now) // 86400))
-    return {**base, "valid": True, "code": "ok", "reason": "", "days_left": days,
-            "expires_ts": end}
+                "reason": f"授权已于 {base['expires']} 到期"}
+
+    left = max(0, int((expires_ts - now) // 86400))
+    return {**base, "valid": True, "code": "ok", "reason": "",
+            "days_left": left, "expires_ts": expires_ts}
+
+
+# ── 激活 ────────────────────────────────────────────
+def activate(data_dir: Path, code: str) -> dict:
+    """首次激活或续费。返回 {ok, error, ...状态}。"""
+    info = issuer.verify_code((code or "").strip(), public_key())
+    if info is None:
+        return {"ok": False, "error": "授权码无效，请确认复制完整"}
+
+    rec = _read_record(data_dir)
+    if rec is not None:
+        cur = machine_code()
+        rec_machine = str(rec.get("machine") or "").upper()
+        if rec_machine and rec_machine != cur:
+            return {"ok": False, "error": "此授权码已在其他设备激活"}
+        same = _verify_record(rec)
+        if same.get("valid") and str(rec.get("code_id")) == info["id"]:
+            return {"ok": True, "renewed": False, **same}
+
+    write_record(data_dir, info)
+    st = load_license(data_dir)
+    if not st.get("valid"):
+        return {"ok": False, "error": st.get("reason") or "授权无效"}
+    return {"ok": True, "renewed": rec is not None, **st}
 
 
 # ── 防改系统时钟 ────────────────────────────────────
@@ -273,9 +337,10 @@ def status(data_dir: Path, store=None) -> dict:
         "reason": lic.get("reason", ""),
         "code": lic.get("code", ""),
         "expires": lic.get("expires", ""),
+        "activated": lic.get("activated", ""),
+        "days": lic.get("days", 0),
         "days_left": lic.get("days_left", 0),
-        "name": lic.get("name", ""),
+        "code_id": lic.get("code_id", ""),
         "machine": machine_code(),
         "clock_ok": clock.get("ok", True),
-        "unverified": lic.get("unverified", False),
     }
