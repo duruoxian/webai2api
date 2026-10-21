@@ -320,6 +320,16 @@ class Store:
         d["models"] = _json_list(d.get("models"))
         return d
 
+    def find_key_by_id(self, key_id: str) -> dict | None:
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM api_keys WHERE id=?", (key_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["accounts"] = _json_list(d.get("accounts"))
+        d["models"] = _json_list(d.get("models"))
+        return d
+
     def update_key(self, key_id: str, *, name: str | None = None,
                    accounts: list[str] | None = None,
                    models: list[str] | None = None,

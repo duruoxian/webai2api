@@ -21,8 +21,11 @@
 | 多平台 | 支持 DeepSeek 网页版、智谱清言（chatglm.cn） |
 | 多 Key | 给不同的人/用途发不同的 Key，可随时启用/停用/删除 |
 | 用量统计 | 每个模型、每个账号、每个 Key 的输入/输出 token 明细 |
-| 中文面板 | 浏览器打开 `/admin` 可视化操作 |
+| 中文面板 | 浏览器打开 `/admin` 可视化操作（单文件面板 `webai2api/web/index.html`） |
 | OpenAI 兼容 | `POST /v1/chat/completions`、`GET /v1/models`，支持流式 |
+
+> 两条产品线：`main` = **开发端 Pro**（`127.0.0.1:8800`，带授权签发卡）；`lite` = **客户版**（`127.0.0.1:8802`，Inno Setup 安装包）。
+> 分支、构建与授权签发流程见下方「双分支发布」。
 
 ## 快速开始
 
@@ -163,6 +166,96 @@ build-exe.cmd
 > 只有"登录拿凭证"那一下需要浏览器，这里用**系统已装的 WebView2**（pywebview 内嵌窗口），
 > 不打包上百 MB 的 Chromium，**也不调用你日常浏览器的 profile**（零冲突）。
 
+## 双分支发布
+
+两套产物来自同一仓库的两个分支，面板同源（都是 `webai2api/web/index.html`），差别在**端口、授权入口、安装方式**。
+
+| 分支 | 角色 | 默认端口 | 面板 | 安装/部署位置 | 产物 |
+|---|---|---|---|---|---|
+| `main` | 开发端 **Pro**（作者自用，带「授权签发」卡） | `127.0.0.1:8800` | 全部功能 + 签发卡 | `%LOCALAPPDATA%\Programs\webai2api`（pyinstaller onedir） | `dist/webai2api/webai2api.exe` |
+| `lite` | **客户版**（无签发入口、无用量页，授权卡激活制） | `127.0.0.1:8802` | 删减版 + 授权卡 | `{localappdata}\Programs\webai2api-lite`（Inno Setup 安装） | `dist-lite/webai2api/webai2api.exe` → `dist-installer/webai2api-lite-setup-X.Y.Z.exe` |
+
+端口来源：`run.py` 的 `_default_port()`（lite → 8802 / Pro → 8800，环境变量 `WEBAI2API_PORT` 可覆盖）；
+`python -m webai2api` 的 `--port` 默认 `8800`。lite 打包时由 `webai2api-lite.spec` 生成 `edition.txt` 打进包，
+运行时 `webai2api.edition.is_lite()` 据此决定端口 / 窗口标题 / 图标 / 签发入口。
+
+### 版本 bump 点（两分支各自改，缺一不可）
+
+| 位置 | 内容 |
+|---|---|
+| `webai2api/__init__.py` | `__version__ = "x.y.z"` |
+| `pyproject.toml` | `version = "x.y.z"` |
+| `webai2api/web/index.html` | 静态资源版本串 `?v=x.y.z`（`app.css` / `hyalite.js`） |
+| `installer/webai2api-lite.iss` | `#define MyAppVersion "x.y.z"`（仅 lite，决定安装包文件名） |
+
+> 改完两个分支各自构建，启动后看 `/admin/api/state` 的 `version` 与安装包文件名是否一致。
+
+### 构建命令
+
+**开发端（`main`）**
+
+```powershell
+.venv\Scripts\pyinstaller.exe webai2api.spec --noconfirm --distpath dist --workpath build
+# 部署到本机（保留 data，跳过运行时文件；作者自用）
+robocopy "dist\webai2api" "$env:LOCALAPPDATA\Programs\webai2api" /E /XD data /XF webai2api.log current_port.txt
+```
+
+`/XD data` 是关键：否则新包里的空 `data` 会盖掉账号库与授权记录。
+
+**客户版（`lite`）**
+
+```powershell
+# 方式一：直接切分支（产物未被跟踪，必须 -f）
+git checkout -f lite
+# 方式二：不动主工作区，用 worktree
+git worktree add ..\webai2api-lite-wt lite
+
+.venv\Scripts\pyinstaller.exe webai2api-lite.spec --noconfirm --distpath dist-lite --workpath build-lite
+& "C:\Users\<你>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer\webai2api-lite.iss
+# 产物：dist-installer\webai2api-lite-setup-x.y.z.exe
+```
+
+交付包放 `dist-delivery\webai2api-客户版-交付包\`：安装包 + `使用说明.txt`，整体打 zip 发客户。
+
+### 切分支的坑
+
+- `build-lite\`、`dist-lite\`、`dist-installer\`、`dist-delivery\`、`edition.txt`、`tools\` 等未跟踪产物会让普通 `git checkout` 失败 → 一律 `git checkout -f <branch>`。
+- **禁止 `git stash` 跨分支 pop**（两分支同名文件必冲突，解不干净）。
+- **禁止 `git clean -fdx webai2api`**（会把源码一起删掉）。
+- 两分支 `.gitignore` 不同（lite 额外忽略 `tools/private_key.txt`、`tools/public_key.txt`、`edition.txt`、`dist-lite/`、`build-lite/`、`dist-installer/`）；在 main 上看到这些文件要手工确认**不入库**。
+
+### 授权体系简表
+
+| 项 | 实现 |
+|---|---|
+| 码格式 | `WB2.<payload>.<sig>`，Ed25519 签名（纯 Python `webai2api/ed25519.py`，无 cryptography 依赖） |
+| payload | 固定 **10 字节**：版本 1B / 码 ID 4B / 有效天数 uint16 / 签发日 uint16 / edition 1B |
+| 码内机器号 | **不绑定**。首次激活时才在本地绑定机器码并记录激活时间；同码换机 → `other_device`（「此授权码已在其他设备激活」） |
+| 计时 | 从**首次激活时刻**起算，精确到分钟；面板倒计时 `X天 X小时 X分`，到期即 `license.key` 失效、`/v1/*` 返回 403（面板本身仍可用） |
+| 记录保护 | 激活记录带防篡改校验，手改记录文件会被判为「被修改」 |
+| 面板接口 | `GET/POST /admin/api/license`（查状态）、`POST /admin/api/license/install`（激活/续期，旧别名 `/license/activate`） |
+| 三副本 | 激活记录在数据目录、隐藏影子文件、注册表三处各存一份并交叉自愈；删 `data/` 不会重置授权 |
+| 防时钟回拨 | `license.check_clock()` 记录上次运行时间，回拨累计 `license_clock_strikes`，`strikes >= 3` 判可疑并拒绝 |
+| 机器码 | 硬件指纹（**刻意不含硬盘**，换盘不失效），形如 `ABCD-EFGH-IJKL-MNOP` |
+
+### 签发流程（作者侧）
+
+1. 私钥查找顺序：环境变量 `WEBAI2API_AUTHOR_KEY` → `%LOCALAPPDATA%\webai2api-author\private_key.txt` → 仓库 `tools\private_key.txt`。
+   私钥**四不原则**：不入库、不进包、不发客户、不进日志。
+2. 打开开发端（8800）→「设置 → 授权签发」卡：选天数 / 备注 → 生成 → 拿到授权码，同时写入签发记录。
+3. 签发记录落盘在数据目录：`data/issued_codes.json`，导出 CSV 为 `data/issued_codes.csv`（含有效授权码，属**敏感文件**）。
+4. 客户侧激活接口是 `POST /admin/api/license/install`（旧名 `/admin/api/license/activate` 保留为别名），
+   面板「设置 → 授权」卡片就是调它。
+5. 客户续期直接粘贴新码覆盖；换机报 `other_device`，让客户提供授权卡上的**授权编号**（码 ID）再补发。
+
+### 安全红线
+
+1. `tools\private_key.txt`、`%LOCALAPPDATA%\webai2api-author\` **绝不入库、绝不进包、绝不发客户**。
+2. 公钥内嵌 `license.py`（验签用）；更换私钥必须同步换公钥并**重发客户版**。
+3. 签发记录（`issued_codes.json` / `issued_codes.csv`）含有效授权码，属敏感文件，不要随包分发。
+4. 客户版永不显示签发卡，`/license/issue` 在 lite 下一律拒绝；面板与日志都不要回显私钥。
+5. 交付给客户的内容只有：安装包 + `使用说明.txt`。不要把 8800 开发端、签发器、`tools\` 一并带出去。
+
 ## 目录结构
 
 ```
@@ -175,11 +268,13 @@ webai2api/
 │   ├── login.py          # 内置浏览器登录管理（启动子进程 + 读状态）
 │   ├── login_webview.py  # 内置浏览器（内嵌 WebView2）登录并抓取凭证
 │   ├── store.py          # SQLite 存储（账号/Key/用量）
-│   ├── web/index.html    # 中文面板（单文件）
+│   ├── web/index.html    # 中文面板（单文件，两分支共用，lite 版按 edition 隐藏签发卡）
 │   └── adapters/
 │       └── deepseek/     # DeepSeek 适配内核（基于 deepseek2api，MIT）
-├── data/                 # 数据库 / 浏览器 profile（运行时生成，已 gitignore）
-└── webai2api.spec        # PyInstaller 打包配置
+├── data/                 # 数据库 / 浏览器 profile / license.key / issued_codes.*（运行时生成，已 gitignore）
+├── tools/                # 作者私钥 keygen CLI（禁入库、禁进包）
+├── webai2api.spec        # PyInstaller 打包配置（Pro）
+└── webai2api-lite.spec   # PyInstaller 打包配置（lite 分支）
 ```
 
 ## 路线图
@@ -192,7 +287,21 @@ webai2api/
 - [x] 接入智谱清言（chatglm.cn）：GLM-5.3 / GLM-5.3-Flash
 - [ ] 接入更多平台：Kimi / Qwen …
 
+## 测试
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests -q
+```
+
+没有 pytest 时先 `pip install -r requirements-dev.txt`（或 `pip install pytest pytest-asyncio`）。
+
 ## 更新记录
+
+**v0.1.10（授权精确到分钟 + 一键接入 opencode）**
+- **授权到期精确到分钟**：倒计时按 `expires_ts` 在前端自算，显示「X天 X小时 X分」，激活 / 到期时间同为 `时:分` 精度，到期那一分钟即停，不再是「按天」算。
+- **API Key 页「接入方式」合并**：原来散在设置页的客户端说明收进 API Key 页一张卡——顶部接口地址 / 可用模型 / Key 下拉与「接入」「移除」，下面依次是「OpenCode 配置片段」和「其他 OpenAI 兼容客户端」对照表（提供商 ID、显示名称、基础 URL、模型、请求头，逐项可复制）。
+- **选 Key 一键接入 / 移除 opencode**：选中 Key 点「接入」即自动写入 `~/.config/opencode/opencode.jsonc`（写前备份为同名 `.bak_时间戳`），「移除」只删自己那段 `provider.webai2api`，不影响已有配置；目标路径可用环境变量 `WEBAI2API_OPENCODE_CONFIG` 覆盖。
+- **Key 生成防连点**：生成按钮提交即禁用（「生成中…」→「已生成」），重复点击不会一次多建出几个 Key。
 
 **v0.1.9（授权签发 + 界面修复）**
 - **内置授权签发**：设置页多了「授权签发」卡片，只有本机存在作者私钥时才显示。可选 7 / 14 / 30 / 自定义天数，支持批量生成与备注。
