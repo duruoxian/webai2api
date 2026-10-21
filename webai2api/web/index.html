@@ -398,6 +398,26 @@
         <div class="btn-row">
           <button class="btn" onclick="issueCodes()">生成授权码</button>
           <button class="btn gray" onclick="exportIssued()">导出记录 CSV</button>
+          <div class="sp"></div>
+          <label class="fld" style="margin:0;min-width:180px">
+            <input id="issueSearch" placeholder="搜索授权码 / 备注" oninput="loadIssued()">
+          </label>
+        </div>
+        <div class="issued-head">
+          <span class="hint" id="issuedInfo" style="margin:0"></span>
+        </div>
+        <div class="tbl-scroll tall">
+          <table id="issuedTable">
+            <thead><tr>
+              <th style="width:150px">生成时间</th>
+              <th style="width:88px">有效天数</th>
+              <th style="width:118px">参考到期日</th>
+              <th style="width:150px">备注</th>
+              <th>授权码</th>
+              <th style="width:74px"></th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
         </div>
         <div id="issueResult" class="issue-list"></div>
       </div>
@@ -1302,28 +1322,68 @@ async function loadIssuer(){
   if(ISSUER_OK) return;
   const j=await api('/license/issuer');
   const card=document.getElementById('issuerCard');
-  if(card) card.hidden = !(j && j.available);
-  ISSUER_OK = !!(j && j.available);
+  const ok=!!(j && j.available);
+  if(card) card.hidden = !ok;
+  ISSUER_OK = ok;
+  if(ok) loadIssued();
 }
 async function issueCodes(){
   const days=Number(document.getElementById('issueDays').value||7);
   const count=Number(document.getElementById('issueCount').value||1);
   const note=document.getElementById('issueNote').value.trim();
   const j=await api('/license/issue','POST',{days,count,note});
-  const box=document.getElementById('issueResult');
   if(!j||!j.ok){ toast((j&&j.error)||'签发失败'); return; }
-  box.innerHTML=j.items.map(it=>`<div class="issue-row">
-    <code>${esc(it.code)}</code>
-    <button class="btn gray sm" onclick="copyText('${esc(it.code)}')">复制</button>
-    <span class="muted">${it.days} 天 · ${esc(it.id)}${it.note?' · '+esc(it.note):''}</span>
-  </div>`).join('');
   toast(`已生成 ${j.items.length} 个授权码`);
+  loadIssued();
+  const first=(j.items||[])[0];
+  if(first) copyText(first.code);
+}
+function issuedExpiry(it){
+  const base=(it.issued||it.created||'').slice(0,10);
+  if(!base) return '—';
+  const d=new Date(base+'T00:00:00');
+  if(isNaN(d)) return '—';
+  d.setDate(d.getDate()+Number(it.days||0));
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+let ISSUED_ITEMS=[];
+async function loadIssued(){
+  const qEl=document.getElementById('issueSearch');
+  const q=qEl?qEl.value.trim():'';
+  const j=await api('/license/issued?limit=200&q='+encodeURIComponent(q));
+  if(!j||!j.ok) return;
+  ISSUED_ITEMS=j.items||[];
+  const tb=document.querySelector('#issuedTable tbody');
+  const info=document.getElementById('issuedInfo');
+  if(info){
+    info.textContent = j.total
+      ? (q ? `匹配 ${j.matched} / 共 ${j.total} 条` : `共 ${j.total} 条（显示最近 ${ISSUED_ITEMS.length} 条）`)
+      : '还没有签发记录';
+  }
+  if(!tb) return;
+  tb.innerHTML='';
+  if(!ISSUED_ITEMS.length){
+    tb.innerHTML='<tr><td colspan="6" class="empty">还没有签发记录</td></tr>';
+    return;
+  }
+  ISSUED_ITEMS.forEach((it,i)=>{
+    const code=esc(it.code||'');
+    tb.innerHTML+=`<tr>
+      <td class="muted" style="white-space:nowrap">${esc((it.created||'').slice(0,16)||'—')}</td>
+      <td class="num-t">${Number(it.days)||0} 天</td>
+      <td class="muted" style="white-space:nowrap">${issuedExpiry(it)}</td>
+      <td>${esc(it.note||'—')}</td>
+      <td class="mono issued-code" title="${code}">${code}</td>
+      <td><button class="btn gray sm" onclick="copyText(ISSUED_ITEMS[${i}].code)">复制</button></td>
+    </tr>`;
+  });
 }
 async function exportIssued(){
-  const j=await api('/license/issued');
+  const j=await api('/license/issued?limit=2000');
   if(!j||!j.ok||!j.items||!j.items.length){ toast('暂无签发记录'); return; }
-  const rows=[['授权码','码ID','天数','签发日','备注','生成时间']];
-  j.items.forEach(it=>rows.push([it.code,it.id,it.days,it.issued,it.note||'',it.created||'']));
+  const rows=[['授权码','码ID','天数','签发日','参考到期日','备注','生成时间']];
+  j.items.forEach(it=>rows.push([it.code,it.id,it.days,it.issued,issuedExpiry(it),it.note||'',it.created||'']));
   const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');
   const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a');

@@ -680,6 +680,11 @@ html[data-theme=dark] .sel-menu{
   padding:10px 12px;border-radius:10px;background:var(--surface-flat)}
 .issue-row code{font-family:'SF Mono',Consolas,monospace;font-size:11.5px;
   word-break:break-all;flex:1;min-width:260px;color:var(--text)}
+.issued-head{display:flex;align-items:center;gap:10px;margin:16px 0 8px}
+.issued-code{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  cursor:copy;color:var(--text2)}
+#issuedTable td{vertical-align:middle}
+#issuedTable .empty{text-align:center;color:var(--text3)}
 .notice{margin-top:18px;padding:18px 20px;border-radius:14px;
   background:linear-gradient(165deg,rgba(255,255,255,.42),rgba(255,255,255,.18));
   border:1px solid rgba(255,255,255,.55)}

@@ -553,11 +553,22 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         return {"ok": True, "items": out}
 
     @router.get("/license/issued")
-    async def issued_list(request: Request):
+    async def issued_list(request: Request, limit: int = 200, q: str = ""):
         g = _guard(request)
         if g:
             return g
-        return {"ok": True, "items": await run_in_threadpool(_issuer_read_log)}
+        items = await run_in_threadpool(_issuer_read_log)
+        total = len(items)
+        if q.strip():
+            needle = q.strip().lower()
+            items = [it for it in items
+                     if needle in str(it.get("code", "")).lower()
+                     or needle in str(it.get("note", "")).lower()
+                     or needle in str(it.get("id", "")).lower()]
+        items = list(reversed(items))
+        limit = max(1, min(int(limit or 200), 2000))
+        return {"ok": True, "items": items[:limit], "total": total,
+                "matched": len(items)}
 
     return router
 
