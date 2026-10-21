@@ -88,15 +88,15 @@
               <span>开始日期</span>
               <button type="button" class="date-btn" id="rangeStartBtn" onclick="openDatePicker('start',this)">
                 <span id="rangeStartText">选择日期</span>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 11h18"/></svg>
+                <i class="cal-ic"></i>
               </button>
             </div>
-            <div class="range-arrow">→</div>
+            <div class="range-arrow"></div>
             <div class="range-field">
               <span>结束日期</span>
               <button type="button" class="date-btn" id="rangeEndBtn" onclick="openDatePicker('end',this)">
                 <span id="rangeEndText">选择日期</span>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 11h18"/></svg>
+                <i class="cal-ic"></i>
               </button>
             </div>
           </div>
@@ -280,12 +280,29 @@
       </div>
 
       <div class="card" id="licenseCard">
-        <div class="card-head"><h2>授权</h2></div>
-        <div id="licInfo" class="lic-info"></div>
-        <label class="fld"><span>授权码</span>
+        <div class="card-head"><h2>授权</h2><div class="sp"></div>
+          <span class="lic-chip" id="licChip">未激活</span></div>
+
+        <div class="lic-hero" id="licHero">
+          <div class="lic-hero-main">
+            <span class="lic-hero-num" id="licDays">—</span>
+            <span class="lic-hero-unit">天</span>
+          </div>
+          <div class="lic-hero-side">
+            <div class="lic-meta"><span>状态</span><b id="licState">未激活</b></div>
+            <div class="lic-meta"><span>激活日期</span><b id="licActivated">—</b></div>
+            <div class="lic-meta"><span>到期日期</span><b id="licExpires">—</b></div>
+            <div class="lic-meta"><span>授权编号</span><b id="licId" class="mono">—</b></div>
+          </div>
+        </div>
+        <div class="lic-bar"><i id="licBarFill" style="width:0%"></i></div>
+        <div class="lic-note" id="licReason"></div>
+
+        <label class="fld" style="margin-top:18px"><span>授权码</span>
           <textarea id="licInput" rows="3" placeholder="粘贴作者发给你的一行授权码（WB2. 开头）"></textarea></label>
         <div class="btn-row">
           <button class="btn" onclick="installLicense()">激活</button>
+          <span class="hint" style="margin:0">续期时粘贴新授权码即可覆盖</span>
         </div>
         <span class="hint" style="display:block;margin-top:8px" id="licHint"></span>
       </div>
@@ -793,7 +810,7 @@ function renderOverview(s){
   }
   const ab=document.getElementById('alertBar');
   if(ab){
-    if(alerts.length){ ab.style.display=''; ab.innerHTML=alerts.slice(0,5).map(x=>`<div>⚠ ${esc(x)}</div>`).join(''); }
+    if(alerts.length){ ab.style.display=''; ab.innerHTML=alerts.slice(0,5).map(x=>`<div class="alert-item">${esc(x)}</div>`).join(''); }
     else ab.style.display='none';
   }
   const t=s.usage.total||{};
@@ -1105,11 +1122,16 @@ function syncRecentFilters(s){
   const kids=new Set((s.keys||[]).map(k=>k.id));
   const byKey=s.usage.by_key||[];
   if(RECENT_KEY && !byKey.some(k=>k.api_key_id===RECENT_KEY)) RECENT_KEY='';
-  let opts='<option value="">全部 Key</option>';
+  // 仍存在的排前面，已删除的排后面
+  const keyAlive=[], keyGone=[];
   byKey.forEach(k=>{
     if(!k.api_key_id) return;
     const del=kids.size && !kids.has(k.api_key_id);
-    opts+=`<option value="${esc(k.api_key_id)}">${esc(k.api_key_name||'–')}${del?'（已删除）':''}</option>`;
+    (del?keyGone:keyAlive).push({...k, _del:del});
+  });
+  let opts='<option value="">全部 Key</option>';
+  [...keyAlive, ...keyGone].forEach(k=>{
+    opts+=`<option value="${esc(k.api_key_id)}">${esc(k.api_key_name||'–')}${k._del?'（已删除）':''}</option>`;
   });
   const keyHost=document.getElementById('sel-recentKey');
   if(!keyHost.classList.contains('open')){
@@ -1127,12 +1149,17 @@ function syncRecentFilters(s){
   const nameCount={};
   byAcc.forEach(a=>{const n=a.account_name||'–';nameCount[n]=(nameCount[n]||0)+1;});
   let aopts='<option value="">全部账号</option>';
+  // 仍存在的排前面，已删除的排后面
+  const accAlive=[], accGone=[];
   byAcc.forEach(a=>{
     if(!a.account_id) return;
     const n=a.account_name||'–';
     const del=!accIds.has(a.account_id);
     const dup=nameCount[n]>1?' · '+a.account_id.slice(-4):'';
-    aopts+=`<option value="${esc(a.account_id)}">${esc(n)}${del?'（已删除）':''}${esc(dup)}</option>`;
+    (del?accGone:accAlive).push({...a, _n:n, _del:del, _dup:dup});
+  });
+  [...accAlive, ...accGone].forEach(a=>{
+    aopts+=`<option value="${esc(a.account_id)}">${esc(a._n)}${a._del?'（已删除）':''}${esc(a._dup)}</option>`;
   });
   const accHost=document.getElementById('sel-recentAcc');
   if(!accHost.classList.contains('open')){
@@ -1158,20 +1185,54 @@ function renderSettings(s){
   renderLicense(s.license);
 }
 function renderLicense(lic){
-  const box=document.getElementById('licInfo');
   const card=document.getElementById('licenseCard');
   const ic=document.getElementById('issuerCard');
   if(ic) ic.hidden = !(lic && lic.issuer);
-  if(!box) return;
   if(!lic || !lic.enabled){
     if(card) card.hidden = true;
     return;
   }
   if(card) card.hidden = false;
+
+  const set=(id,v)=>{const el=document.getElementById(id); if(el) el.textContent=v;};
+  const chip=document.getElementById('licChip');
+  const fill=document.getElementById('licBarFill');
+  const reason=document.getElementById('licReason');
+
   if(lic.valid){
-    box.innerHTML=`<div class="lic-ok">授权有效 · ${esc(lic.activated)} 激活 · 到期 ${esc(lic.expires)}（剩 ${lic.days_left} 天）</div>`;
+    const total=Number(lic.days)||0;
+    const left=Number(lic.days_left)||0;
+    const pct=total?Math.max(0,Math.min(100,Math.round(left/total*100))):0;
+    set('licDays', String(left));
+    set('licState','有效');
+    set('licActivated', lic.activated||'—');
+    set('licExpires', lic.expires||'—');
+    set('licId', lic.code_id||'—');
+    if(chip){chip.textContent='有效'; chip.className='lic-chip ok';}
+    if(fill){
+      fill.style.width=pct+'%';
+      fill.className = pct<=15?'warn':(pct<=35?'mid':'');
+    }
+    if(reason){
+      reason.textContent = left<=7
+        ? `授权将在 ${left} 天后到期，到期后接口将停止，请联系作者续期`
+        : '';
+      reason.className = left<=7?'lic-note warn':'lic-note';
+      reason.hidden = left>7;
+    }
   }else{
-    box.innerHTML=`<div class="lic-bad">${esc(lic.reason||'未授权')}</div>`;
+    set('licDays','—');
+    set('licState', lic.code==='other_device'?'已锁定':'未激活');
+    set('licActivated','—');
+    set('licExpires','—');
+    set('licId','—');
+    if(chip){chip.textContent='不可用'; chip.className='lic-chip bad';}
+    if(fill){fill.style.width='0%'; fill.className='';}
+    if(reason){
+      reason.textContent = lic.reason || '未授权，请在下方输入授权码';
+      reason.className='lic-note bad';
+      reason.hidden=false;
+    }
   }
 }
 async function installLicense(){
