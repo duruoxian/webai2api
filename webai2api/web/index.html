@@ -1380,17 +1380,9 @@ async function loadIssued(){
   });
 }
 async function exportIssued(){
-  const j=await api('/license/issued?limit=2000');
-  if(!j||!j.ok||!j.items||!j.items.length){ toast('暂无签发记录'); return; }
-  const rows=[['授权码','码ID','天数','签发日','参考到期日','备注','生成时间']];
-  j.items.forEach(it=>rows.push([it.code,it.id,it.days,it.issued,issuedExpiry(it),it.note||'',it.created||'']));
-  const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');
-  const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download='webai2api-issued-codes.csv';
-  a.click();
-  setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+  const j=await api('/license/issued/export','POST',{});
+  if(!j||!j.ok){ toast((j&&j.error)||'导出失败'); return; }
+  toast('已导出到 '+(j.path||'数据目录'));
 }
 /* 恢复默认：只改表单，点保存才真正写入 */
 const DEEPSEEK_DEFAULTS={

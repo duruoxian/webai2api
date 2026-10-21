@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import secrets
 import time
 from logging import Logger
@@ -570,6 +571,19 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         return {"ok": True, "items": items[:limit], "total": total,
                 "matched": len(items)}
 
+    @router.post("/license/issued/export")
+    async def export_issued(request: Request):
+        """把签发记录写成 CSV 存到数据目录，并返回路径。"""
+        g = _guard(request)
+        if g:
+            return g
+        items = await run_in_threadpool(_issuer_read_log)
+        if not items:
+            return {"ok": False, "error": "暂无签发记录"}
+        path = await run_in_threadpool(_write_issued_csv, items)
+        await run_in_threadpool(_reveal_file, path)
+        return {"ok": True, "path": str(path)}
+
     return router
 
 
@@ -607,6 +621,44 @@ def _issuer_log(items: list[dict]) -> None:
                         for it in items)
         p.write_text(json.dumps(existing[-5000:], ensure_ascii=False, indent=2),
                      encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _issued_expiry(it: dict) -> str:
+    """按签发日 + 天数算参考到期日（实际从客户激活当天算）。"""
+    base = str(it.get("issued") or it.get("created") or "")[:10]
+    try:
+        import datetime as _dt
+        d = _dt.date.fromisoformat(base)
+        return (d + _dt.timedelta(days=int(it.get("days") or 0))).isoformat()
+    except Exception:
+        return ""
+
+
+def _write_issued_csv(items: list[dict]):
+    import csv
+    import io
+
+    p = _issuer_log_path().parent / "issued_codes.csv"
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["授权码", "码ID", "有效天数", "签发日", "参考到期日", "备注", "生成时间"])
+    for it in items:
+        w.writerow([it.get("code", ""), it.get("id", ""), it.get("days", ""),
+                    it.get("issued", ""), _issued_expiry(it),
+                    it.get("note", ""), it.get("created", "")])
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\ufeff" + buf.getvalue(), encoding="utf-8", newline="")
+    return p
+
+
+def _reveal_file(path) -> None:
+    """在资源管理器里定位到文件。"""
+    try:
+        if os.name == "nt":
+            import subprocess
+            subprocess.Popen(["explorer", "/select,", str(path)])
     except Exception:
         pass
 
