@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api 客户版</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%235cbeff'/><stop offset='1' stop-color='%230a84ff'/></linearGradient></defs><rect width='100' height='100' rx='24' fill='url(%23g)'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.10">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.13">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -16,7 +16,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.10"></script>
+<script src="/admin/static/hyalite.js?v=0.1.13"></script>
 </head>
 <body>
 
@@ -206,6 +206,17 @@
           <table id="accTable"><thead><tr><th>名称</th><th>平台</th><th>凭证</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
         </div>
       </div>
+      <div class="card">
+        <div class="card-head"><h2>风险指标</h2><div class="sp"></div>
+          <button class="btn gray sm" onclick="loadRisk()">刷新</button>
+        </div>
+        <p class="card-sub">会话创建量、缓存命中率、限流次数是本进程启动以来的累计值（重启归零）。<b>命中率持续为 0 说明会话复用失效</b>，是最需要关注的信号。</p>
+        <div class="tbl-scroll">
+          <table id="riskTable"><thead><tr>
+            <th>账号</th><th>日用量</th><th>会话创建</th><th>缓存命中率</th><th>活跃会话</th><th>上游请求</th><th>限流</th><th>出口</th>
+          </tr></thead><tbody></tbody></table>
+        </div>
+      </div>
     </div>
 
     <div id="tab-keys" class="tabpane">
@@ -386,11 +397,35 @@
       </label>
     </div>
     <div class="hint" id="accCredHint" style="margin:0 0 14px">DeepSeek：浏览器登录后会自动抓取，下面的凭证可以留空。</div>
+    <label class="fld"><span>连接方式</span>
+      <div class="sel" id="sel-accEgress">
+        <select id="accEgress" class="sel-native" onchange="onEgressChange()">
+          <option value="direct">直连（不走代理）</option>
+          <option value="system">跟随系统代理（Clash 等）</option>
+          <option value="custom">自定义代理</option>
+        </select>
+        <button type="button" class="sel-btn" onclick="selToggle('accEgress')">
+          <span id="lbl-accEgress">跟随系统代理（Clash 等）</span>
+          <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="sel-menu" id="menu-accEgress"></div>
+      </div>
+    </label>
+    <div id="accProxyWrap">
+      <label class="fld"><span>代理地址</span>
+        <input id="accProxy" placeholder="http://user:pass@host:port 或 socks5://host:port"></label>
+      <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px">
+        <button class="btn gray sm" onclick="testProxy()">测试代理</button>
+        <span id="proxyTestResult" class="muted" style="font-size:12px"></span>
+      </div>
+    </div>
+    <div class="hint" id="accEgressHint" style="margin:0 0 14px">
+      登录、健康检查、聊天请求都会走同一个出口，避免「登录一个 IP、请求另一个 IP」的异常指纹。
+    </div>
     <details class="adv" id="accAdv">
       <summary>手动填写凭证（不推荐）</summary>
       <div class="adv-body">
-        <p class="hint">仅当内置浏览器不可用时才需要。在 chat.deepseek.com 按 F12 → Application → Local Storage 取
-          <code>userToken</code>（→auth_token）/ <code>deepseek-device-id:chat</code>（→device_id）/ <code>settingsJwt</code>（→settings_token），
+        <p class="hint">仅当内置浏览器不可用时才需要。在 chat.deepseek.com 按 F12 → Application → Local Storage 取          <code>userToken</code>（→auth_token）/ <code>deepseek-device-id:chat</code>（→device_id）/ <code>settingsJwt</code>（→settings_token），
           cookie 取任意请求的 Cookie 请求头整串。</p>
         <label class="fld"><span>auth_token / refresh_token</span><input id="accToken" placeholder="留空即可"></label>
         <label class="fld"><span>device_id</span><input id="accDevice" placeholder="留空即可"></label>
@@ -579,8 +614,39 @@ async function logout(){try{await api('/logout','POST')}catch(e){}TOKEN='';local
 function switchTab(name){
   document.querySelectorAll('.seg button').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active',p.id==='tab-'+name));
+  if(name==='accounts') loadRisk();
   // 切页回到顶部，避免停在上一页的滚动位置
   try{ window.scrollTo({top:0, behavior:'auto'}); }catch(e){ window.scrollTo(0,0); }
+}
+function egressTag(mode){
+  const m=mode||'system';
+  if(m==='direct') return '<span class="tag on">直连</span>';
+  if(m==='custom') return '<span class="tag on">自定义代理</span>';
+  return '<span class="tag off">跟随系统</span>';
+}
+async function loadRisk(){
+  const tb=document.querySelector('#riskTable tbody');
+  if(!tb) return;
+  const j=await api('/risk');
+  if(!j||!j.ok){ tb.innerHTML=''; return; }
+  tb.innerHTML='';
+  j.accounts.forEach(x=>{
+    const st=x.stats||{};
+    const rate=Math.round((st.cache_hit_rate||0)*100);
+    const daily=st.daily_limit?`${st.daily_count||0}/${st.daily_limit}`:(st.daily_count||0);
+    const rateCls=rate>=60?'on':(rate>0?'':'err');
+    tb.innerHTML+=`<tr>
+      <td><b>${esc(x.name)}</b><div class="muted" style="font-size:12px">${esc(x.provider)}</div></td>
+      <td class="num-t">${daily}</td>
+      <td class="num-t">${st.sessions_created||0}</td>
+      <td><span class="tag ${rateCls}">${rate}%</span></td>
+      <td class="num-t">${st.active_sessions||0}</td>
+      <td class="num-t">${st.upstream_requests||0}</td>
+      <td>${st.rate_limit_hits?`<span class="tag err">${st.rate_limit_hits}</span>`:'0'}</td>
+      <td>${egressTag(x.egress)}</td>
+    </tr>`;
+  });
+  if(!j.accounts.length) tb.innerHTML=empty('还没有账号');
 }
 function fmt(n){n=Number(n)||0;return n.toLocaleString('zh-CN');}
 
@@ -818,6 +884,10 @@ function renderOverview(s){
     if(k.quota_monthly&&u.month>=k.quota_monthly*0.8) alerts.push(`Key「${k.name}」本月额度已用 ${Math.round(u.month/k.quota_monthly*100)}%`);
   });
   (s.accounts||[]).forEach(a=>{ if(a.health==='expired') alerts.push(`账号「${a.name}」凭证已失效，请重新登录`); });
+  const net=s.network||{};
+  if(net.tun) alerts.push(net.tun_warning||`检测到 TUN 网卡「${net.tun}」，直连账号实际仍会走代理`);
+  const directCount=(s.accounts||[]).filter(a=>(a.egress||'system')==='direct').length;
+  if(net.tun&&directCount) alerts.push(`有 ${directCount} 个账号设为「直连」，但 TUN 开启时不会真正直连`);
   const lic=s.license||{};
   if(lic.enabled){
     if(!lic.valid) alerts.push(`授权不可用：${lic.reason||'请到设置里输入授权码'}`);
@@ -1068,7 +1138,7 @@ function renderAccounts(s){
     else if(lg.status==='success') loginBadge='<span class="tag on">登录成功</span>';
     else if(lg.status==='error') loginBadge='<span class="tag err">'+esc(lg.message||'失败')+'</span>';
     tb.innerHTML+=`<tr><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
-      <td class="muted mono">${cred} ${loginBadge} ${healthBadge} ${cdBadge}</td>
+      <td class="muted mono">${cred} ${loginBadge} ${healthBadge} ${cdBadge} ${egressTag(a.egress)}</td>
       <td><span class="tag ${a.enabled?'on':'off'}">${a.enabled?'启用':'停用'}</span></td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn sm" onclick="browserLogin('${a.id}')">浏览器登录</button>
@@ -1339,12 +1409,44 @@ function openAccModal(acc){
   selOpen('accProvider',false);
   selSync('accProvider');
   ['accToken','accDevice','accSettings','accCookie'].forEach(i=>document.getElementById(i).value='');
+  const pxEl=document.getElementById('accProxy');
+  if(pxEl) pxEl.value=acc?(acc.proxy||''):'';
+  const eg=acc?(acc.egress||'system'):'system';
+  document.getElementById('accEgress').value=eg;
+  selSync('accEgress');
+  onEgressChange();
   const adv=document.getElementById('accAdv'); if(adv) adv.open=false;
   onProviderChange();
   openModal('accModal');
   setTimeout(()=>document.getElementById('accName').focus(),30);
 }
 function editAcc(a){openAccModal(a);}
+async function testProxy(){
+  const el=document.getElementById('accProxy');
+  const out=document.getElementById('proxyTestResult');
+  const px=(el&&el.value||'').trim();
+  if(!px){ out.textContent='请先填写代理地址'; return; }
+  out.textContent='测试中…';
+  const j=await api('/proxy/test','POST',{proxy:px});
+  if(!j){ out.textContent='测试失败'; return; }
+  if(j.ok){
+    out.innerHTML=`<span class="tag on">可用</span> 出口 IP <b>${esc(j.exit_ip||'')}</b>（${j.elapsed_ms||0}ms）`+
+      (j.warning?` <span class="tag off">${esc(j.warning)}</span>`:'');
+  }else{
+    out.innerHTML=`<span class="tag err">不可用</span> ${esc(j.error||'')}`;
+  }
+}
+function onEgressChange(){
+  const mode=document.getElementById('accEgress').value;
+  const wrap=document.getElementById('accProxyWrap');
+  if(wrap) wrap.style.display = mode==='custom' ? 'block' : 'none';
+  const hint=document.getElementById('accEgressHint');
+  if(hint){
+    if(mode==='direct') hint.textContent='直连会强制忽略系统代理。注意：若 Clash 开了 TUN 模式，流量仍会被网卡层接管（面板顶部会提示）。';
+    else if(mode==='custom') hint.textContent='自定义代理：登录、健康检查、聊天请求都走这个代理，出口保持一致。';
+    else hint.textContent='跟随系统代理：Clash 开系统代理时走代理，关闭时直连。';
+  }
+}
 function onProviderChange(){
   const p=document.getElementById('accProvider').value;
   const t=document.getElementById('accCredHint');
@@ -1433,7 +1535,12 @@ async function saveAccount(){
   const d=document.getElementById('accDevice').value.trim();
   const st=document.getElementById('accSettings').value.trim();
   const c=document.getElementById('accCookie').value.trim();
+  const px=document.getElementById('accProxy').value.trim();
+  const eg=document.getElementById('accEgress').value;
   if(t)body.auth_token=t;if(d)body.device_id=d;if(st)body.settings_token=st;if(c)body.cookie=c;
+  body.egress=eg;
+  if(eg==='custom'&&px)body.proxy=px;
+  if(eg!=='custom')body.proxy='';
   if(id)await api('/accounts/'+id,'PUT',body);else await api('/accounts','POST',body);
   closeModal('accModal');refresh();toast('已保存');
 }
@@ -1799,7 +1906,7 @@ ${lines.join(',\n')}
     if(mh) mh.textContent=models.join(' / ');
   };
   rebuildOcSel();
-  ['accProvider'].forEach(selBuild);
+  ['accProvider','accEgress'].forEach(selBuild);
   if(TOKEN){try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
   setInterval(()=>{
     if(document.getElementById('mainView').style.display==='none') return;

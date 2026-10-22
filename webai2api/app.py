@@ -54,6 +54,38 @@ def start_usage_cleaner(store: Store, logger: logging.Logger) -> threading.Threa
     return th
 
 
+SESSION_CLEAN_INTERVAL = 20 * 60
+
+
+def start_session_cleaner(registry: ProviderRegistry, logger: logging.Logger,
+                          interval: float = SESSION_CLEAN_INTERVAL) -> threading.Thread:
+    """后台线程：定期让各账号客户端清理上游已废弃的会话。
+
+    只调用实现了 cleanup_stale_sessions 的客户端（目前是 DeepSeek），
+    其它 provider 直接跳过；单个账号失败只记 warning，不影响其它账号。
+    """
+    def _run() -> None:
+        while True:
+            time.sleep(interval)
+            try:
+                for ac in registry.all_accounts():
+                    client = getattr(ac, "client", None)
+                    cleanup = getattr(client, "cleanup_stale_sessions", None)
+                    if not callable(cleanup):
+                        continue
+                    try:
+                        cleanup()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("会话清理失败（账号 %s）: %s",
+                                       ac.account.get("name") or ac.account.get("id"), exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("会话清理线程异常: %s", exc)
+
+    th = threading.Thread(target=_run, name="session-cleaner", daemon=True)
+    th.start()
+    return th
+
+
 def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) -> FastAPI:
     app = FastAPI(title="webai2api", version=__version__)
     login_mgr = LoginManager(store, registry, logger)
@@ -174,6 +206,11 @@ def create_default_app() -> FastAPI:
 
     # 常驻清理：长期运行也不会让用量表无限增长
     start_usage_cleaner(store, logger)
+    # 常驻清理：定期回收上游 DeepSeek 的过期会话（避免会话堆积）
+    try:
+        start_session_cleaner(registry, logger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("会话清理线程启动失败: %s", exc)
 
     logger.info("webai2api %s 初始化完成，数据库: %s", __version__, store.db_path)
 

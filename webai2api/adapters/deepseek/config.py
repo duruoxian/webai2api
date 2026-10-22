@@ -101,6 +101,17 @@ class AppConfig:
     anti_rate_limit_min_delay: float = 1.5
     anti_rate_limit_max_delay: float = 3.0
 
+    # ── 防风控（行为画像 / 配额 / 会话续用）──
+    user_agent: str = ""
+    device_model: str = ""
+    session_store_path: str = ""
+    daily_request_limit: int = 600
+    long_pause_chance: float = 0.02
+    max_turns_per_session: int = 40
+    min_request_interval: float = 1.2
+    proxy: str = ""                # 账号级出口代理（custom 模式使用）
+    egress: str = "system"         # direct / system / custom
+
     # ── 会话缓存 ──
     session_cache_enabled: bool = True
     session_cache_max_size: int = 500
@@ -220,6 +231,17 @@ def load_config(env_file: str = ".env") -> AppConfig:
         values.get("DEEPSEEK_ANTI_RATE_LIMIT_MAX_DELAY_SECONDS"), 3.0
     )
 
+    # ── 行为画像 / 配额 / 会话续用（不参与强校验，容错为主）──
+    user_agent = values.get("DEEPSEEK_USER_AGENT", "").strip()
+    device_model = values.get("DEEPSEEK_DEVICE_MODEL", "").strip()
+    session_store_path = values.get("DEEPSEEK_SESSION_STORE_PATH", "").strip()
+    daily_request_limit = parse_int(values.get("DEEPSEEK_DAILY_LIMIT"), 600)
+    long_pause_chance = parse_float(values.get("DEEPSEEK_LONG_PAUSE_CHANCE"), 0.02)
+    max_turns_per_session = parse_int(values.get("DEEPSEEK_MAX_TURNS"), 40)
+    min_request_interval = parse_float(values.get("DEEPSEEK_MIN_INTERVAL"), 1.2)
+    proxy = values.get("DEEPSEEK_PROXY", "").strip()
+    egress = values.get("DEEPSEEK_EGRESS", "system").strip().lower()
+
     config = AppConfig(
         env_file_path=env_path,
         env_file_created=env_file_created,
@@ -244,6 +266,15 @@ def load_config(env_file: str = ".env") -> AppConfig:
         anti_rate_limit_enabled=anti_rate_limit_enabled,
         anti_rate_limit_min_delay=anti_rate_limit_min_delay,
         anti_rate_limit_max_delay=anti_rate_limit_max_delay,        
+        user_agent=user_agent,
+        device_model=device_model,
+        session_store_path=session_store_path,
+        daily_request_limit=daily_request_limit,
+        long_pause_chance=long_pause_chance,
+        max_turns_per_session=max_turns_per_session,
+        min_request_interval=min_request_interval,
+        proxy=proxy,
+        egress=egress,
         session_cache_max_size=max(1, parse_int(values.get("DEEPSEEK_SESSION_CACHE_MAX_SIZE"), 500)),
         session_cache_enabled=session_cache_enabled,
         session_cache_ttl=max(60, parse_int(values.get("DEEPSEEK_SESSION_CACHE_TTL_SECONDS"), 7200)),
@@ -300,3 +331,5 @@ def load_config(env_file: str = ".env") -> AppConfig:
     else:
         logger.warning("防风控已禁用：请求将无间隔直发上游")    
     return config
+
+

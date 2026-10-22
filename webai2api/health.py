@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -15,25 +16,73 @@ from logging import Logger
 from .store import Store
 
 
-def _deepseek_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
+DEFAULT_DEEPSEEK_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0"
+)
+
+
+def _parse_profile(account: dict) -> dict:
+    """把 account['profile']（JSON 字符串）容错解析成 dict。"""
+    raw = account.get("profile") or "{}"
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def deepseek_headers(account: dict) -> dict:
+    """构造 DeepSeek 健康检查请求头。
+
+    UA / x-device-model 优先取登录时记录的真实浏览器画像（profile.ua /
+    profile.platform），缺失时回退默认 Firefox UA 与空 device-model。
+    """
     base = "https://chat.deepseek.com"
+    profile = _parse_profile(account)
+    ua = str(profile.get("ua") or "").strip() or DEFAULT_DEEPSEEK_UA
+    platform = str(profile.get("platform") or "").strip()
     headers = {
         "Authorization": f"Bearer {account.get('auth_token', '')}",
         "x-device-id": account.get("device_id", ""),
+        "x-device-model": platform,
         "x-client-bundle-id": "com.deepseek.chat",
         "x-client-platform": "web",
         "x-client-version": "2.5.0",
         "x-client-locale": "zh_CN",
         "x-client-timezone-offset": "28800",
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0",
+        "User-Agent": ua,
         "Origin": base,
         "Referer": base + "/",
         "Accept": "*/*",
     }
     if account.get("cookie"):
         headers["Cookie"] = account["cookie"]
+    return headers
+
+
+def _open_account(account: dict, req: urllib.request.Request, timeout: int):
+    """按账号 egress 发起请求（与聊天链路保持同源出口）。
+
+    direct → 强制忽略系统代理；system → 跟随系统；custom → 账号代理。
+    """
+    from urllib.parse import urlsplit
+
+    from .egress import egress_opener
+
+    host = urlsplit(req.full_url).hostname or ""
+    opener = egress_opener(
+        str(account.get("egress") or "system"),
+        str(account.get("proxy") or ""),
+        host,
+    )
+    return opener.open(req, timeout=timeout)
+
+
+def _deepseek_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
+    base = "https://chat.deepseek.com"
+    headers = deepseek_headers(account)
     req = urllib.request.Request(base + "/api/v0/users/current", headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _open_account(account, req, timeout) as r:
         data = json.load(r)
     biz = (data.get("data") or {}).get("biz_data") or {}
     if not biz.get("id"):
@@ -50,16 +99,38 @@ def _chatglm_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
     from .adapters.chatglm.client import _build_headers
     from .adapters.chatglm.config import DEFAULT_BASE_URL, SIGN_SECRET
 
+    # 与聊天请求使用同一套账号级固定指纹，避免「同 token 换设备」的强风控信号
+    def _prof() -> dict:
+        raw = account.get("profile")
+        if isinstance(raw, dict):
+            return raw
+        try:
+            data = json.loads(raw or "{}")
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    prof = _prof()
+    dev_id = str(prof.get("device_id") or "") or hashlib.sha256(
+        f"glm-device:{account.get('id') or account.get('name') or ''}".encode()
+    ).hexdigest()[:32]
+    ua = str(prof.get("ua") or "")
+    dev_model = str(prof.get("platform") or "")
+
+    def _hdr(token: str) -> dict:
+        return _build_headers(SIGN_SECRET, token, device_id=dev_id,
+                              user_agent=ua, device_model=dev_model)
+
     refresh = account.get("auth_token", "")
     if not refresh:
         raise RuntimeError("缺少 refresh_token")
     req = urllib.request.Request(
         DEFAULT_BASE_URL + "/chatglm/user-api/user/refresh",
         data=b"{}",
-        headers={**_build_headers(SIGN_SECRET, refresh), "Content-Type": "application/json"},
+        headers={**_hdr(refresh), "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _open_account(account, req, timeout) as r:
         data = json.load(r)
     result = data.get("result") or {}
     access = result.get("access_token") or ""
@@ -67,9 +138,9 @@ def _chatglm_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
         raise RuntimeError(data.get("message") or "refresh_token 已失效")
     req2 = urllib.request.Request(
         DEFAULT_BASE_URL + "/chatglm/user-api/user/info",
-        headers={**_build_headers(SIGN_SECRET, access), "Accept": "application/json"},
+        headers={**_hdr(access), "Accept": "application/json"},
     )
-    with urllib.request.urlopen(req2, timeout=timeout) as r2:
+    with _open_account(account, req2, timeout) as r2:
         info = json.load(r2)
     res = info.get("result") or {}
     profile = {

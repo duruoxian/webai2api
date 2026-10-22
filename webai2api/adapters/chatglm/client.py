@@ -67,20 +67,49 @@ def _make_sign(secret: str) -> tuple[str, str, str]:
     return timestamp, nonce, sign
 
 
-def _build_headers(secret: str, token: str | None = None) -> dict[str, str]:
+def _build_headers(
+    secret: str,
+    token: str | None = None,
+    device_id: str = "",
+    user_agent: str = "",
+    device_model: str = "",
+) -> dict[str, str]:
+    """构造请求头。
+
+    约定：同一账号的 device_id / UA 必须稳定（否则同 token 反复换设备，是强风控信号）。
+    device_id 为空时才退回按 UA 稳定派生，绝不每次随机。
+    """
     ts, nonce, sign = _make_sign(secret)
+    ua = user_agent or USER_AGENTS[0]
+    if device_id:
+        did = device_id
+    else:
+        did = hashlib.sha256(f"glm-device:{ua}".encode()).hexdigest()[:32]
     headers = {
         **BASE_HEADERS,
-        "User-Agent": random.choice(USER_AGENTS),
-        "X-Device-Id": uuid.uuid4().hex,
-        "X-Request-Id": uuid.uuid4().hex,
+        "User-Agent": ua,
+        "X-Device-Id": did,
+        "X-Request-Id": uuid.uuid4().hex,   # 每请求唯一是正常的
         "X-Sign": sign,
         "X-Timestamp": ts,
         "X-Nonce": nonce,
     }
+    if device_model:
+        headers["X-Device-Model"] = device_model
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _headers_for(config: GlmConfig, token: str | None = None) -> dict[str, str]:
+    """按账号配置构造稳定指纹的请求头。"""
+    return _build_headers(
+        config.sign_secret,
+        token,
+        device_id=getattr(config, "device_id", "") or "",
+        user_agent=getattr(config, "user_agent", "") or "",
+        device_model=getattr(config, "device_model", "") or "",
+    )
 
 
 def _text_of(msg: dict) -> str:
@@ -273,10 +302,98 @@ class ChatGlmWebClient:
         self._token_expire = 0.0
         # 会话缓存：同一段对话复用 conversation_id，多轮只发增量（与 DeepSeek 行为一致）
         self._conv_lock = threading.Lock()
-        self._conv_cache: dict[str, tuple[str, float]] = {}
+        self._conv_cache: dict[str, tuple[str, float, int]] = {}
+        # 落盘节流（重启后仍能复用会话，避免重新建会话）
+        self._persist_path: str = str(getattr(config, "session_store_path", "") or "")
+        self._dirty = False
+        self._last_persist = 0.0
+        self._persist_min_interval = 5.0
+        if self._persist_path:
+            self._load_conv_cache()
+        # 同账号上游请求最小间隔
+        self._last_call_at: float = 0.0
+        self._last_call_lock = threading.Lock()
+
+    # ── 会话缓存持久化 ──────────────────────────────────
+    def _load_conv_cache(self) -> None:
+        path = self._persist_path
+        if not path:
+            return
+        try:
+            import os
+
+            if not os.path.exists(path):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("GLM 会话缓存载入失败: %s", exc)
+            return
+        if not isinstance(raw, dict):
+            return
+        now = time.time()
+        loaded = 0
+        for key, item in raw.items():
+            if not isinstance(key, str) or not isinstance(item, dict):
+                continue
+            conv_id = item.get("conversation_id")
+            if not isinstance(conv_id, str) or not conv_id:
+                continue
+            try:
+                ts = float(item.get("last_used") or now)
+                turns = int(item.get("turns") or 0)
+            except (TypeError, ValueError):
+                continue
+            if now - ts > self.config.session_cache_ttl:
+                continue
+            self._conv_cache[key] = (conv_id, ts, turns)
+            loaded += 1
+        while len(self._conv_cache) > self.config.session_cache_max_size:
+            oldest = min(self._conv_cache.items(), key=lambda kv: kv[1][1])[0]
+            self._conv_cache.pop(oldest, None)
+        if loaded:
+            self.logger.info("GLM 会话缓存恢复 %d 条（%s）", loaded, path)
+
+    def _persist_conv(self, force: bool = False) -> None:
+        """调用方需持有 self._conv_lock。节流写盘，异常只记 debug。"""
+        path = self._persist_path
+        if not path:
+            return
+        now = time.time()
+        if not force and now - self._last_persist < self._persist_min_interval:
+            self._dirty = True
+            return
+        try:
+            import os
+
+            data = {
+                k: {
+                    "conversation_id": v[0],
+                    "last_used": v[1],
+                    "turns": v[2],
+                }
+                for k, v in self._conv_cache.items()
+            }
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, path)
+            self._dirty = False
+            self._last_persist = now
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("GLM 会话缓存落盘失败: %s", exc)
+
+    def flush_cache(self) -> None:
+        """强制落盘（关机前调用）。"""
+        with self._conv_lock:
+            if self._persist_path and self._dirty:
+                self._persist_conv(force=True)
 
     def _conv_key(self, payload: dict) -> str:
-        """用「首条用户消息 + system」做会话指纹。"""
+        """稳定会话指纹：system + 首条 user + model + key_id。
+
+        不随轮次/工具轮变化，避免每轮新建上游会话；带 key_id 做租户隔离。
+        """
         msgs = payload.get("messages") or []
         first = ""
         system = ""
@@ -287,7 +404,8 @@ class ChatGlmWebClient:
                 system = text
             elif role == "user" and not first:
                 first = text
-        raw = f"{system}\x00{first}\x00{payload.get('model') or ''}"
+        raw = (f"{system[:200]}\x00{first[:500]}\x00"
+               f"{payload.get('model') or ''}\x00{payload.get('_wapi_key_id') or ''}")
         return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
 
     def _cached_conv(self, key: str) -> str:
@@ -297,12 +415,50 @@ class ChatGlmWebClient:
             item = self._conv_cache.get(key)
             if not item:
                 return ""
-            conv_id, ts = item
+            conv_id, ts, turns = item
             if time.time() - ts > self.config.session_cache_ttl:
                 self._conv_cache.pop(key, None)
+                self._persist_conv()
+                self._bump("stale")
                 return ""
-            self._conv_cache[key] = (conv_id, time.time())
+            max_turns = int(getattr(self.config, "max_turns_per_session", 40) or 40)
+            if turns >= max_turns:
+                self._conv_cache.pop(key, None)
+                self._persist_conv()
+                self._bump("stale")
+                self.logger.info("会话轮次已达上限(%d) → 新建会话", max_turns)
+                return ""
+            self._conv_cache[key] = (conv_id, time.time(), turns)
+            self._persist_conv()
+            self._bump("hit")
             return conv_id
+
+    def risk_stats(self) -> dict:
+        """风控指标（面板展示，进程内累计）。"""
+        with self._conv_lock:
+            total = len(self._conv_cache)
+            now = time.time()
+            active = sum(1 for (_c, ts, _t) in self._conv_cache.values()
+                         if now - ts <= self.config.session_cache_ttl)
+            hit = getattr(self, "_stat_hit", 0)
+            miss = getattr(self, "_stat_miss", 0)
+            return {
+                "sessions_created": getattr(self, "_stat_created", 0),
+                "sessions_deleted": getattr(self, "_stat_deleted", 0),
+                "cache_hit": hit,
+                "cache_miss": miss,
+                "cache_hit_rate": round(hit / (hit + miss), 3) if (hit + miss) else 0.0,
+                "cache_stale": getattr(self, "_stat_stale", 0),
+                "cache_size": total,
+                "active_sessions": active,
+                "upstream_requests": getattr(self, "_stat_upstream", 0),
+                "rate_limit_hits": getattr(self, "_stat_rate_limit", 0),
+                "daily_count": 0,
+                "daily_limit": int(getattr(self.config, "daily_request_limit", 0) or 0),
+            }
+
+    def _bump(self, name: str) -> None:
+        setattr(self, f"_stat_{name}", getattr(self, f"_stat_{name}", 0) + 1)
 
     def _store_conv(self, key: str, conv_id: str) -> None:
         if not self.config.session_cache_enabled or not conv_id:
@@ -311,11 +467,18 @@ class ChatGlmWebClient:
             if len(self._conv_cache) >= self.config.session_cache_max_size:
                 oldest = min(self._conv_cache.items(), key=lambda kv: kv[1][1])[0]
                 self._conv_cache.pop(oldest, None)
-            self._conv_cache[key] = (conv_id, time.time())
+            prev = self._conv_cache.get(key)
+            turns = (prev[2] + 1) if prev and prev[0] == conv_id else 1
+            first_time = prev is None or prev[0] != conv_id
+            self._conv_cache[key] = (conv_id, time.time(), turns)
+            self._persist_conv()
+            if first_time:
+                self._bump("created")
 
     def _drop_conv(self, key: str) -> None:
         with self._conv_lock:
             self._conv_cache.pop(key, None)
+            self._persist_conv()
 
     # ── HTTP 基础 ──────────────────────────────────────
     @staticmethod
@@ -329,7 +492,31 @@ class ChatGlmWebClient:
 
     def _conn(self, url: str, timeout: int) -> http.client.HTTPSConnection:
         host, _ = self._split(url)
-        return http.client.HTTPSConnection(host, timeout=max(int(timeout), 30))
+        conn = http.client.HTTPSConnection(host, timeout=max(int(timeout), 30))
+        from ....egress import (
+            EGRESS_CUSTOM,
+            EGRESS_SYSTEM,
+            apply_system_proxy,
+            normalize_egress,
+        )
+
+        mode = normalize_egress(getattr(self.config, "egress", "system"))
+        if mode == EGRESS_CUSTOM:
+            proxy_url = str(getattr(self.config, "proxy", "") or "")
+            from ....proxy import ProxyConfigError, parse_proxy
+            try:
+                px = parse_proxy(proxy_url)
+                if px is not None:
+                    px.apply(conn, host)
+                    self.logger.info("出口: 自定义代理 %s", px.describe())
+                else:
+                    self.logger.warning("自定义代理无效，回退直连: %r", proxy_url)
+            except ProxyConfigError as exc:
+                self.logger.warning("自定义代理无效，回退直连: %s", exc)
+        elif mode == EGRESS_SYSTEM:
+            if apply_system_proxy(conn, host):
+                self.logger.info("出口: 跟随系统代理")
+        return conn
 
     def _post_json(self, url: str, body: dict, headers: dict, timeout: int) -> dict:
         conn = self._conn(url, timeout)
@@ -370,7 +557,7 @@ class ChatGlmWebClient:
                 raise GlmError("缺少 refresh_token，请先在面板登录智谱清言账号", 401)
             data = self._post_json(
                 self.config.refresh_url, {},
-                _build_headers(self.config.sign_secret, self.config.refresh_token),
+                _headers_for(self.config, self.config.refresh_token),
                 min(self.config.request_timeout, 30),
             )
             code = data.get("code", data.get("status"))
@@ -449,12 +636,72 @@ class ChatGlmWebClient:
         }
 
     def _throttle(self) -> None:
+        """防风控节奏：硬性最小间隔 + 长尾延迟（大多数短、少量长停顿）。"""
         if not self.config.anti_rate_limit_enabled:
             return
-        lo = self.config.anti_rate_limit_min_delay
-        hi = max(lo, self.config.anti_rate_limit_max_delay)
-        if hi > 0:
-            time.sleep(random.uniform(lo, hi))
+        # 同账号两次上游请求的硬性最小间隔
+        min_interval = float(getattr(self.config, "min_request_interval", 0.0) or 0.0)
+        if min_interval > 0:
+            with self._last_call_lock:
+                now = time.time()
+                slot = max(now, self._last_call_at + min_interval)
+                self._last_call_at = slot
+            wait = slot - time.time()
+            if wait > 0:
+                time.sleep(wait)
+
+        lo = max(0.0, float(self.config.anti_rate_limit_min_delay))
+        hi = max(lo, float(self.config.anti_rate_limit_max_delay))
+        if hi <= 0:
+            return
+
+        # 长尾：少量请求出现 20~60s 长停顿，其余按对数正态分布
+        chance = float(getattr(self.config, "long_pause_chance", 0.02) or 0.0)
+        if chance > 0 and random.random() < chance:
+            delay = random.uniform(20, 60)
+        else:
+            import math
+            mid = max(0.1, (lo + hi) / 2)
+            delay = random.lognormvariate(math.log(mid), 0.6)
+        delay = min(max(delay, lo), max(1.0, hi * 3))
+        self.logger.info("AntiRateLimit | sleep=%.2fs before upstream request", delay)
+        time.sleep(delay)
+
+    # ── 会话清理（供后台清理线程调用） ─────────────────
+    def cleanup_stale_sessions(self) -> None:
+        """删除已过期/超轮次的智谱会话，并从缓存移除。
+
+        与 DeepSeek 保持一致：低频批量清理，而不是每请求删除。
+        """
+        now = time.time()
+        ttl = self.config.session_cache_ttl
+        max_turns = int(getattr(self.config, "max_turns_per_session", 40) or 40)
+        stale: list[tuple[str, str]] = []
+        with self._conv_lock:
+            for key, (conv_id, ts, turns) in list(self._conv_cache.items()):
+                if now - ts > ttl or turns >= max_turns:
+                    stale.append((key, conv_id))
+                    self._conv_cache.pop(key, None)
+            if stale:
+                self._persist_conv(force=True)
+        if not stale:
+            return
+        try:
+            token = self._access()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("会话清理跳过（token 获取失败）: %s", exc)
+            return
+        removed = 0
+        for _key, conv_id in stale:
+            try:
+                self._delete_conversation(conv_id, token)
+                removed += 1
+            except Exception:  # noqa: BLE001
+                pass
+        if removed:
+            self.logger.info("GLM 会话清理：删除 %d 个过期会话", removed)
+            for _ in range(removed):
+                self._bump("deleted")
 
     # ── 事件流 ─────────────────────────────────────────
     def _iter_events(self, resp):
@@ -493,17 +740,21 @@ class ChatGlmWebClient:
         is_silent = "silent" in model
 
         self._throttle()
+        self._bump("upstream")
         token = self._access()
         # 命中会话缓存则复用 conversation_id（与 DeepSeek 的多轮增量行为一致）
         conv_key = self._conv_key(payload)
-        cached_conv = self._cached_conv(conv_key)
+        cached_conv = self._cached_conv(conv_key) or ""
+        if not cached_conv:
+            self._bump("miss")
         conn, resp = self._open_stream(
             self.config.stream_url,
             self._body(
                 content, model,
+                conv_id=cached_conv,
                 effort=str(payload.get("reasoning_effort") or self.config.default_effort),
             ),
-            _build_headers(self.config.sign_secret, token),
+            _headers_for(self.config, token),
             self.config.request_timeout,
         )
         conv_id = ""
@@ -544,7 +795,7 @@ class ChatGlmWebClient:
             self._post_json(
                 self.config.delete_url,
                 {"assistant_id": self.config.assistant_id, "conversation_id": conv_id},
-                _build_headers(self.config.sign_secret, token),
+                _headers_for(self.config, token),
                 min(self.config.request_timeout, 15),
             )
         except Exception as exc:  # noqa: BLE001
@@ -656,4 +907,6 @@ class ChatGlmWebClient:
         yield chunk({}, usage=_usage(payload, sent_text))
         yield chunk({}, finish="stop")
         yield "data: [DONE]\n\n"
+
+
 

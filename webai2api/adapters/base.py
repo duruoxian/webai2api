@@ -38,6 +38,21 @@ class AccountClient:
         self.config = config
         self.cooldown_until = 0.0
         self.rate_hits = 0
+        # ── 日请求配额（进程内计数，跨天自动归零）──
+        self.daily_limit = int(getattr(config, "daily_request_limit", 0) or 0)
+        self._daily_day = time.strftime("%Y-%m-%d")
+        self._daily_count = 0
+
+    def _roll_day(self) -> None:
+        today = time.strftime("%Y-%m-%d")
+        if today != self._daily_day:
+            self._daily_day = today
+            self._daily_count = 0
+
+    def daily_exhausted(self) -> bool:
+        """当日请求数已达上限则不可用（limit<=0 表示不限）。"""
+        self._roll_day()
+        return self.daily_limit > 0 and self._daily_count >= self.daily_limit
 
     def healthy(self) -> bool:
         return self.cooldown_until < time.time()
@@ -55,6 +70,8 @@ class AccountClient:
     def mark_ok(self) -> None:
         self.cooldown_until = 0.0
         self.rate_hits = 0
+        self._roll_day()
+        self._daily_count += 1
 
 
 class GenericClientPool:
@@ -142,10 +159,11 @@ class GenericClientPool:
             self._sync()
             items = [c for c in self._clients.values()
                      if c.account["id"] not in exclude and c.healthy()
-                     and account_ready(c.account)]
+                     and account_ready(c.account) and not c.daily_exhausted()]
             if not items:
                 cooling = [c for c in self._clients.values()
-                           if c.account["id"] not in exclude and account_ready(c.account)]
+                           if c.account["id"] not in exclude and account_ready(c.account)
+                           and not c.daily_exhausted()]
                 cooling = [c for c in cooling if c.cooldown_left() <= 45]
                 items = cooling
             if allowed:

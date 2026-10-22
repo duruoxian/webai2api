@@ -187,6 +187,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
             "today": await run_in_threadpool(store.today_summary),
             "cooldowns": await run_in_threadpool(registry.cooldowns),
+            "network": await run_in_threadpool(_network_status),
             "key_usage": await run_in_threadpool(store.key_usage_map),
             "recent": await run_in_threadpool(
                 store.recent_usage, limit, offset, "", "", key_id, account_id),
@@ -255,6 +256,8 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                 "device_id": b.get("device_id", ""),
                 "settings_token": b.get("settings_token", ""),
                 "cookie": b.get("cookie", ""),
+                "proxy": b.get("proxy", ""),
+                "egress": b.get("egress", "system"),
             },
             b.get("note", ""),
         )
@@ -271,7 +274,11 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             return {"ok": False, "error": "请求格式错误"}
         fields = {k: b[k] for k in
                   ("name", "auth_token", "device_id", "settings_token",
-                   "cookie", "enabled", "note") if k in b}
+                   "cookie", "enabled", "note", "proxy", "egress") if k in b}
+        if "egress" in fields:
+            from .egress import normalize_egress
+
+            fields["egress"] = normalize_egress(str(fields["egress"]))
         # 凭证有变化 → 重新检查
         if any(k in fields for k in ("auth_token", "device_id", "settings_token", "cookie")):
             fields["health"] = ""
@@ -320,6 +327,49 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         await run_in_threadpool(store.delete_account, account_id)
         registry.refresh()
         return {"ok": True}
+
+    # ── 风险指标 ──
+    @router.post("/proxy/test")
+    async def proxy_test(request: Request):
+        """测试代理连通性并返回出口 IP（用于配代理时自检）。"""
+        g = _guard(request)
+        if g:
+            return g
+        b = await _json(request)
+        if b is None:
+            return {"ok": False, "error": "请求格式错误"}
+        proxy_url = str(b.get("proxy") or "").strip()
+        if not proxy_url:
+            return {"ok": False, "error": "请先填写代理地址"}
+        return await run_in_threadpool(_proxy_probe, proxy_url)
+
+    @router.get("/risk")
+    async def risk_metrics(request: Request):
+        """每账号的风控相关指标：会话创建/删除、缓存命中率、限流次数、日用量。"""
+        g = _guard(request)
+        if g:
+            return g
+        items: list[dict] = []
+        for ac in await run_in_threadpool(registry.all_accounts):
+            client = getattr(ac, "client", None)
+            stats = {}
+            if client is not None and hasattr(client, "risk_stats"):
+                try:
+                    stats = client.risk_stats()
+                except Exception:  # noqa: BLE001
+                    stats = {}
+            stats["daily_count"] = int(getattr(ac, "_daily_count", 0) or 0)
+            stats["daily_limit"] = int(getattr(ac, "daily_limit", 0) or 0)
+            stats["cooldown_left"] = int(ac.cooldown_left()) if hasattr(ac, "cooldown_left") else 0
+            items.append({
+                "id": ac.account.get("id", ""),
+                "name": ac.account.get("name", ""),
+                "provider": ac.account.get("provider", ""),
+                "proxy": bool(ac.account.get("proxy")),
+                "egress": ac.account.get("egress", "system"),
+                "stats": stats,
+            })
+        return {"ok": True, "accounts": items}
 
     # ── 浏览器登录 ──
     @router.post("/accounts/{account_id}/login")
@@ -699,6 +749,114 @@ def _issuer_log(items: list[dict]) -> None:
         pass
 
 
+def _proxy_probe(proxy_url: str) -> dict:
+    """通过指定代理请求一个回显 IP 的服务，返回出口 IP 与耗时。
+
+    用 http://ip-api.com/json（HTTP，走普通代理）与 https://api.ipify.org（HTTPS，走 CONNECT）
+    双通道，任一成功即可判断代理是否可用。
+    """
+    import json as _json
+    import time as _time
+    import urllib.error
+    import urllib.request
+
+    from .proxy import ProxyConfigError, parse_proxy
+
+    started = _time.perf_counter()
+    try:
+        px = parse_proxy(proxy_url)
+    except ProxyConfigError as exc:
+        return {"ok": False, "error": str(exc)}
+    if px is None:
+        return {"ok": False, "error": "代理地址为空或无法解析"}
+
+    # 直连作为对照（用于识别「代理没生效但能上网」的情况）
+    def _direct_ip() -> str:
+        try:
+            with urllib.request.urlopen("https://api.ipify.org", timeout=8) as r:
+                return r.read().decode().strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    direct = _direct_ip()
+
+    handlers = []
+    if px.scheme.startswith("socks"):
+        try:
+            import socks  # noqa: F401
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "error": "SOCKS 代理需要 PySocks（已内置，请重启程序）",
+                    "direct_ip": direct}
+        # PySocks 的 urllib 支持走全局 socket 包装，不在本函数内使用
+        return {"ok": False,
+                "error": "SOCKS 代理的连通性测试暂只支持在聊天请求中验证；"
+                         "HTTP/SOCKS 均已在客户端生效，可直接发一次对话验证",
+                "direct_ip": direct}
+
+    auth = px.auth_header()
+    proxy_handler = urllib.request.ProxyHandler({
+        "http": f"http://{px.host}:{px.port}",
+        "https": f"http://{px.host}:{px.port}",
+    })
+    handlers.append(proxy_handler)
+    if auth:
+        class _AuthProxyHandler(urllib.request.ProxyHandler):
+            def proxy_open(self, req, proxy, type):  # noqa: A003
+                req.add_header("Proxy-Authorization", auth)
+                return super().proxy_open(req, proxy, type)
+
+        handlers[0] = _AuthProxyHandler({
+            "http": f"http://{px.host}:{px.port}",
+            "https": f"http://{px.host}:{px.port}",
+        })
+
+    opener = urllib.request.build_opener(*handlers)
+    exit_ip = ""
+    err = ""
+    try:
+        with opener.open("https://api.ipify.org", timeout=12) as r:
+            exit_ip = r.read().decode().strip()
+    except Exception as exc:  # noqa: BLE001
+        err = str(exc)
+        try:
+            with opener.open("http://httpbin.org/ip", timeout=10) as r:
+                exit_ip = (_json.loads(r.read().decode()).get("origin") or "").split(",")[0].strip()
+                err = ""
+        except Exception as exc2:  # noqa: BLE001
+            err = f"{exc} / {exc2}"
+
+    elapsed = int((_time.perf_counter() - started) * 1000)
+    if not exit_ip:
+        return {"ok": False, "error": f"代理不可用：{err}", "direct_ip": direct,
+                "elapsed_ms": elapsed}
+
+    same = bool(direct) and exit_ip == direct
+    return {
+        "ok": True,
+        "exit_ip": exit_ip,
+        "direct_ip": direct,
+        "changed": not same,
+        "warning": "出口 IP 与直连相同，代理可能未生效" if same else "",
+        "proxy": px.describe(),
+        "elapsed_ms": elapsed,
+    }
+
+
+def _network_status() -> dict:
+    """网络环境诊断：系统代理是否开启、是否检测到 TUN 网卡。"""
+    from .egress import detect_tun_interface, system_proxy_enabled
+
+    tun = detect_tun_interface()
+    return {
+        "system_proxy": system_proxy_enabled(),
+        "tun": tun,
+        "tun_warning": (
+            f"检测到 TUN 网卡「{tun}」：即使账号设为直连，流量仍会被全局接管。"
+            "要让「直连」真正直连，请在 Clash/VPN 里关闭 TUN 模式。"
+        ) if tun else "",
+    }
+
+
 def _safe_account(a: dict) -> dict:
     """返回账号（凭证脱敏）。"""
     import json as _json
@@ -717,6 +875,8 @@ def _safe_account(a: dict) -> dict:
         "health": a.get("health", ""),
         "checked_at": a.get("checked_at", 0),
         "profile": profile,
+        "proxy": a.get("proxy", ""),
+        "egress": a.get("egress", "system"),
         "created_at": a["created_at"], "updated_at": a["updated_at"],
     }
 
