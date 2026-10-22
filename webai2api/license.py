@@ -22,13 +22,22 @@ import time
 from pathlib import Path
 
 from . import ed25519, issuer
+from .paths import resource_path
 
 # 内置公钥（base64），与作者私钥配对。
 PUBLIC_KEY_B64 = "KALlewBGC52ZocSmOiE8sQ/SyJQWLbyHUS0W94ybcaY="
 
 LICENSE_FILE = "license.key"
-LICENSE_VERSION = 2
+LICENSE_VERSION = 3
+# v2 是旧公式（无 pepper）：已发货客户的记录仍然有效，验证通过后自动升级为 v3
+SUPPORTED_VERSIONS = (2, 3)
 CLOCK_SKEW_TOLERANCE = 6 * 3600  # 允许系统时间比上次运行早 6 小时
+
+_PEPPER_CACHE: str | None = None
+
+# 已发货客户旧授权文件（v2 公式）的宽限截止：2028-01-01。
+# 在此之前 v2 记录仍可验证并自动升级为 v3；之后伪造 v2 续命被彻底关闭。
+V2_GRACE_TS = 1830297600
 
 
 def _b64d(s: str) -> bytes:
@@ -134,15 +143,65 @@ def license_path(data_dir: Path) -> Path:
     return data_dir / LICENSE_FILE
 
 
+def _pepper() -> str:
+    """构建期秘密盐（不进 git）。打包版随 exe 内嵌；源码态读 tools/。
+
+    没有它就无法伪造 v3 授权文件的 HMAC——旧版密钥纯由本机机器码推导，
+    熟客可在本地重算签名把 activated_at 无限往后拨。
+    """
+    global _PEPPER_CACHE
+    if _PEPPER_CACHE is not None:
+        return _PEPPER_CACHE
+    val = ""
+    candidates = (
+        resource_path("webai2api", "license_pepper.txt"),
+        resource_path("license_pepper.txt"),
+        Path(__file__).resolve().parent.parent / "tools" / "license_pepper.txt",
+    )
+    for p in candidates:
+        try:
+            if p.is_file():
+                raw = p.read_text(encoding="utf-8").strip()
+                if len(raw) >= 32:
+                    val = raw
+                    break
+        except Exception:
+            pass
+    _PEPPER_CACHE = val
+    return val
+
+
 def _hmac_key() -> bytes:
+    return hashlib.sha256(
+        ("wb3:" + _pepper() + ":" + machine_code()).encode("utf-8")).digest()
+
+
+def _hmac_key_legacy() -> bytes:
+    """v2 旧公式（仅机器码）：只用于验证已发货客户的旧授权文件。"""
     return hashlib.sha256(("wb2:" + machine_code()).encode("utf-8")).digest()
 
 
-def _sign_record(rec: dict) -> str:
+def _record_body(rec: dict) -> bytes:
     body = {k: v for k, v in rec.items() if k != "sig"}
-    raw = json.dumps(body, ensure_ascii=False, sort_keys=True,
-                     separators=(",", ":")).encode("utf-8")
-    return hmac.new(_hmac_key(), raw, hashlib.sha256).hexdigest()
+    return json.dumps(body, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
+
+
+def _sign_record(rec: dict) -> str:
+    return hmac.new(_hmac_key(), _record_body(rec), hashlib.sha256).hexdigest()
+
+
+def _sig_ok(rec: dict) -> bool:
+    sig = str(rec.get("sig") or "")
+    if not sig:
+        return False
+    if int(rec.get("v") or 0) == 2:
+        expect = hmac.new(_hmac_key_legacy(), _record_body(rec),
+                          hashlib.sha256).hexdigest()
+    else:
+        expect = hmac.new(_hmac_key(), _record_body(rec),
+                          hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expect, sig)
 
 
 def _read_record(data_dir: Path) -> dict | None:
@@ -229,24 +288,118 @@ def _shadow_write(rec: dict) -> None:
 
 
 def _record_ok(rec: dict | None) -> bool:
-    """副本本身是否可信：签名正确且属于本机。"""
+    """副本本身是否可信：签名正确且属于本机。
+
+    v2（旧公式）仅在宽限期内可信——用于已发货客户透明迁移到 v3；
+    宽限期后伪造 v2 续命这条路被彻底关闭。
+    """
     if not isinstance(rec, dict):
         return False
-    if int(rec.get("v") or 0) != LICENSE_VERSION:
+    ver = int(rec.get("v") or 0)
+    if ver not in SUPPORTED_VERSIONS:
         return False
-    try:
-        if not hmac.compare_digest(_sign_record(rec), str(rec.get("sig") or "")):
-            return False
-    except Exception:
+    if ver == 2 and time.time() > V2_GRACE_TS:
+        return False
+    if not _sig_ok(rec):
         return False
     rec_machine = str(rec.get("machine") or "").upper()
     return not rec_machine or rec_machine == machine_code()
+
+
+# ── 最早激活时间地板 ────────────────────────────────
+# 双份存储（注册表 + 影子文件）：即使授权文件被删光重建，
+# 同一码的 activated_at 也不可能被拨回比"见过的最早值"更早。
+FLOOR_FILE = ".activation_floor.json"
+
+
+def _floor_shadow_path() -> Path | None:
+    sp = _shadow_path()
+    return sp.parent / FLOOR_FILE if sp else None
+
+
+def _floor_read() -> dict[str, float]:
+    out: dict[str, float] = {}
+    for raw in (_floor_reg_read(), _floor_shadow_read()):
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if fv > 0:
+                    cur = out.get(str(k))
+                    if cur is None or fv < cur:
+                        out[str(k)] = fv
+    return out
+
+
+def _floor_reg_read() -> dict | None:
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_KEY) as k:
+            raw, _ = winreg.QueryValueEx(k, "floor")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _floor_reg_write(data: dict) -> None:
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, REG_KEY, 0,
+                                winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, "floor", 0, winreg.REG_SZ,
+                              json.dumps(data, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _floor_shadow_read() -> dict | None:
+    p = _floor_shadow_path()
+    if p is None:
+        return None
+    try:
+        if not p.exists():
+            return None
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _floor_write(code_id: str, activated_at: float) -> None:
+    if not code_id or activated_at <= 0:
+        return
+    cur = _floor_read()
+    old = cur.get(code_id)
+    if old is not None and old <= activated_at:
+        return  # 已有更早的地板，不抬高
+    cur[code_id] = activated_at
+    # 只保留最近 8 个码
+    items = sorted(cur.items(), key=lambda kv: kv[1])[-8:]
+    data = dict(items)
+    _floor_reg_write(data)
+    p = _floor_shadow_path()
+    if p is not None:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            import ctypes
+            ctypes.windll.kernel32.SetFileAttributesW(str(p), 0x02)
+        except Exception:
+            pass
 
 
 def _best_record(data_dir: Path) -> dict | None:
     """合并三份副本：同码取最早激活时间，续费取最新一波。
 
     - 先按码 ID 分组（不同码 = 续费或换码）
+    - 同组内存在 v3 时，v2 候选一律无视（防拿旧公式伪造降级）
     - 选激活时间最晚的那一组（最近一次激活/续费）
     - 组内取最早的激活时间（防止靠删副本把时间往后挪）
     """
@@ -265,9 +418,13 @@ def _best_record(data_dir: Path) -> dict | None:
         groups.setdefault(cid, []).append(rec)
     if not groups:
         return None
-    best_group = max(groups.values(),
-                     key=lambda g: max(float(r.get("activated_at") or 0) for r in g))
-    return min(best_group, key=lambda r: float(r.get("activated_at") or 0))
+    best_cid, best_group = max(
+        groups.items(),
+        key=lambda kv: max(float(r.get("activated_at") or 0) for r in kv[1]),
+    )
+    v3 = [r for r in best_group if int(r.get("v") or 0) >= 3]
+    pool = v3 or best_group
+    return min(pool, key=lambda r: float(r.get("activated_at") or 0))
 
 
 def _mirror(rec: dict) -> None:
@@ -330,18 +487,39 @@ def load_license(data_dir: Path) -> dict:
             result = {"valid": False, "reason": "授权文件格式错误", "code": "bad_format"}
     else:
         result = _verify_record(rec)
+        if result.get("valid"):
+            # 记录「最早激活地板」，防止删档重建后把时间拨回
+            try:
+                _floor_write(str(result.get("code_id") or ""),
+                             float(result.get("activated_at") or 0))
+            except Exception:
+                pass
+        # v2→v3 透明升级：用权威激活时间重新签成 v3
+        authoritative = rec
+        if result.get("upgraded"):
+            authoritative = {
+                "v": LICENSE_VERSION,
+                "code": rec.get("code", ""),
+                "code_id": rec.get("code_id", ""),
+                "days": rec.get("days", 0),
+                "issued": rec.get("issued", ""),
+                "activated_at": float(result.get("activated_at") or 0),
+                "machine": machine_code(),
+            }
+            authoritative["sig"] = _sign_record(authoritative)
         # 自愈：把权威记录补回 data 与其它副本
         try:
             cur = _read_record(data_dir)
-            if cur != rec:
+            if cur != authoritative:
                 data_dir.mkdir(parents=True, exist_ok=True)
                 tmp = path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(rec, ensure_ascii=False, indent=2),
+                tmp.write_text(json.dumps(authoritative, ensure_ascii=False, indent=2),
                                encoding="utf-8")
                 tmp.replace(path)
         except Exception:
             pass
-        _mirror(rec)
+        _mirror(authoritative)
+        result = {k: v for k, v in result.items() if k != "upgraded"}
 
     if cache_key is not None:
         _LIC_CACHE["key"] = cache_key
@@ -350,7 +528,11 @@ def load_license(data_dir: Path) -> dict:
 
 
 def _verify_record(rec: dict) -> dict:
-    if int(rec.get("v") or 0) != LICENSE_VERSION:
+    ver = int(rec.get("v") or 0)
+    if ver not in SUPPORTED_VERSIONS:
+        return {"valid": False, "reason": "授权文件版本过旧，请重新输入授权码",
+                "code": "legacy"}
+    if ver == 2 and time.time() > V2_GRACE_TS:
         return {"valid": False, "reason": "授权文件版本过旧，请重新输入授权码",
                 "code": "legacy"}
 
@@ -362,12 +544,8 @@ def _verify_record(rec: dict) -> dict:
         return {"valid": False, "code": "other_device",
                 "reason": "此授权码已在其他设备激活", "machine": rec_machine}
 
-    # 2) 本地记录没有被改过
-    try:
-        expect = _sign_record(rec)
-    except Exception:
-        expect = ""
-    if not hmac.compare_digest(expect, str(rec.get("sig") or "")):
+    # 2) 本地记录没有被改过（v2 用旧公式、v3 用 pepper 公式）
+    if not _sig_ok(rec):
         return {"valid": False, "reason": "授权文件被修改，请重新输入授权码",
                 "code": "tampered"}
 
@@ -384,6 +562,12 @@ def _verify_record(rec: dict) -> dict:
     if activated <= 0:
         return {"valid": False, "reason": "授权记录缺少激活时间，请重新输入授权码",
                 "code": "bad_record"}
+
+    # 4) 最早激活时间地板：删光副本重新激活也拨不回更晚（防重置续命）。
+    #    地板记录「见过的最早激活时间」，任何更晚的 activated_at 一律按地板算。
+    floor_ts = _floor_read().get(info["id"]) or 0.0
+    if 0 < floor_ts < activated:
+        activated = floor_ts
 
     expires_ts = activated + days * 86400
     now = time.time()
@@ -403,8 +587,11 @@ def _verify_record(rec: dict) -> dict:
                 "reason": f"授权已于 {base['expires']} 到期", "seconds_left": 0}
 
     left = max(0, int((expires_ts - now) // 86400))
-    return {**base, "valid": True, "code": "ok", "reason": "",
-            "days_left": left}
+    out = {**base, "valid": True, "code": "ok", "reason": "",
+           "days_left": left}
+    if ver < LICENSE_VERSION:
+        out["upgraded"] = True   # 提示 load_license 把 v2 记录升级重写为 v3
+    return out
 
 
 # ── 激活 ────────────────────────────────────────────

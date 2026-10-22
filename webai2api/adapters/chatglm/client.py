@@ -493,7 +493,7 @@ class ChatGlmWebClient:
     def _conn(self, url: str, timeout: int) -> http.client.HTTPSConnection:
         host, _ = self._split(url)
         conn = http.client.HTTPSConnection(host, timeout=max(int(timeout), 30))
-        from ....egress import (
+        from ...egress import (
             EGRESS_CUSTOM,
             EGRESS_SYSTEM,
             apply_system_proxy,
@@ -503,7 +503,7 @@ class ChatGlmWebClient:
         mode = normalize_egress(getattr(self.config, "egress", "system"))
         if mode == EGRESS_CUSTOM:
             proxy_url = str(getattr(self.config, "proxy", "") or "")
-            from ....proxy import ProxyConfigError, parse_proxy
+            from ...proxy import ProxyConfigError, parse_proxy
             try:
                 px = parse_proxy(proxy_url)
                 if px is not None:
