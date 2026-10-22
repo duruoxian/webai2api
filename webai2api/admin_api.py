@@ -599,6 +599,31 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         await run_in_threadpool(_reveal_file, path)
         return {"ok": True, "path": str(path)}
 
+    @router.delete("/license/issued/{code_id}")
+    async def delete_issued(code_id: str, request: Request):
+        """删除单条签发记录（只删记录，不影响已发出的授权码本身）。"""
+        g = _guard(request)
+        if g:
+            return g
+        if not await run_in_threadpool(_issuer_available):
+            return {"ok": False, "error": "当前版本不提供签发功能"}
+        removed = await run_in_threadpool(_issuer_delete, [code_id])
+        if not removed:
+            return {"ok": False, "error": "记录不存在"}
+        return {"ok": True, "removed": removed}
+
+    @router.post("/license/issued/clear")
+    async def clear_issued(request: Request):
+        """清空全部签发记录。"""
+        g = _guard(request)
+        if g:
+            return g
+        if not await run_in_threadpool(_issuer_available):
+            return {"ok": False, "error": "当前版本不提供签发功能"}
+        items = await run_in_threadpool(_issuer_read_log)
+        removed = await run_in_threadpool(_issuer_delete, None)
+        return {"ok": True, "removed": removed, "total_before": len(items)}
+
     # ── opencode 接入 ──
     @router.post("/keys/{key_id}/opencode/connect")
     async def opencode_connect(key_id: str, request: Request):
@@ -693,6 +718,30 @@ def _issuer_log(items: list[dict]) -> None:
                      encoding="utf-8")
     except Exception:
         pass
+
+
+def _issuer_delete(code_ids: list[str] | None) -> int:
+    """删除签发记录：传码 ID 列表删指定项，传 None 清空。返回删除条数。
+
+    只删本地记录，不影响已发出授权码的有效性（授权验证不依赖此文件）。
+    """
+    try:
+        p = _issuer_log_path()
+        if not p.exists():
+            return 0
+        existing = _issuer_read_log()
+        if code_ids is None:
+            kept: list[dict] = []
+        else:
+            wanted = {str(x) for x in code_ids}
+            kept = [it for it in existing if str(it.get("id", "")) not in wanted]
+        removed = len(existing) - len(kept)
+        if removed <= 0:
+            return 0
+        p.write_text(json.dumps(kept, ensure_ascii=False, indent=2), encoding="utf-8")
+        return removed
+    except Exception:
+        return 0
 
 
 def _issued_expiry(it: dict) -> str:

@@ -201,7 +201,14 @@
           <div>接口地址&nbsp;&nbsp;<b id="baseHint2">/v1</b></div>
           <div>可用模型&nbsp;&nbsp;<b id="modelHint">deepseek-chat</b></div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">API Key
-            <select id="ocKeySel" onchange="onOcKeyChange()" style="min-width:180px"></select>
+            <div class="sel sel-sm" id="sel-ocKeySel" style="min-width:220px">
+              <select id="ocKeySel" class="sel-native" onchange="onOcKeyChange()"></select>
+              <button type="button" class="sel-btn" onclick="selToggle('ocKeySel')">
+                <span id="lbl-ocKeySel">无可用 Key</span>
+                <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+              <div class="sel-menu" id="menu-ocKeySel"></div>
+            </div>
             <button class="btn sm" onclick="ocConnectCurrent()">接入</button>
             <button class="btn gray sm" onclick="ocDisconnectCurrent()">移除</button>
           </div>
@@ -415,6 +422,7 @@
           <input id="issueSearch" class="input-sm" placeholder="搜索授权码 / 备注"
                  oninput="loadIssued()">
           <button class="btn gray sm" onclick="exportIssued()">导出 CSV</button>
+          <button class="btn gray sm" onclick="clearIssued()">清空记录</button>
         </div>
 
         <div class="tbl-scroll tall">
@@ -425,7 +433,7 @@
               <th style="width:118px">参考到期日</th>
               <th style="width:150px">备注</th>
               <th>授权码</th>
-              <th style="width:74px"></th>
+              <th style="width:120px"></th>
             </tr></thead>
             <tbody></tbody>
           </table>
@@ -1393,15 +1401,34 @@ async function loadIssued(){
   }
   ISSUED_ITEMS.forEach((it,i)=>{
     const code=esc(it.code||'');
+    const id=esc(it.id||'');
     tb.innerHTML+=`<tr>
       <td class="muted" style="white-space:nowrap">${esc((it.created||'').slice(0,16)||'—')}</td>
       <td class="num-t">${Number(it.days)||0} 天</td>
       <td class="muted" style="white-space:nowrap">${issuedExpiry(it)}</td>
       <td>${esc(it.note||'—')}</td>
       <td class="mono issued-code" title="${code}">${code}</td>
-      <td><button class="btn gray sm" onclick="copyText(ISSUED_ITEMS[${i}].code)">复制</button></td>
+      <td style="white-space:nowrap;text-align:right">
+        <button class="btn gray sm" onclick="copyText(ISSUED_ITEMS[${i}].code)">复制</button>
+        <button class="btn gray sm" onclick="deleteIssued('${id}')">删除</button>
+      </td>
     </tr>`;
   });
+}
+async function deleteIssued(codeId){
+  if(!codeId) return;
+  if(!confirm('删除这条签发记录？\n\n只删本地记录，不影响已发出的授权码能否使用。')) return;
+  const j=await api('/license/issued/'+encodeURIComponent(codeId),'DELETE');
+  if(!j||!j.ok){ toast((j&&j.error)||'删除失败'); return; }
+  toast('已删除 1 条记录');
+  loadIssued();
+}
+async function clearIssued(){
+  if(!confirm('清空全部签发记录？\n\n只删本地记录，不影响已发出的授权码能否使用。建议先导出 CSV 备份。')) return;
+  const j=await api('/license/issued/clear','POST',{});
+  if(!j||!j.ok){ toast((j&&j.error)||'清空失败'); return; }
+  toast('已清空 '+(j.removed||0)+' 条记录');
+  loadIssued();
 }
 async function exportIssued(){
   const j=await api('/license/issued/export','POST',{});
@@ -1898,6 +1925,7 @@ ${lines.join(',\n')}
     const prev=sel.value;
     sel.innerHTML=opts.length?opts.map((k,i)=>`<option value="${esc(k.id)}" ${(prev?k.id===prev:i===0)?'selected':''}>${esc(k.name)} ${maskKey(k)}</option>`).join(''):'<option value="">无可用 Key</option>';
     OC_SELECTED_KEY=sel.value;
+    if(typeof selBuild==='function') selBuild('ocKeySel');
     const gh=document.getElementById('guideKeyHint');
     if(gh){ const ok=sel.value?(opts.find(k=>k.id===sel.value)||opts[0]):opts[0]; gh.textContent=ok?maskKey(ok):'在上方列表中选择或生成'; }
     rebuildSnippet();
