@@ -64,6 +64,8 @@ hiddenimports = [
     "webview.platforms.edgechromium",
     "clr_loader",
     "pythonnet",
+    "socks",          # PySocks：socks5 代理（运行期动态 import）
+    "sockshandler",
 ] + wt_hidden + wv_hidden + _tray_hidden
 
 a = Analysis(
