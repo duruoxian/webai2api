@@ -350,6 +350,10 @@ class DeepSeekWebClient:
         # 可复用的上游 HTTPS 连接（keep-alive，省去重复 TLS 握手）
         self._http_conn = None
         self._http_host = None
+        self._http_proxy = ""
+        # 风险指标计数器（进程内，面板展示）
+        self._stats: dict[str, int] = {}
+        self._stats_lock = threading.Lock()
         # 工具调用解析行为：严格工具名匹配默认开，JSON 碰运气解析默认关。
         configure_tool_parsing(
             strict_names=config.tool_name_strict,
@@ -411,16 +415,30 @@ class DeepSeekWebClient:
 
     def _get_http_conn(self, host: str, timeout: int):
         conn = self._http_conn
-        if conn is None or self._http_host != host:
+        proxy_url = str(getattr(self.config, "proxy", "") or "")
+        if conn is None or self._http_host != host or self._http_proxy != proxy_url:
             conn = http.client.HTTPSConnection(host, timeout=max(int(timeout), 30))
+            if proxy_url:
+                from ....proxy import ProxyConfigError, parse_proxy
+                try:
+                    px = parse_proxy(proxy_url)
+                    if px is not None:
+                        px.apply(conn, host)
+                        self.logger.info("使用代理出口: %s", px.describe())
+                    else:
+                        self.logger.warning("代理配置无效，回退直连: %r", proxy_url)
+                except ProxyConfigError as exc:
+                    self.logger.warning("代理配置无效，回退直连: %s", exc)
             self._http_conn = conn
             self._http_host = host
+            self._http_proxy = proxy_url
         return conn
 
     def _drop_http_conn(self) -> None:
         conn = self._http_conn
         self._http_conn = None
         self._http_host = None
+        self._http_proxy = ""
         if conn is not None:
             try:
                 conn.close()
@@ -575,6 +593,7 @@ class DeepSeekWebClient:
                 "Cache STALE | conv=%s... | history rewritten (msgs=%d < %d) → fresh",
                 conv[:12], msg_count, cached.msg_count,
             )
+            self._bump("cache_stale")
             self.session_cache.delete(conv)
             cached = None
 
@@ -587,6 +606,7 @@ class DeepSeekWebClient:
                     conv[:12], cached.turn_count, max_turns,
                 )
                 self.session_cache.delete(conv)
+                self._bump("cache_stale")
                 cached = None
 
         if cached:
@@ -602,6 +622,7 @@ class DeepSeekWebClient:
                 cached.turn_count + 1, len(ds_payload.get("prompt", "")),
                 len(ref_file_ids),
             )
+            self._bump("cache_hit")
             return {
                 "mode": "cached",
                 "ds_payload": ds_payload,
@@ -627,6 +648,8 @@ class DeepSeekWebClient:
             len(ds_payload.get("prompt", "")),
             len(ref_file_ids),
         )
+        if self.cache_enabled:
+            self._bump("cache_miss")
         return {
             "mode": "fresh",
             "ds_payload": ds_payload,
@@ -913,6 +936,7 @@ class DeepSeekWebClient:
 
                 except RateLimitError as exc:
                     rate_limit_retries += 1
+                    self._bump("rate_limit")
                     if rate_limit_retries >= MAX_RATE_LIMIT_RETRIES:
                         self.logger.error(
                             "上游限流重试次数耗尽 (%d/%d)",
@@ -1266,6 +1290,40 @@ class DeepSeekWebClient:
         return generate()
 
     # ═══════════════════════════════════════════════════════
+    # 风险指标（面板展示用，进程内累计，重启归零）
+    # ═══════════════════════════════════════════════════════
+
+    def _bump(self, name: str, delta: int = 1) -> None:
+        with self._stats_lock:
+            self._stats[name] = self._stats.get(name, 0) + delta
+
+    def risk_stats(self) -> dict:
+        with self._stats_lock:
+            data = dict(self._stats)
+        cache_size = self.session_cache.size if hasattr(self.session_cache, "size") else 0
+        active = 0
+        try:
+            active = len(self.session_cache.active_session_ids())
+        except Exception:  # noqa: BLE001
+            pass
+        total = data.get("cache_hit", 0) + data.get("cache_miss", 0)
+        hit_rate = round(data.get("cache_hit", 0) / total, 3) if total else 0.0
+        return {
+            "sessions_created": data.get("session_created", 0),
+            "sessions_deleted": data.get("session_deleted", 0),
+            "cache_hit": data.get("cache_hit", 0),
+            "cache_miss": data.get("cache_miss", 0),
+            "cache_hit_rate": hit_rate,
+            "cache_stale": data.get("cache_stale", 0),
+            "cache_size": cache_size,
+            "active_sessions": active,
+            "upstream_requests": data.get("upstream", 0),
+            "rate_limit_hits": data.get("rate_limit", 0),
+            "daily_count": 0,   # 由池层填充
+            "daily_limit": int(getattr(self.config, "daily_request_limit", 0) or 0),
+        }
+
+    # ═══════════════════════════════════════════════════════
     # Anti rate-limit
     # ═══════════════════════════════════════════════════════
 
@@ -1326,6 +1384,7 @@ class DeepSeekWebClient:
 
     def _open_chat_stream(self, resolved: dict):
         self._anti_rate_limit_pause(context=f"mode={resolved['mode']}")
+        self._bump("upstream")
         ds_payload = resolved["ds_payload"]
         mode = resolved["mode"]
         session_id = resolved["session_id"]
@@ -1359,6 +1418,7 @@ class DeepSeekWebClient:
                 # 关键：回写 resolved，rate limit 重试时能复用
                 resolved["session_id"] = session_id
                 self.logger.info("Session 创建成功: %s", session_id)
+                self._bump("session_created")
         else:
             self.logger.info("Step 3/4: 复用缓存 session=%s...", session_id[:12])
             cached_state = self.session_cache.get(resolved["cache_key"])
@@ -1731,6 +1791,7 @@ class DeepSeekWebClient:
                 self._proxy_sessions.discard(session_id)
 
             self.logger.info("已删除 DeepSeek 会话 session_id=%s", session_id)
+            self._bump("session_deleted")
         except Exception as exc:
             self.logger.warning("删除 DeepSeek 会话失败 session_id=%s error=%s", session_id, exc)
 

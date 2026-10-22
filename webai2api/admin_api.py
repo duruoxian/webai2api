@@ -256,6 +256,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                 "device_id": b.get("device_id", ""),
                 "settings_token": b.get("settings_token", ""),
                 "cookie": b.get("cookie", ""),
+                "proxy": b.get("proxy", ""),
             },
             b.get("note", ""),
         )
@@ -272,7 +273,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             return {"ok": False, "error": "请求格式错误"}
         fields = {k: b[k] for k in
                   ("name", "auth_token", "device_id", "settings_token",
-                   "cookie", "enabled", "note") if k in b}
+                   "cookie", "enabled", "note", "proxy") if k in b}
         # 凭证有变化 → 重新检查
         if any(k in fields for k in ("auth_token", "device_id", "settings_token", "cookie")):
             fields["health"] = ""
@@ -321,6 +322,34 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         await run_in_threadpool(store.delete_account, account_id)
         registry.refresh()
         return {"ok": True}
+
+    # ── 风险指标 ──
+    @router.get("/risk")
+    async def risk_metrics(request: Request):
+        """每账号的风控相关指标：会话创建/删除、缓存命中率、限流次数、日用量。"""
+        g = _guard(request)
+        if g:
+            return g
+        items: list[dict] = []
+        for ac in await run_in_threadpool(registry.all_accounts):
+            client = getattr(ac, "client", None)
+            stats = {}
+            if client is not None and hasattr(client, "risk_stats"):
+                try:
+                    stats = client.risk_stats()
+                except Exception:  # noqa: BLE001
+                    stats = {}
+            stats["daily_count"] = int(getattr(ac, "_daily_count", 0) or 0)
+            stats["daily_limit"] = int(getattr(ac, "daily_limit", 0) or 0)
+            stats["cooldown_left"] = int(ac.cooldown_left()) if hasattr(ac, "cooldown_left") else 0
+            items.append({
+                "id": ac.account.get("id", ""),
+                "name": ac.account.get("name", ""),
+                "provider": ac.account.get("provider", ""),
+                "proxy": bool(ac.account.get("proxy")),
+                "stats": stats,
+            })
+        return {"ok": True, "accounts": items}
 
     # ── 浏览器登录 ──
     @router.post("/accounts/{account_id}/login")
@@ -800,6 +829,7 @@ def _safe_account(a: dict) -> dict:
         "health": a.get("health", ""),
         "checked_at": a.get("checked_at", 0),
         "profile": profile,
+        "proxy": a.get("proxy", ""),
         "created_at": a["created_at"], "updated_at": a["updated_at"],
     }
 

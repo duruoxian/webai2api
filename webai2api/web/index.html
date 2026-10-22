@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.10">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.11">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -16,7 +16,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.10"></script>
+<script src="/admin/static/hyalite.js?v=0.1.11"></script>
 </head>
 <body>
 
@@ -181,6 +181,17 @@
           <b>用法：</b>点右上角「添加账号」只填<b>名称</b> → 保存 → 回列表点该账号的<b>「浏览器登录」</b>，在弹出的内置浏览器里登录 DeepSeek 即可，凭证会<b>自动抓取</b>。</p>
         <div class="tbl-scroll tall">
           <table id="accTable"><thead><tr><th>名称</th><th>平台</th><th>凭证</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>风险指标</h2><div class="sp"></div>
+          <button class="btn gray sm" onclick="loadRisk()">刷新</button>
+        </div>
+        <p class="card-sub">会话创建量、缓存命中率、限流次数是本进程启动以来的累计值（重启归零）。<b>命中率持续为 0 说明会话复用失效</b>，是最需要关注的信号。</p>
+        <div class="tbl-scroll">
+          <table id="riskTable"><thead><tr>
+            <th>账号</th><th>日用量</th><th>会话创建</th><th>缓存命中率</th><th>活跃会话</th><th>上游请求</th><th>限流</th><th>出口</th>
+          </tr></thead><tbody></tbody></table>
         </div>
       </div>
     </div>
@@ -488,6 +499,9 @@
       </label>
     </div>
     <div class="hint" id="accCredHint" style="margin:0 0 14px">DeepSeek：浏览器登录后会自动抓取，下面的凭证可以留空。</div>
+    <label class="fld"><span>出口代理（可选，强烈建议每账号独立 IP）</span>
+      <input id="accProxy" placeholder="http://user:pass@host:port 或 socks5://host:port，留空=直连"></label>
+    <div class="hint" style="margin:0 0 14px">同一 IP 登多个账号容易被平台关联封禁；每个账号配一个独立出口 IP 是最有效的降低关联手段。</div>
     <details class="adv" id="accAdv">
       <summary>手动填写凭证（不推荐）</summary>
       <div class="adv-body">
@@ -681,8 +695,33 @@ async function logout(){try{await api('/logout','POST')}catch(e){}TOKEN='';local
 function switchTab(name){
   document.querySelectorAll('.seg button').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active',p.id==='tab-'+name));
+  if(name==='accounts') loadRisk();
   // 切页回到顶部，避免停在上一页的滚动位置
   try{ window.scrollTo({top:0, behavior:'auto'}); }catch(e){ window.scrollTo(0,0); }
+}
+async function loadRisk(){
+  const tb=document.querySelector('#riskTable tbody');
+  if(!tb) return;
+  const j=await api('/risk');
+  if(!j||!j.ok){ tb.innerHTML=''; return; }
+  tb.innerHTML='';
+  j.accounts.forEach(x=>{
+    const st=x.stats||{};
+    const rate=Math.round((st.cache_hit_rate||0)*100);
+    const daily=st.daily_limit?`${st.daily_count||0}/${st.daily_limit}`:(st.daily_count||0);
+    const rateCls=rate>=60?'on':(rate>0?'':'err');
+    tb.innerHTML+=`<tr>
+      <td><b>${esc(x.name)}</b><div class="muted" style="font-size:12px">${esc(x.provider)}</div></td>
+      <td class="num-t">${daily}</td>
+      <td class="num-t">${st.sessions_created||0}</td>
+      <td><span class="tag ${rateCls}">${rate}%</span></td>
+      <td class="num-t">${st.active_sessions||0}</td>
+      <td class="num-t">${st.upstream_requests||0}</td>
+      <td>${st.rate_limit_hits?`<span class="tag err">${st.rate_limit_hits}</span>`:'0'}</td>
+      <td>${x.proxy?'<span class="tag on">独立代理</span>':'<span class="tag off">直连</span>'}</td>
+    </tr>`;
+  });
+  if(!j.accounts.length) tb.innerHTML=empty('还没有账号');
 }
 function fmt(n){n=Number(n)||0;return n.toLocaleString('zh-CN');}
 
@@ -1490,6 +1529,8 @@ function openAccModal(acc){
   selOpen('accProvider',false);
   selSync('accProvider');
   ['accToken','accDevice','accSettings','accCookie'].forEach(i=>document.getElementById(i).value='');
+  const pxEl=document.getElementById('accProxy');
+  if(pxEl) pxEl.value=acc?(acc.proxy||''):'';
   const adv=document.getElementById('accAdv'); if(adv) adv.open=false;
   onProviderChange();
   openModal('accModal');
@@ -1584,7 +1625,9 @@ async function saveAccount(){
   const d=document.getElementById('accDevice').value.trim();
   const st=document.getElementById('accSettings').value.trim();
   const c=document.getElementById('accCookie').value.trim();
+  const px=document.getElementById('accProxy').value.trim();
   if(t)body.auth_token=t;if(d)body.device_id=d;if(st)body.settings_token=st;if(c)body.cookie=c;
+  if(id){body.proxy=px;}else if(px){body.proxy=px;}
   if(id)await api('/accounts/'+id,'PUT',body);else await api('/accounts','POST',body);
   closeModal('accModal');refresh();toast('已保存');
 }
@@ -2002,6 +2045,7 @@ ${lines.join(',\n')}
 </script>
 </body>
 </html>
+
 
 
 

@@ -36,6 +36,7 @@ class GlmConfig:
     daily_request_limit: int = 600
     max_turns_per_session: int = 40
     session_store_path: str = ""   # 会话缓存落盘路径（空=不持久化）
+    proxy: str = ""                # 账号级出口代理（空=直连）
 
     @property
     def refresh_url(self) -> str:
@@ -126,4 +127,5 @@ def build_config(store, account: dict) -> GlmConfig:
         daily_request_limit=int(g("glm_daily_limit", "600")),
         max_turns_per_session=int(g("glm_max_turns", "40")),
         session_store_path=_session_store_path(account),
+        proxy=str(account.get("proxy") or ""),
     )

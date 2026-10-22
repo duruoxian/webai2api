@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     enabled      INTEGER NOT NULL DEFAULT 1,
     note         TEXT NOT NULL DEFAULT '',
     profile      TEXT NOT NULL DEFAULT '{}',
+    proxy        TEXT NOT NULL DEFAULT '',
     health       TEXT NOT NULL DEFAULT '',
     checked_at   REAL NOT NULL DEFAULT 0,
     created_at   REAL NOT NULL,
@@ -125,6 +126,8 @@ class Store:
             acols = {r["name"] for r in c.execute("PRAGMA table_info(accounts)")}
             if "profile" not in acols:
                 c.execute("ALTER TABLE accounts ADD COLUMN profile TEXT NOT NULL DEFAULT '{}'")
+            if "proxy" not in acols:
+                c.execute("ALTER TABLE accounts ADD COLUMN proxy TEXT NOT NULL DEFAULT ''")
             if "health" not in acols:
                 c.execute("ALTER TABLE accounts ADD COLUMN health TEXT NOT NULL DEFAULT ''")
             if "checked_at" not in acols:
@@ -237,20 +240,20 @@ class Store:
             c.execute(
                 """INSERT INTO accounts
                    (id, provider, name, auth_token, device_id, settings_token, cookie,
-                    enabled, note, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,1,?,?,?)""",
+                    enabled, note, proxy, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,1,?,?,?,?)""",
                 (aid, provider, name,
                  credentials.get("auth_token", ""),
                  credentials.get("device_id", ""),
                  credentials.get("settings_token", ""),
                  credentials.get("cookie", ""),
-                 note, t, t),
+                 note, credentials.get("proxy", ""), t, t),
             )
         return self.get_account(aid)  # type: ignore[return-value]
 
     def update_account(self, account_id: str, **fields: Any) -> None:
         allowed = {"name", "auth_token", "device_id", "settings_token", "cookie",
-                   "enabled", "note", "profile"}
+                   "enabled", "note", "profile", "proxy"}
         sets, vals = [], []
         for k, v in fields.items():
             if k in allowed:
