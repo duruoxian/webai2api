@@ -6,6 +6,8 @@ from logging import Logger
 from .adapters.base import AccountClient, GenericClientPool
 from .adapters.deepseek.pool import build_pool as build_deepseek_pool
 from .adapters.chatglm.pool import build_pool as build_chatglm_pool
+from .adapters.kimi.pool import build_pool as build_kimi_pool
+from .adapters.qwen.pool import build_pool as build_qwen_pool
 from .store import Store
 
 DEFAULT_MODEL = "deepseek-chat"
@@ -14,17 +16,42 @@ DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_LIMITS: dict[str, dict[str, int]] = {
     "deepseek": {"context": 1_000_000, "output": 384_000},
     "chatglm": {"context": 1_000_000, "output": 128_000},
+    "kimi": {"context": 262_144, "output": 32_768},
+    "qwen": {"context": 262_144, "output": 65_536},
 }
 MAX_LIMITS: dict[str, dict[str, int]] = {
     "deepseek": {"context": 1_000_000, "output": 384_000},
     "chatglm": {"context": 1_000_000, "output": 128_000},
+    "kimi": {"context": 1_000_000, "output": 65_536},
+    "qwen": {"context": 1_000_000, "output": 65_536},
 }
 
 # 每个 provider 的默认模型清单（账号侧没配置时的兜底）
 PROVIDER_MODELS: dict[str, list[str]] = {
     "deepseek": ["deepseek-chat", "deepseek-reasoner"],
     "chatglm": ["GLM-5.3", "GLM-5.3-Flash"],
+    "kimi": ["kimi-k3", "kimi-k2.8", "kimi-k2.6"],
+    "qwen": ["qwen3.7-plus", "qwen3.8-max", "qwen3.8-omni-flash"],
 }
+
+# 模型名前缀 → provider（全仓唯一权威表；admin_api / 面板兜底都从这里取值）
+MODEL_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("glm", "chatglm"),
+    ("kimi", "kimi"),
+    ("moonshot", "kimi"),
+    ("qwen", "qwen"),
+    ("deepseek", "deepseek"),
+)
+
+DEFAULT_PROVIDER = "deepseek"
+
+
+def infer_provider(model: str | None) -> str:
+    m = (model or "").strip().lower()
+    for prefix, prov in MODEL_PREFIXES:
+        if m.startswith(prefix):
+            return prov
+    return DEFAULT_PROVIDER
 
 # 兼容旧引用
 MODELS = [
@@ -41,9 +68,13 @@ class ProviderRegistry:
         self._auth_fails: dict[str, int] = {}
         self.deepseek = build_deepseek_pool(store, logger)
         self.chatglm = build_chatglm_pool(store, logger)
+        self.kimi = build_kimi_pool(store, logger)
+        self.qwen = build_qwen_pool(store, logger)
         self._pools: dict[str, GenericClientPool] = {
             "deepseek": self.deepseek,
             "chatglm": self.chatglm,
+            "kimi": self.kimi,
+            "qwen": self.qwen,
         }
 
     def model_catalog(self) -> list[dict]:
@@ -67,7 +98,7 @@ class ProviderRegistry:
                 mid = (row.get("model") or "").strip()
                 if len(mid) >= 3 and mid not in seen:
                     seen.add(mid)
-                    prov = "chatglm" if mid.lower().startswith("glm") else "deepseek"
+                    prov = infer_provider(mid)
                     out.append({"id": mid, "object": "model", "owned_by": f"{prov}-web"})
         except Exception:
             pass
@@ -75,9 +106,10 @@ class ProviderRegistry:
 
     def pool_for_model(self, model: str | None) -> GenericClientPool:
         m = (model or "").strip().lower()
-        if m.startswith("glm") or (len(m) >= 24 and m.isalnum()):
+        # 24 位以上纯小写字母数字 = 智谱智能体 ID
+        if len(m) >= 24 and m.isalnum():
             return self.chatglm
-        return self.deepseek
+        return self._pools.get(infer_provider(m), self.deepseek)
 
     def pick(self, model: str | None, exclude: set[str] | None = None,
              allowed: set[str] | None = None,

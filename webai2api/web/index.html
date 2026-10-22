@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.13">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.18">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -16,7 +16,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.13"></script>
+<script src="/admin/static/hyalite.js?v=0.1.18"></script>
 </head>
 <body>
 
@@ -311,6 +311,8 @@
           <div class="seg seg-sm" id="setProvSeg">
             <button class="active" data-prov="deepseek" onclick="setSettingsProvider('deepseek')">DeepSeek</button>
             <button data-prov="glm" onclick="setSettingsProvider('glm')">智谱清言</button>
+            <button data-prov="kimi" onclick="setSettingsProvider('kimi')">Kimi</button>
+            <button data-prov="qwen" onclick="setSettingsProvider('qwen')">通义千问</button>
           </div>
         </div>
 
@@ -380,6 +382,84 @@
           <div class="btn-row">
             <button class="btn" onclick="saveGlmSettings()">保存</button>
             <button class="btn gray" onclick="resetGlmSettings()">恢复默认</button>
+          </div>
+        </div>
+
+        <div id="kimiSettings" style="display:none">
+          <div class="set-group">
+            <div class="set-group-title">额度</div>
+            <div class="fld-row">
+              <label class="fld"><span>上下文长度（tokens，上限 1,000,000）</span>
+                <input id="setKimiContext" inputmode="numeric" placeholder="262144" max="1000000" data-cap="1000000"></label>
+              <label class="fld"><span>最大输出（tokens，上限 65,536）</span>
+                <input id="setKimiOutput" inputmode="numeric" placeholder="32768" max="65536" data-cap="65536"></label>
+            </div>
+          </div>
+          <div class="set-group">
+            <div class="set-group-title">性能</div>
+            <label class="chk"><input type="checkbox" id="setKimiCache"> 启用会话缓存：多轮复用同一会话，更快、更省</label>
+            <label class="chk"><input type="checkbox" id="setKimiSearch"> 联网搜索：模型按需检索</label>
+          </div>
+          <div class="set-group">
+            <div class="set-group-title">风控</div>
+            <div class="fld-row">
+              <label class="fld"><span>防风控延迟下限（秒）</span>
+                <input id="setKimiAntiMin" placeholder="1.5"></label>
+              <label class="fld"><span>防风控延迟上限（秒）</span>
+                <input id="setKimiAntiMax" placeholder="3.0"></label>
+            </div>
+          </div>
+          <div class="set-group">
+            <div class="set-group-title">思考强度</div>
+            <span class="hint" style="display:block;line-height:1.9">
+              在客户端里选（opencode 的推理强度下拉）：<br>
+              在客户端里选（opencode 的推理强度下拉）。Kimi 三档：<b>标准</b>（不思考）/ <b>进阶</b> / <b>极致</b>。<br>
+              <b>Low</b>→标准 · <b>Medium / High</b>→进阶 · <b>Max</b>→极致<br>
+              注：<b>kimi-k2.6</b>（网页"快速"模型）没有极致档，选极致自动降为进阶。
+            </span>
+          </div>
+          <div class="btn-row">
+            <button class="btn" onclick="saveKimiSettings()">保存</button>
+            <button class="btn gray" onclick="resetKimiSettings()">恢复默认</button>
+          </div>
+        </div>
+
+        <div id="qwenSettings" style="display:none">
+          <div class="set-group">
+            <div class="set-group-title">额度</div>
+            <div class="fld-row">
+              <label class="fld"><span>上下文长度（tokens，上限 1,000,000）</span>
+                <input id="setQwenContext" inputmode="numeric" placeholder="262144" max="1000000" data-cap="1000000"></label>
+              <label class="fld"><span>最大输出（tokens，上限 65,536）</span>
+                <input id="setQwenOutput" inputmode="numeric" placeholder="65536" max="65536" data-cap="65536"></label>
+            </div>
+          </div>
+          <div class="set-group">
+            <div class="set-group-title">性能</div>
+            <label class="chk"><input type="checkbox" id="setQwenCache"> 启用会话缓存：多轮复用同一会话，更快、更省</label>
+            <label class="chk"><input type="checkbox" id="setQwenSearch"> 联网搜索：模型按需检索</label>
+          </div>
+          <div class="set-group">
+            <div class="set-group-title">风控</div>
+            <div class="fld-row">
+              <label class="fld"><span>防风控延迟下限（秒）</span>
+                <input id="setQwenAntiMin" placeholder="1.5"></label>
+              <label class="fld"><span>防风控延迟上限（秒）</span>
+                <input id="setQwenAntiMax" placeholder="3.0"></label>
+            </div>
+          </div>
+          <div class="set-group">
+            <div class="set-group-title">思考强度</div>
+            <span class="hint" style="display:block;line-height:1.9">
+              在客户端里选（opencode 的推理强度下拉）。<br>
+              只有 <b>qwen3.7-plus</b>（千问）有「快速 / 思考研究」两档：
+              <b>Low</b>→快速 · <b>Medium 及以上</b>→思考研究。<br>
+              <b>qwen3.8-max</b>、<b>qwen3.8-omni-flash</b> 不支持思考研究（选任何档位都按快速）。
+            </span>
+          </div>
+          <div class="btn-row">
+            <button class="btn" onclick="saveQwenSettings()">保存</button>
+            <button class="btn gray" onclick="resetQwenSettings()">恢复默认</button>
           </div>
         </div>
       </div>
@@ -489,7 +569,7 @@
       <label class="fld"><span>名称</span><input id="accName" placeholder="例如：我的 DeepSeek"></label>
       <label class="fld"><span id="accProviderLabel">平台</span>
         <div class="sel" id="sel-accProvider">
-          <select id="accProvider" class="sel-native" onchange="onProviderChange()"><option value="deepseek">DeepSeek 网页版</option><option value="chatglm">智谱清言（chatglm.cn）</option></select>
+          <select id="accProvider" class="sel-native" onchange="onProviderChange()"><option value="deepseek">DeepSeek 网页版</option><option value="chatglm">智谱清言（chatglm.cn）</option><option value="kimi">Kimi（kimi.com）</option><option value="qwen">通义千问（chat.qwen.ai）</option></select>
           <button type="button" class="sel-btn" onclick="selToggle('accProvider')">
             <span id="lbl-accProvider">DeepSeek 网页版</span>
             <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
@@ -518,6 +598,7 @@
         <input id="accProxy" placeholder="http://user:pass@host:port 或 socks5://host:port"></label>
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px">
         <button class="btn gray sm" onclick="testProxy()">测试代理</button>
+        <button class="btn gray sm" id="clashPreset" onclick="useClash()" style="display:none">交给 Clash 分流</button>
         <span id="proxyTestResult" class="muted" style="font-size:12px"></span>
       </div>
     </div>
@@ -988,9 +1069,10 @@ function renderOverview(s){
   });
   (s.accounts||[]).forEach(a=>{ if(a.health==='expired') alerts.push(`账号「${a.name}」凭证已失效，请重新登录`); });
   const net=s.network||{};
-  if(net.tun) alerts.push(net.tun_warning||`检测到 TUN 网卡「${net.tun}」，直连账号实际仍会走代理`);
+  window.__clashProxy=net.clash_proxy||'';
+  if(net.tun) alerts.push(net.tun_note||`检测到 TUN 网卡「${net.tun}」：规则模式下国内站直连有效，全局模式下会走节点`);
   const directCount=(s.accounts||[]).filter(a=>(a.egress||'system')==='direct').length;
-  if(net.tun&&directCount) alerts.push(`有 ${directCount} 个账号设为「直连」，但 TUN 开启时不会真正直连`);
+  if(net.tun&&directCount&&net.global_mode) alerts.push(`有 ${directCount} 个账号设为「直连」：Clash 处于全局模式时它们也会走节点`);
   const ab=document.getElementById('alertBar');
   if(ab){
     if(alerts.length){ ab.style.display=''; ab.innerHTML=alerts.slice(0,5).map(x=>`<div class="alert-item">${esc(x)}</div>`).join(''); }
@@ -1418,6 +1500,18 @@ function renderSettings(s){
   const gx=document.getElementById('setGlmAntiMax'); if(gx) gx.value=s.settings.glm_anti_max||'3.0';
   const gs=document.getElementById('setGlmSearch'); if(gs) gs.checked=(s.settings.glm_search||'false')==='true';
   const gc=document.getElementById('setGlmCache'); if(gc) gc.checked=(s.settings.glm_session_cache||'true')!=='false';
+  const kc=document.getElementById('setKimiContext'); if(kc) kc.value=s.settings.kimi_context_limit||'262144';
+  const ko=document.getElementById('setKimiOutput'); if(ko) ko.value=s.settings.kimi_output_limit||'32768';
+  const kan=document.getElementById('setKimiAntiMin'); if(kan) kan.value=s.settings.kimi_anti_min||'1.5';
+  const kax=document.getElementById('setKimiAntiMax'); if(kax) kax.value=s.settings.kimi_anti_max||'3.0';
+  const kas=document.getElementById('setKimiSearch'); if(kas) kas.checked=(s.settings.kimi_search||'false')==='true';
+  const kac=document.getElementById('setKimiCache'); if(kac) kac.checked=(s.settings.kimi_session_cache||'true')!=='false';
+  const qc=document.getElementById('setQwenContext'); if(qc) qc.value=s.settings.qwen_context_limit||'262144';
+  const qo=document.getElementById('setQwenOutput'); if(qo) qo.value=s.settings.qwen_output_limit||'65536';
+  const qan=document.getElementById('setQwenAntiMin'); if(qan) qan.value=s.settings.qwen_anti_min||'1.5';
+  const qax=document.getElementById('setQwenAntiMax'); if(qax) qax.value=s.settings.qwen_anti_max||'3.0';
+  const qas=document.getElementById('setQwenSearch'); if(qas) qas.checked=(s.settings.qwen_search||'false')==='true';
+  const qac=document.getElementById('setQwenCache'); if(qac) qac.checked=(s.settings.qwen_session_cache||'true')!=='false';
   loadIssuer();
 }
 let ISSUER_OK=false;
@@ -1517,6 +1611,16 @@ const GLM_DEFAULTS={
   anti_min:'1.5', anti_max:'3.0',
   search:false, cache:true
 };
+const KIMI_DEFAULTS={
+  context:'262144', output:'32768',
+  anti_min:'1.5', anti_max:'3.0',
+  search:false, cache:true
+};
+const QWEN_DEFAULTS={
+  context:'262144', output:'65536',
+  anti_min:'1.5', anti_max:'3.0',
+  search:false, cache:true
+};
 function resetDeepSeekSettings(){
   document.getElementById('setCache').checked=DEEPSEEK_DEFAULTS.session_cache;
   document.getElementById('setSearch').checked=DEEPSEEK_DEFAULTS.search;
@@ -1535,6 +1639,24 @@ function resetGlmSettings(){
   document.getElementById('setGlmCache').checked=GLM_DEFAULTS.cache;
   toast('已还原为默认值，点「保存」生效');
 }
+function resetKimiSettings(){
+  document.getElementById('setKimiContext').value=KIMI_DEFAULTS.context;
+  document.getElementById('setKimiOutput').value=KIMI_DEFAULTS.output;
+  document.getElementById('setKimiAntiMin').value=KIMI_DEFAULTS.anti_min;
+  document.getElementById('setKimiAntiMax').value=KIMI_DEFAULTS.anti_max;
+  document.getElementById('setKimiSearch').checked=KIMI_DEFAULTS.search;
+  document.getElementById('setKimiCache').checked=KIMI_DEFAULTS.cache;
+  toast('已还原为默认值，点「保存」生效');
+}
+function resetQwenSettings(){
+  document.getElementById('setQwenContext').value=QWEN_DEFAULTS.context;
+  document.getElementById('setQwenOutput').value=QWEN_DEFAULTS.output;
+  document.getElementById('setQwenAntiMin').value=QWEN_DEFAULTS.anti_min;
+  document.getElementById('setQwenAntiMax').value=QWEN_DEFAULTS.anti_max;
+  document.getElementById('setQwenSearch').checked=QWEN_DEFAULTS.search;
+  document.getElementById('setQwenCache').checked=QWEN_DEFAULTS.cache;
+  toast('已还原为默认值，点「保存」生效');
+}
 
 async function saveGlmSettings(){
   const body={
@@ -1544,6 +1666,28 @@ async function saveGlmSettings(){
     glm_output_limit:document.getElementById('setGlmOutput').value.trim()||'128000',
     glm_search:document.getElementById('setGlmSearch').checked,
     glm_session_cache:document.getElementById('setGlmCache').checked};
+  await api('/settings','POST',body);toast('已保存并应用');refresh();
+}
+
+async function saveKimiSettings(){
+  const body={
+    kimi_anti_min:document.getElementById('setKimiAntiMin').value.trim(),
+    kimi_anti_max:document.getElementById('setKimiAntiMax').value.trim(),
+    kimi_context_limit:document.getElementById('setKimiContext').value.trim()||'262144',
+    kimi_output_limit:document.getElementById('setKimiOutput').value.trim()||'32768',
+    kimi_search:document.getElementById('setKimiSearch').checked,
+    kimi_session_cache:document.getElementById('setKimiCache').checked};
+  await api('/settings','POST',body);toast('已保存并应用');refresh();
+}
+
+async function saveQwenSettings(){
+  const body={
+    qwen_anti_min:document.getElementById('setQwenAntiMin').value.trim(),
+    qwen_anti_max:document.getElementById('setQwenAntiMax').value.trim(),
+    qwen_context_limit:document.getElementById('setQwenContext').value.trim()||'262144',
+    qwen_output_limit:document.getElementById('setQwenOutput').value.trim()||'65536',
+    qwen_search:document.getElementById('setQwenSearch').checked,
+    qwen_session_cache:document.getElementById('setQwenCache').checked};
   await api('/settings','POST',body);toast('已保存并应用');refresh();
 }
 
@@ -1592,19 +1736,31 @@ function onEgressChange(){
   const mode=document.getElementById('accEgress').value;
   const wrap=document.getElementById('accProxyWrap');
   if(wrap) wrap.style.display = mode==='custom' ? 'block' : 'none';
+  const cp=document.getElementById('clashPreset');
+  if(cp) cp.style.display = (mode==='custom' && window.__clashProxy) ? '' : 'none';
   const hint=document.getElementById('accEgressHint');
   if(hint){
-    if(mode==='direct') hint.textContent='直连会强制忽略系统代理。注意：若 Clash 开了 TUN 模式，流量仍会被网卡层接管（面板顶部会提示）。';
-    else if(mode==='custom') hint.textContent='自定义代理：登录、健康检查、聊天请求都走这个代理，出口保持一致。';
+    if(mode==='direct') hint.textContent='直连：强制忽略系统代理。若 Clash 是 TUN+规则模式，国内站（DeepSeek/Kimi/千问）出口仍是家宽 IP；仅当 Clash 切「全局模式」时直连才会走节点。';
+    else if(mode==='custom') hint.textContent='自定义代理：登录、健康检查、聊天请求都走这个代理，出口保持一致。本机开着 Clash 时可点「交给 Clash 分流」按它的规则走。';
     else hint.textContent='跟随系统代理：Clash 开系统代理时走代理，关闭时直连。';
   }
+}
+function useClash(){
+  const px=window.__clashProxy||'http://127.0.0.1:7897';
+  const el=document.getElementById('accProxy');
+  if(el) el.value=px;
+  const out=document.getElementById('proxyTestResult');
+  if(out) out.textContent='已填入 '+px+'（点击「测试代理」验证出口）';
 }
 function onProviderChange(){
   const p=document.getElementById('accProvider').value;
   const t=document.getElementById('accCredHint');
-  if(t) t.textContent = p==='chatglm'
-    ? '智谱清言：浏览器登录后会自动抓取 refresh_token（也可在下面手动粘贴）。'
-    : 'DeepSeek：浏览器登录后会自动抓取，下面的凭证可以留空。';
+  const hints={
+    chatglm:'智谱清言：浏览器登录后会自动抓取 refresh_token（也可在下面手动粘贴）。',
+    kimi:'Kimi：浏览器登录后会自动抓取 accessToken（Authorization Bearer；也可手动粘贴）。',
+    qwen:'通义千问：浏览器登录后会自动抓取 access_token（OpenWebUI；也可手动粘贴）。'
+  };
+  if(t) t.textContent = hints[p] || 'DeepSeek：浏览器登录后会自动抓取，下面的凭证可以留空。';
 }
 function closeModal(id){
   document.getElementById(id).classList.remove('show');
@@ -1768,7 +1924,9 @@ function renderKeyModelPicker(){
   const provs=new Set([...document.querySelectorAll('#editKeyAcc input:checked')]
     .map(x=>x.closest('.pick-item').dataset.provider));
   const provMap=s.model_providers||{};
-  const provOf=m=>provMap[m]||(String(m).toLowerCase().startsWith('glm')?'chatglm':'deepseek');
+  const provOf=m=>provMap[m]||(()=>{const t=String(m||'').toLowerCase();
+    if(t.startsWith('glm'))return'chatglm'; if(t.startsWith('kimi')||t.startsWith('moonshot'))return'kimi';
+    if(t.startsWith('qwen'))return'qwen'; return'deepseek';})();
   const visible=(s.models||[]).filter(m=>provs.size===0||provs.has(provOf(m)));
   const sel=new Set(EDIT_KEY_MODELS);
   box.innerHTML=visible.map(m=>
@@ -1896,9 +2054,11 @@ let SETTINGS_PROV='deepseek';
 function setSettingsProvider(p){
   SETTINGS_PROV=p;
   document.querySelectorAll('#setProvSeg button').forEach(b=>b.classList.toggle('active',b.dataset.prov===p));
-  const ds=document.getElementById('dsSettings'), gl=document.getElementById('glmSettings');
-  if(ds) ds.style.display=p==='deepseek'?'':'none';
-  if(gl) gl.style.display=p==='glm'?'':'none';
+  const blocks={deepseek:'dsSettings',glm:'glmSettings',kimi:'kimiSettings',qwen:'qwenSettings'};
+  Object.entries(blocks).forEach(([k,id])=>{
+    const el=document.getElementById(id);
+    if(el) el.style.display=k===p?'':'none';
+  });
 }
 async function saveDeepSeekSettings(){
   const body={deepseek_wasm_path:document.getElementById('setWasm').value.trim(),
@@ -1925,7 +2085,8 @@ function clampLimit(el){
   if(v>cap){ el.value=String(cap); toast('已按该模型上限收敛为 '+cap.toLocaleString()); }
 }
 function bindLimitInputs(){
-  ['setDsContext','setDsOutput','setGlmContext','setGlmOutput'].forEach(id=>{
+  ['setDsContext','setDsOutput','setGlmContext','setGlmOutput',
+   'setKimiContext','setKimiOutput','setQwenContext','setQwenOutput'].forEach(id=>{
     const el=document.getElementById(id);
     if(el && !el.dataset.bound){
       el.dataset.bound='1';
@@ -1982,16 +2143,27 @@ function tuneGlass(dark){
   document.getElementById('baseHint').textContent=loc+'/v1';
   document.getElementById('baseHint2').textContent=loc+'/v1';
   let OC_SNIP='';
-  let LIMITS={deepseek:{context:1000000,output:384000},chatglm:{context:1000000,output:128000}};
+  let LIMITS={deepseek:{context:1000000,output:384000},chatglm:{context:1000000,output:128000},kimi:{context:262144,output:32768},qwen:{context:262144,output:65536}};
+  const provOf=m=>{const s=String(m||'').toLowerCase();
+    if(s.startsWith('glm'))return'chatglm'; if(s.startsWith('kimi')||s.startsWith('moonshot'))return'kimi';
+    if(s.startsWith('qwen'))return'qwen'; return'deepseek';};
   function buildSnippet(models,keyVal){
     const lines=[];
     for(const m of models){
-      const isGlm=m.toLowerCase().startsWith('glm');
-      const lim=isGlm?LIMITS.chatglm:LIMITS.deepseek;
-      const reason=isGlm||/reasoner/i.test(m);
-      const variants=isGlm
-        ? `,\n      "variants": { "快速": { "reasoningEffort": "low" }, "深度": { "reasoningEffort": "medium" }, "极致": { "reasoningEffort": "max" } }`
-        : '';
+      const low=m.toLowerCase();
+      const prov=provOf(m);
+      const lim=LIMITS[prov]||LIMITS.deepseek;
+      const reason=!(low==='deepseek-chat'||low==='deepseek-v4-flash');
+      let variants='';
+      if(prov==='chatglm'){
+        variants=`,\n      "variants": { "快速": { "reasoningEffort": "low" }, "深度": { "reasoningEffort": "medium" }, "极致": { "reasoningEffort": "max" } }`;
+      }else if(prov==='kimi'){
+        variants=low.includes('k2.6')
+          ? `,\n      "variants": { "标准": { "reasoningEffort": "low" }, "进阶": { "reasoningEffort": "high" } }`
+          : `,\n      "variants": { "标准": { "reasoningEffort": "low" }, "进阶": { "reasoningEffort": "high" }, "极致": { "reasoningEffort": "max" } }`;
+      }else if(prov==='qwen'){
+        if(low.includes('plus')) variants=`,\n      "variants": { "快速": { "reasoningEffort": "low" }, "思考研究": { "reasoningEffort": "max" } }`;
+      }
       lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)}, "attachment": true, "reasoning": ${reason},\n`
         +`      "modalities": { "input": ["image","text"], "output": ["text"] },\n`
         +`      "limit": { "context": ${lim.context}, "output": ${lim.output} }${variants} }`);
@@ -2012,7 +2184,9 @@ ${lines.join(',\n')}
   window.__setLimits=function(settings){
     const n=(v,d)=>{const x=Number(v);return Number.isFinite(x)&&x>0?x:d;};
     LIMITS={deepseek:{context:n(settings.deepseek_context_limit,1000000),output:n(settings.deepseek_output_limit,384000)},
-            chatglm:{context:n(settings.glm_context_limit,1000000),output:n(settings.glm_output_limit,128000)}};
+            chatglm:{context:n(settings.glm_context_limit,1000000),output:n(settings.glm_output_limit,128000)},
+            kimi:{context:n(settings.kimi_context_limit,262144),output:n(settings.kimi_output_limit,32768)},
+            qwen:{context:n(settings.qwen_context_limit,262144),output:n(settings.qwen_output_limit,65536)}};
     if(window.__lastModels) window.__setSnippet(window.__lastModels);
   };
   let OC_SELECTED_KEY='';
@@ -2039,7 +2213,7 @@ ${lines.join(',\n')}
     rebuildSnippet();
   }
   function rebuildSnippet(){
-    const models=window.__lastModels||['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash'];
+    const models=window.__lastModels||['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash','kimi-k3','kimi-k2.8','kimi-k2.6','qwen3.7-plus','qwen3.8-max','qwen3.8-omni-flash'];
     const k=selectedKeyObj();
     OC_SNIP=buildSnippet(models, k?k.key:'');
     const el=document.getElementById('ocSnippet'); if(el) el.textContent=OC_SNIP;
@@ -2089,7 +2263,7 @@ ${lines.join(',\n')}
     document.getElementById('ocResultPre').textContent=snippet||'';
     openModal('ocResultModal');
   }
-  OC_SNIP=buildSnippet(['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash']);
+  OC_SNIP=buildSnippet(['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash','kimi-k3','kimi-k2.8','kimi-k2.6','qwen3.7-plus','qwen3.8-max','qwen3.8-omni-flash']);
   const el = document.getElementById('ocSnippet');
   if(el) el.textContent = OC_SNIP;
   window.__setSnippet=function(models){

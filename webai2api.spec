@@ -19,6 +19,10 @@ import os
 if os.path.exists("sha3_wasm_bg.wasm"):
     datas.append(("sha3_wasm_bg.wasm", "."))
 
+# 授权 HMAC 秘密盐（不进 git）：随包内嵌，供 license.py 的 v3 记录签名
+if os.path.exists("tools/license_pepper.txt"):
+    datas.append(("tools/license_pepper.txt", "webai2api"))
+
 # 应用图标：既作为 exe 文件图标，也供运行期窗口图标使用
 APP_ICON = "assets/webai2api.ico"
 if os.path.exists(APP_ICON):
@@ -66,6 +70,7 @@ hiddenimports = [
     "pythonnet",
     "socks",          # PySocks：socks5 代理（运行期动态 import）
     "sockshandler",
+    "webai2api.edition",   # license.py 运行期动态 import
 ] + wt_hidden + wv_hidden + _tray_hidden
 
 a = Analysis(

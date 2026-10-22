@@ -1,0 +1,156 @@
+"""Kimi / 通义千问 防风控 + 路由 + snippet 接线（纯内存，不打网络）。"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+
+from webai2api.adapters.kimi.client import KimiWebClient, _build_headers as kimi_headers
+from webai2api.adapters.kimi.config import KimiConfig, _stable_device_id as kimi_dev
+from webai2api.adapters.qwen.client import QwenWebClient, _build_headers as qwen_headers
+from webai2api.adapters.qwen.config import QwenConfig, _stable_device_id as qwen_dev
+from webai2api.admin_api import _build_opencode_snippet
+from webai2api.providers import infer_provider, DEFAULT_LIMITS
+
+
+# ── provider 路由 ─────────────────────────────────────────
+def test_infer_provider_prefixes() -> None:
+    assert infer_provider("kimi-k3") == "kimi"
+    assert infer_provider("moonshot-v1") == "kimi"
+    assert infer_provider("qwen3.8-max") == "qwen"
+    assert infer_provider("GLM-5.3") == "chatglm"
+    assert infer_provider("deepseek-reasoner") == "deepseek"
+    assert infer_provider("unknown-model") == "deepseek"
+
+
+def test_limits_cover_all_providers() -> None:
+    for p in ("deepseek", "chatglm", "kimi", "qwen"):
+        assert p in DEFAULT_LIMITS
+        assert DEFAULT_LIMITS[p]["context"] > 0
+
+
+# ── 指纹稳定 ─────────────────────────────────────────────
+def test_kimi_headers_stable() -> None:
+    cfg = KimiConfig(auth_token="t", device_id="dev", user_agent="UA")
+    h1, h2 = kimi_headers(cfg), kimi_headers(cfg)
+    assert h1["Authorization"] == "Bearer t"
+    assert h1["User-Agent"] == h2["User-Agent"] == "UA"
+    assert h1["X-Request-Id"] != h2["X-Request-Id"]
+
+
+def test_qwen_headers_stable() -> None:
+    cfg = QwenConfig(auth_token="t", user_agent="UA")
+    assert qwen_headers(cfg)["Authorization"] == "Bearer t"
+    assert qwen_headers(cfg)["User-Agent"] == qwen_headers(cfg)["User-Agent"] == "UA"
+
+
+def test_stable_device_id_isolated() -> None:
+    acc = {"id": "a", "profile": '{"device_id":"from-profile"}'}
+    assert kimi_dev(acc) == "from-profile"
+    assert qwen_dev({"id": "x", "profile": "{}"}) != qwen_dev({"id": "y", "profile": "{}"})
+
+
+# ── 会话指纹 / 缓存 / 落盘 ───────────────────────────────
+def _kimi(cfg):
+    return KimiWebClient(cfg, logging.getLogger("t.kimi"))
+
+
+def _qwen(cfg):
+    return QwenWebClient(cfg, logging.getLogger("t.qwen"))
+
+
+def test_conv_key_stable_and_isolated() -> None:
+    for mk, cfgcls in ((_kimi, KimiConfig), (_qwen, QwenConfig)):
+        c = mk(cfgcls(auth_token="t"))
+        sys = {"role": "system", "content": "s" * 300}
+        u1 = {"role": "user", "content": "第一条"}
+        base = {"model": "m", "messages": [sys, u1], "_wapi_key_id": "kA"}
+        turn2 = {"model": "m", "messages": [
+            sys, u1, {"role": "assistant", "content": "好"},
+            {"role": "user", "content": "继续"}], "_wapi_key_id": "kA"}
+        assert c._conv_key(base) == c._conv_key(turn2)     # 多轮复用
+        other = dict(turn2, _wapi_key_id="kB")
+        assert c._conv_key(other) != c._conv_key(base)      # Key 隔离
+
+
+def test_conv_cache_persist_and_ttl() -> None:
+    cfg = QwenConfig(auth_token="t", max_turns_per_session=2)
+    c = _qwen(cfg)
+    c._store_conv("k", "chat-1")
+    assert c._cached_conv("k") == "chat-1"
+    c._store_conv("k", "chat-1")
+    assert c._cached_conv("k") == ""                        # 轮次上限
+
+    c2 = _qwen(cfg)
+    c2._store_conv("e", "chat-2")
+    with c2._conv_lock:
+        c2._conv_cache["e"] = ("chat-2", 0.0, 1)
+    assert c2._cached_conv("e") == ""                        # 过期
+
+
+# ── 思考档位映射（模型感知）──────────────────────────────
+def test_effort_mapping_tier_aware() -> None:
+    from webai2api.adapters.kimi.client import _effort_to_payload as ke, _tier_for
+    from webai2api.adapters.qwen.client import _effort_to_payload as qe, _supports_research
+
+    # Kimi 三档
+    assert _tier_for("low", "kimi-k3") == "标准"
+    assert _tier_for("high", "kimi-k3") == "进阶"
+    assert _tier_for("max", "kimi-k3") == "极致"
+    assert _tier_for("max", "kimi-k2.8") == "极致"
+    assert _tier_for("max", "kimi-k2.6") == "进阶"   # K2.6 无极致档
+    assert ke("")["thinking"]["type"] == "disabled"
+    assert ke("high", "kimi-k3")["thinking"]["type"] == "enabled"
+    assert ke("max", "kimi-k2.6")["thinking"]["type"] == "enabled"  # 降为进阶仍思考
+
+    # Qwen 仅 Plus 有思考研究
+    assert _supports_research("qwen3.7-plus") is True
+    assert _supports_research("qwen3.8-max") is False
+    assert _supports_research("qwen3.8-omni-flash") is False
+    assert qe("max", "qwen3.7-plus")["thinking_enabled"] is True
+    assert qe("max", "qwen3.8-max")["thinking_enabled"] is False
+    assert qe("high", "qwen3.7-plus")["thinking_enabled"] is True
+    assert qe("low", "qwen3.7-plus")["thinking_enabled"] is False
+
+
+def test_kimi_body_passes_model_to_tier() -> None:
+    """回归：极致档必须按模型决定（K2.6 降级），确认 _body 把 model 传进映射。"""
+    c = _kimi(KimiConfig(auth_token="t"))
+    payload = {"model": "kimi-k2.6",
+               "messages": [{"role": "user", "content": "hi"}],
+               "reasoning_effort": "max"}
+    body = c._body(payload)
+    assert body["name"] == "kimi-k2.6"
+    assert body["thinking"]["type"] == "enabled"        # 降为进阶，仍思考
+    # k3 极致也应思考
+    p2 = {"model": "kimi-k3", "messages": payload["messages"],
+          "reasoning_effort": "max"}
+    assert c._body(p2)["thinking"]["type"] == "enabled"
+
+
+# ── risk_stats 形状（面板依赖）────────────────────────────
+def test_risk_stats_shape() -> None:
+    need = {"sessions_created", "cache_hit", "cache_miss", "cache_hit_rate",
+            "cache_stale", "cache_size", "active_sessions", "upstream_requests",
+            "rate_limit_hits", "daily_count", "daily_limit"}
+    for c in (_kimi(KimiConfig(auth_token="t")), _qwen(QwenConfig(auth_token="t"))):
+        assert need.issubset(set(c.risk_stats().keys()))
+
+
+# ── opencode snippet 生成（含模型感知 variants）──────────────
+def test_snippet_variants_by_provider() -> None:
+    snip = _build_opencode_snippet(
+        "http://x", "sk-1",
+        ["GLM-5.3", "kimi-k3", "kimi-k2.6", "qwen3.7-plus", "qwen3.8-max", "deepseek-chat"])
+    assert '"快速"' in snip and '"极致"' in snip               # glm
+    assert '"标准"' in snip and '"进阶"' in snip                # kimi 三档命名
+    assert '"极致": { "reasoningEffort": "max" }' in snip      # kimi 非 k2.6 有极致
+    assert '"思考研究"' in snip                                 # qwen plus 专有档
+    assert '"reasoning": false' in snip                        # deepseek-chat 非思考
+    assert json.loads("{\n" + snip.strip().rstrip(",") + "\n}")  # 外壳结构可解析
+
+    # k2.6 不应带极致档；qwen max 不带 variants
+    k26 = _build_opencode_snippet("http://x", "sk", ["kimi-k2.6"])
+    assert "极致" not in k26 and "进阶" in k26
+    qmax = _build_opencode_snippet("http://x", "sk", ["qwen3.8-max"])
+    assert "variants" not in qmax

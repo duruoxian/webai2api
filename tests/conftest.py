@@ -34,6 +34,8 @@ def license_sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(_license, "_reg_write", lambda rec: None)
     monkeypatch.setattr(_license, "_reg_read", lambda: None)
     monkeypatch.setattr(_license, "_mirror", lambda rec: None)
+    monkeypatch.setattr(_license, "_floor_reg_read", lambda: None)
+    monkeypatch.setattr(_license, "_floor_reg_write", lambda data: None)
     monkeypatch.setattr(_license, "_LIC_CACHE", {"key": None, "doc": None})
     yield tmp_path
     _license._LIC_CACHE["key"] = None
@@ -50,6 +52,8 @@ def isolated_license(tmp_path, monkeypatch):
     monkeypatch.setattr(_license, "_reg_read", lambda: None)
     monkeypatch.setattr(_license, "_reg_write", lambda rec: None)
     monkeypatch.setattr(_license, "_mirror", lambda rec: None)
+    monkeypatch.setattr(_license, "_floor_reg_read", lambda: None)
+    monkeypatch.setattr(_license, "_floor_reg_write", lambda data: None)
     monkeypatch.setattr(_license, "_LIC_CACHE", {"key": None, "doc": None})
     yield tmp_path
     _license._LIC_CACHE["key"] = None

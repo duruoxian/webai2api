@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -24,6 +25,8 @@ _WEBVIEW_PROXY_LOCK = threading.Lock()
 
 DEEPSEEK_URL = "https://chat.deepseek.com/"
 CHATGLM_URL = "https://chatglm.cn/main/alltoolsdetail?lang=zh"
+KIMI_URL = "https://www.kimi.com/"
+QWEN_URL = "https://chat.qwen.ai/"
 DEEPSEEK_EXTRACT_JS = r"""
 (function(){
   const raw = {
@@ -79,6 +82,91 @@ CHATGLM_EXTRACT_JS = r"""
 })()
 """
 
+# ── Kimi / 通义千问：登录凭证在 localStorage（zustand persist / OpenWebUI token）──
+# 通用策略：遍历 localStorage（含嵌套 JSON 的 state.accessToken / token / access_token），
+# 找出「像 JWT」且**不属于游客态**的字符串作为 auth_token。
+# Kimi 未登录也会下发 anonymous_access_token / anonymous_refresh_token，必须排除，
+# 否则窗口会瞬间"登录成功"。guest 判定：JWT payload 里带 is_anonymous/anonymous 标记，
+# 或键名本身含 anonymous。
+def _jwt_find_js(guest_markers: str) -> str:
+    return r"""
+(function(){
+  const JWT = /^[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}$/;
+  const SKIP = /(anonymous|guest|demo)/i;
+  function decodePayload(t){
+    try{
+      let p = String(t).split('.')[1] || '';
+      p = p.replace(/-/g,'+').replace(/_/g,'/');
+      while(p.length % 4) p += '=';
+      return JSON.parse(atob(p));
+    }catch(e){ return {}; }
+  }
+  const isGuestToken = (t, key) => {
+    if(key && SKIP.test(key)) return true;
+    const pl = decodePayload(t);
+    if(pl && (pl.is_anonymous === true || pl.anonymous === true || pl.is_guest === true)) return true;
+    return !!(pl && pl.uid === 'anonymous');
+  };
+  let auth = '', key = '';
+  const consider = (val, k) => {
+    if(typeof val !== 'string' || auth) return;
+    if(!JWT.test(val)) return;
+    if(isGuestToken(val, k)) return;
+    auth = val; key = k || '';
+  };
+  const walk = (obj, path, depth) => {
+    if(!obj || depth > 3) return;
+    if(typeof obj === 'string'){ consider(obj, path); return; }
+    if(typeof obj !== 'object') return;
+    for(const k of Object.keys(obj)){
+      const v = obj[k];
+      const p = path ? (path + '.' + k) : k;
+      if(typeof v === 'string') consider(v, p);
+      else if(v && typeof v === 'object') walk(v, p, depth + 1);
+      if(auth) return;
+    }
+  };
+  for(let i = 0; i < localStorage.length && !auth; i++){
+    const lk = localStorage.key(i);
+    const raw = localStorage.getItem(lk);
+    if(!raw) continue;
+    if(JWT.test(raw) && !isGuestToken(raw, lk)){ auth = raw; key = lk; break; }
+    try{ walk(JSON.parse(raw), lk, 0); }catch(e){}
+  }
+  if(!auth){ try{ walk(window.__INITIAL_STATE__ || {}, 'state', 0); }catch(e){} }
+  let guest = false;
+  if(!auth){
+    // 没找到用户级 JWT，但存在游客 token → 明确告诉调用方"还在游客态"
+    for(let i = 0; i < localStorage.length; i++){
+      const lk = localStorage.key(i);
+      const raw = localStorage.getItem(lk);
+      if(!raw) continue;
+      try{
+        const o = JSON.parse(raw);
+        const s = (o && o.state) ? o.state : o;
+        for(const k of Object.keys(s || {})){
+          const v = s[k];
+          if(typeof v === 'string' && JWT.test(v) && SKIP.test(k)){ guest = true; break; }
+        }
+      }catch(e){
+        if(JWT.test(raw) && SKIP.test(lk)) guest = true;
+      }
+      if(guest) break;
+    }
+  }
+  return JSON.stringify({
+    auth_token: auth, device_id: '', settings_token: '',
+    cookie: document.cookie||'', guest: guest,
+    token_key: key,
+    u: navigator.userAgent||'', p: navigator.platform||''
+  });
+})()
+"""
+
+
+KIMI_EXTRACT_JS = _jwt_find_js("anonymous")
+QWEN_EXTRACT_JS = _jwt_find_js("guest")
+
 
 def _login_state_dir() -> Path:
     d = user_data_dir() / "login_state"
@@ -96,6 +184,83 @@ def write_state(acc_id: str, status: str, message: str = "") -> None:
     tmp.replace(p)
 
 
+def _kill_webview_processes_for(storage: Path) -> None:
+    r"""杀掉命令行里带本账号 storage 路径的 msedgewebview2 进程。
+
+    残留进程会锁住 Cookies / Local Storage，导致 rmtree 失败、旧登录态被复用。
+    只杀本账号目录的，绝不碰主面板（它用的是默认 %APPDATA%\pywebview 目录）。
+    """
+    try:
+        needle = str(storage).lower().replace("\\", "/")
+        ps = (
+            "Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe'\" "
+            "| Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+        )
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True, text=True, timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout or "[]"
+        data = json.loads(out) if out.strip() else []
+        if isinstance(data, dict):
+            data = [data]
+        killed = False
+        for p in data:
+            cl = str(p.get("CommandLine") or "").lower().replace("\\", "/")
+            pid = p.get("ProcessId")
+            if pid and needle in cl:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True, timeout=8,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                killed = True
+        if killed:
+            time.sleep(0.6)  # 等进程真正退出、释放文件锁
+    except Exception:
+        pass
+
+
+def _purge_login_state(storage: Path) -> None:
+    """rmtree 整体失败时的兜底：只删保留登录态的子文件/目录。"""
+    import shutil
+    default = storage / "EBWebView" / "Default"
+    if not default.exists():
+        return
+    for name in ("Cookies", "Login Data", "Web Data"):
+        try:
+            f = default / name
+            if f.exists():
+                f.unlink()
+        except Exception:
+            pass
+    for name in ("Local Storage", "Session Storage"):
+        try:
+            d = default / name
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _egress_badge_js(mode: str) -> str:
+    """注入到登录页右下角的只读出口标签（每轮轮询重新确保存在）。"""
+    label = {"direct": "直连", "custom": "自定义代理",
+             "system": "跟随系统代理"}.get(mode, mode)
+    text = "webai2api 登录窗口 · 当前出口：" + label
+    safe = json.dumps(text, ensure_ascii=False)
+    return (
+        "(function(){try{"
+        "var b=document.getElementById('webai-egress-badge');"
+        "if(!b){if(!document.body)return;"
+        "b=document.createElement('div');b.id='webai-egress-badge';"
+        "b.style.cssText='position:fixed;right:10px;bottom:10px;z-index:2147483647;"
+        "background:#1c1c1e;color:#fff;padding:6px 10px;border-radius:8px;"
+        "font:12px/1.4 system-ui;box-shadow:0 2px 8px rgba(0,0,0,.3);opacity:.92';"
+        "document.body.appendChild(b);}b.textContent=" + safe + ";}catch(e){}})()"
+    )
+
+
 def run_webview_login(acc_id: str) -> None:
     """在子进程里跑：打开内嵌浏览器，抓凭证，写状态。"""
     import webview
@@ -110,6 +275,10 @@ def run_webview_login(acc_id: str) -> None:
     provider = acc.get("provider", "deepseek")
     if provider == "chatglm":
         start_url, extract_js, title = CHATGLM_URL, CHATGLM_EXTRACT_JS, "登录 智谱清言"
+    elif provider == "kimi":
+        start_url, extract_js, title = KIMI_URL, KIMI_EXTRACT_JS, "登录 Kimi"
+    elif provider == "qwen":
+        start_url, extract_js, title = QWEN_URL, QWEN_EXTRACT_JS, "登录 通义千问"
     else:
         start_url, extract_js, title = DEEPSEEK_URL, DEEPSEEK_EXTRACT_JS, "登录 DeepSeek"
 
@@ -121,13 +290,22 @@ def run_webview_login(acc_id: str) -> None:
     # 否则新账号会直接显示成上一个账号已登录的状态。
     if storage.exists():
         import shutil
-        for _ in range(3):
+        # 上次窗口的 WebView2 进程可能还锁着 cookie，先精确杀掉本账号的残留
+        _kill_webview_processes_for(storage)
+        cleared = False
+        for _ in range(12):
             try:
                 shutil.rmtree(storage, ignore_errors=False)
+                cleared = True
                 break
             except Exception:
                 time.sleep(0.4)
+        if not cleared:
+            # 整目录删不掉（极端情况）：兜底只清登录态相关文件
+            _purge_login_state(storage)
     storage.mkdir(parents=True, exist_ok=True)
+    from .egress import normalize_egress
+    egress_mode = normalize_egress(str(acc.get("egress") or "system"))
 
     window = webview.create_window(
         f"{title} · {acc.get('name', '')}",
@@ -154,6 +332,11 @@ def run_webview_login(acc_id: str) -> None:
         guest_noted = False
         while time.time() < deadline and not done["v"]:
             time.sleep(1.5)
+            # 右下角只读角标：当前账号的出口模式（页面刷新后也重新确保存在）
+            try:
+                window.evaluate_js(_egress_badge_js(egress_mode))
+            except Exception:
+                pass
             try:
                 val = window.evaluate_js(extract_js)
             except Exception:
@@ -232,12 +415,14 @@ def run_webview_login(acc_id: str) -> None:
                         profile["ua"] = ua
                     if platform:
                         profile["platform"] = platform
-                    # 智谱需要账号级固定设备指纹：首次登录生成一次，之后永不改变
+                    # 账号级固定设备指纹：首次登录生成一次，之后永不改变
                     if not profile.get("device_id"):
                         import hashlib
+                        _pfx = {"chatglm": "glm", "kimi": "kimi",
+                                "qwen": "qwen"}.get(provider, provider)
                         seed = f"{acc_id}:{ua or platform or token[:16]}"
                         profile["device_id"] = hashlib.sha256(
-                            f"glm-device:{seed}".encode()).hexdigest()[:32]
+                            f"{_pfx}-device:{seed}".encode()).hexdigest()[:32]
                     fields["profile"] = json.dumps(profile, ensure_ascii=False)
                 except Exception:
                     pass

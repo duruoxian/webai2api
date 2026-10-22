@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 from . import __version__
 from .license import status as _license_status_fn
 from .paths import user_data_dir
-from .providers import MAX_LIMITS, ProviderRegistry
+from .providers import DEFAULT_LIMITS, MAX_LIMITS, ProviderRegistry, infer_provider
 from .store import Store
 
 router = APIRouter(prefix="/admin/api")
@@ -135,7 +135,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         provs = {a["provider"] for a in accs if a["id"] in chosen}
         bad = [
             m for m in models
-            if ("chatglm" if m.strip().lower().startswith("glm") else "deepseek") not in provs
+            if infer_provider(m) not in provs
         ]
         if not bad:
             return ""
@@ -183,7 +183,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             "keys": await run_in_threadpool(store.list_keys),
             "models": [m["id"] for m in await run_in_threadpool(registry.model_catalog)],
             "model_providers": {
-                m["id"]: ("chatglm" if m["id"].strip().lower().startswith("glm") else "deepseek")
+                m["id"]: infer_provider(m["id"])
                 for m in await run_in_threadpool(registry.model_catalog)
             },
             "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
@@ -235,6 +235,42 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                     store.get_setting, "glm_context_limit", "1000000"),
                 "glm_output_limit": await run_in_threadpool(
                     store.get_setting, "glm_output_limit", "128000"),
+                "kimi_base_url": await run_in_threadpool(
+                    store.get_setting, "kimi_base_url", "https://www.kimi.com"),
+                "kimi_default_model": await run_in_threadpool(
+                    store.get_setting, "kimi_default_model", "kimi-k3"),
+                "kimi_default_effort": await run_in_threadpool(
+                    store.get_setting, "kimi_default_effort", ""),
+                "kimi_anti_min": await run_in_threadpool(
+                    store.get_setting, "kimi_anti_min", "1.5"),
+                "kimi_anti_max": await run_in_threadpool(
+                    store.get_setting, "kimi_anti_max", "3.0"),
+                "kimi_search": await run_in_threadpool(
+                    store.get_setting, "kimi_search", "false"),
+                "kimi_session_cache": await run_in_threadpool(
+                    store.get_setting, "kimi_session_cache", "true"),
+                "kimi_context_limit": await run_in_threadpool(
+                    store.get_setting, "kimi_context_limit", "262144"),
+                "kimi_output_limit": await run_in_threadpool(
+                    store.get_setting, "kimi_output_limit", "32768"),
+                "qwen_base_url": await run_in_threadpool(
+                    store.get_setting, "qwen_base_url", "https://chat.qwen.ai"),
+                "qwen_default_model": await run_in_threadpool(
+                    store.get_setting, "qwen_default_model", "qwen3.8-max"),
+                "qwen_default_effort": await run_in_threadpool(
+                    store.get_setting, "qwen_default_effort", ""),
+                "qwen_anti_min": await run_in_threadpool(
+                    store.get_setting, "qwen_anti_min", "1.5"),
+                "qwen_anti_max": await run_in_threadpool(
+                    store.get_setting, "qwen_anti_max", "3.0"),
+                "qwen_search": await run_in_threadpool(
+                    store.get_setting, "qwen_search", "false"),
+                "qwen_session_cache": await run_in_threadpool(
+                    store.get_setting, "qwen_session_cache", "true"),
+                "qwen_context_limit": await run_in_threadpool(
+                    store.get_setting, "qwen_context_limit", "262144"),
+                "qwen_output_limit": await run_in_threadpool(
+                    store.get_setting, "qwen_output_limit", "65536"),
                 "admin_password": "******",
             },
         }
@@ -532,15 +568,24 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                   "deepseek_anti_min", "deepseek_anti_max",
                   "glm_base_url", "glm_default_model", "glm_default_effort",
                   "glm_anti_min", "glm_anti_max", "usage_retain_days",
-                  "deepseek_default_model"):
+                  "deepseek_default_model",
+                  "kimi_base_url", "kimi_default_model", "kimi_default_effort",
+                  "kimi_anti_min", "kimi_anti_max",
+                  "qwen_base_url", "qwen_default_model", "qwen_default_effort",
+                  "qwen_anti_min", "qwen_anti_max"):
             if k in b and str(b[k]).strip():
                 await run_in_threadpool(store.set_setting, k, str(b[k]).strip())
         # 额度类：夹到该模型允许的上限内，防止填出荒谬值
         for k in ("deepseek_context_limit", "deepseek_output_limit",
-                  "glm_context_limit", "glm_output_limit"):
+                  "glm_context_limit", "glm_output_limit",
+                  "kimi_context_limit", "kimi_output_limit",
+                  "qwen_context_limit", "qwen_output_limit"):
             if k not in b:
                 continue
-            prov = "chatglm" if k.startswith("glm") else "deepseek"
+            prov = ("chatglm" if k.startswith("glm")
+                    else "kimi" if k.startswith("kimi")
+                    else "qwen" if k.startswith("qwen")
+                    else "deepseek")
             kind = "context" if "context" in k else "output"
             cap = MAX_LIMITS[prov][kind]
             try:
@@ -565,6 +610,12 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             v = b["glm_session_cache"]
             s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
             await run_in_threadpool(store.set_setting, "glm_session_cache", s)
+        for bk in ("kimi_search", "kimi_session_cache",
+                   "qwen_search", "qwen_session_cache"):
+            if bk in b:
+                v = b[bk]
+                s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+                await run_in_threadpool(store.set_setting, bk, s)
         if "tray_enabled" in b:
             v = b["tray_enabled"]
             s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
@@ -925,17 +976,63 @@ def _proxy_probe(proxy_url: str) -> dict:
     }
 
 
+def _clash_mixed_port() -> str:
+    """探测本机是否有 Clash/Mihomo 混合端口在监听（7890/7891/7897 常见）。"""
+    import socket
+
+    for port in (7897, 7890, 7891):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.4):
+                return f"http://127.0.0.1:{port}"
+        except OSError:
+            continue
+    return ""
+
+
+def _clash_global_mode():
+    """通过 Clash 外部控制 API 判断是否全局模式（None=探测不到）。"""
+    import json as _json
+    import urllib.request
+
+    class _NoProxy(urllib.request.ProxyHandler):
+        def proxy_open(self, req, proxy, type):  # noqa: A003
+            return None
+
+    opener = urllib.request.build_opener(_NoProxy({}))
+    for port in (9090, 9097):
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/proxies",
+                headers={"User-Agent": "webai2api"})
+            with opener.open(req, timeout=0.8) as r:
+                mode = str((_json.load(r) or {}).get("mode") or "").lower()
+            if mode:
+                return mode == "global"
+        except Exception:
+            continue
+    return None
+
+
 def _network_status() -> dict:
-    """网络环境诊断：系统代理是否开启、是否检测到 TUN 网卡。"""
+    """网络环境诊断：系统代理、TUN 网卡、Clash 混合端口、全局/规则模式。
+
+    TUN 开启 ≠ 全部走节点：规则模式下国内站点命中 DIRECT 规则，
+    「直连」出口仍是家宽 IP；只有切到全局模式才会失效。
+    """
     from .egress import detect_tun_interface, system_proxy_enabled
 
     tun = detect_tun_interface()
+    clash = _clash_mixed_port()
+    glob = _clash_global_mode() if tun or clash else None
     return {
         "system_proxy": system_proxy_enabled(),
         "tun": tun,
-        "tun_warning": (
-            f"检测到 TUN 网卡「{tun}」：即使账号设为直连，流量仍会被全局接管。"
-            "要让「直连」真正直连，请在 Clash/VPN 里关闭 TUN 模式。"
+        "clash_proxy": clash,
+        "global_mode": bool(glob) if glob is not None else None,
+        "tun_note": (
+            f"检测到 TUN 网卡「{tun}」：Clash 规则模式下国内站（DeepSeek/Kimi/千问）"
+            "命中 DIRECT 规则，「直连」出口仍是真实家宽 IP；若切到「全局模式」，"
+            "直连账号也会走节点。"
         ) if tun else "",
     }
 
@@ -1014,14 +1111,32 @@ def _build_opencode_snippet(host: str, key: str, models: list[str]) -> str:
     lines = []
     for m in models:
         mid = str(m)
+        low = mid.lower()
         jmid = json.dumps(mid, ensure_ascii=False)
-        reasoning = "true" if ("reasoner" in mid.lower() or mid.lower().startswith("glm")) else "false"
-        ctx, out = (1000000, 128000) if mid.lower().startswith("glm") else (1000000, 384000)
+        prov = infer_provider(mid)
+        # 除 deepseek-chat 这类明确的非思考模型外，其余都按可输出思考处理
+        reasoning = "false" if low in ("deepseek-chat", "deepseek-v4-flash") else "true"
+        lim = DEFAULT_LIMITS.get(prov, DEFAULT_LIMITS["deepseek"])
+        ctx, out = lim["context"], lim["output"]
         variants = ""
-        if mid.lower().startswith("glm"):
+        if prov == "chatglm":
             variants = (',\n      "variants": { "快速": { "reasoningEffort": "low" }, '
                         '"深度": { "reasoningEffort": "medium" }, '
                         '"极致": { "reasoningEffort": "max" } }')
+        elif prov == "kimi":
+            # Kimi 三档：标准 / 进阶 / 极致；K2.6（快速模型）无极致档
+            if "k2.6" in low:
+                variants = (',\n      "variants": { "标准": { "reasoningEffort": "low" }, '
+                            '"进阶": { "reasoningEffort": "high" } }')
+            else:
+                variants = (',\n      "variants": { "标准": { "reasoningEffort": "low" }, '
+                            '"进阶": { "reasoningEffort": "high" }, '
+                            '"极致": { "reasoningEffort": "max" } }')
+        elif prov == "qwen":
+            # 只有 Qwen3.7-Plus 有「快速 / 思考研究」两档；Max / Flash 单一模式
+            if "plus" in low:
+                variants = (',\n      "variants": { "快速": { "reasoningEffort": "low" }, '
+                            '"思考研究": { "reasoningEffort": "max" } }')
         lines.append(
             f'    {jmid}: {{ "name": {jmid}, "attachment": true, "reasoning": {reasoning},\n'
             f'      "modalities": {{ "input": ["image","text"], "output": ["text"] }},\n'
