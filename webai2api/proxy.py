@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import base64
 import http.client
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 
 class ProxyConfigError(Exception):
@@ -67,6 +67,15 @@ class Proxy:
             return ""
         raw = f"{self.username}:{self.password}".encode()
         return "Basic " + base64.b64encode(raw).decode()
+
+    def url_for_urllib(self) -> str:
+        """urllib ProxyHandler 使用的代理 URL（含认证）。"""
+        auth = ""
+        if self.username:
+            user = quote(self.username, safe="")
+            pwd = quote(self.password, safe="")
+            auth = f"{user}:{pwd}@"
+        return f"{self.scheme}://{auth}{self.host}:{self.port}"
 
     # ── 应用到连接 ─────────────────────────────────────
     def apply(self, conn: http.client.HTTPConnection, target_host: str,

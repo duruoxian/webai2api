@@ -114,6 +114,7 @@ def build_config(store: Store, account: dict) -> ds_config.AppConfig:
         max_turns_per_session=d["max_turns"],
         min_request_interval=d["min_interval"],
         proxy=str(account.get("proxy") or ""),
+        egress=str(account.get("egress") or "system"),
         session_cache_enabled=_truthy(d["session_cache"]),
         session_cache_max_size=max(1, d["cache_max_size"]),
         session_cache_ttl=d["cache_ttl"],

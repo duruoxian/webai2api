@@ -189,6 +189,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
             "today": await run_in_threadpool(store.today_summary),
             "cooldowns": await run_in_threadpool(registry.cooldowns),
+            "network": await run_in_threadpool(_network_status),
             "key_usage": await run_in_threadpool(store.key_usage_map),
             "recent": await run_in_threadpool(
                 store.recent_usage, limit, offset, "", "", key_id, account_id),
@@ -257,6 +258,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                 "settings_token": b.get("settings_token", ""),
                 "cookie": b.get("cookie", ""),
                 "proxy": b.get("proxy", ""),
+                "egress": b.get("egress", "system"),
             },
             b.get("note", ""),
         )
@@ -273,7 +275,11 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             return {"ok": False, "error": "请求格式错误"}
         fields = {k: b[k] for k in
                   ("name", "auth_token", "device_id", "settings_token",
-                   "cookie", "enabled", "note", "proxy") if k in b}
+                   "cookie", "enabled", "note", "proxy", "egress") if k in b}
+        if "egress" in fields:
+            from .egress import normalize_egress
+
+            fields["egress"] = normalize_egress(str(fields["egress"]))
         # 凭证有变化 → 重新检查
         if any(k in fields for k in ("auth_token", "device_id", "settings_token", "cookie")):
             fields["health"] = ""
@@ -361,6 +367,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                 "name": ac.account.get("name", ""),
                 "provider": ac.account.get("provider", ""),
                 "proxy": bool(ac.account.get("proxy")),
+                "egress": ac.account.get("egress", "system"),
                 "stats": stats,
             })
         return {"ok": True, "accounts": items}
@@ -918,6 +925,21 @@ def _proxy_probe(proxy_url: str) -> dict:
     }
 
 
+def _network_status() -> dict:
+    """网络环境诊断：系统代理是否开启、是否检测到 TUN 网卡。"""
+    from .egress import detect_tun_interface, system_proxy_enabled
+
+    tun = detect_tun_interface()
+    return {
+        "system_proxy": system_proxy_enabled(),
+        "tun": tun,
+        "tun_warning": (
+            f"检测到 TUN 网卡「{tun}」：即使账号设为直连，流量仍会被全局接管。"
+            "要让「直连」真正直连，请在 Clash/VPN 里关闭 TUN 模式。"
+        ) if tun else "",
+    }
+
+
 def _safe_account(a: dict) -> dict:
     """返回账号（凭证脱敏）。"""
     import json as _json
@@ -937,6 +959,7 @@ def _safe_account(a: dict) -> dict:
         "checked_at": a.get("checked_at", 0),
         "profile": profile,
         "proxy": a.get("proxy", ""),
+        "egress": a.get("egress", "system"),
         "created_at": a["created_at"], "updated_at": a["updated_at"],
     }
 

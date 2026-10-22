@@ -413,25 +413,55 @@ class DeepSeekWebClient:
     # 可复用的 HTTPS 连接（keep-alive，省去重复 TLS 握手）
     # ═══════════════════════════════════════════════════════
 
+    def _open_with_egress(self, request, timeout: int = 15):
+        """按账号 egress 设置发起请求（用于非 keep-alive 的场景）。
+
+        direct 模式强制忽略系统代理，system 跟随系统，custom 用账号代理。
+        """
+        from urllib.parse import urlsplit
+
+        from ....egress import egress_opener
+
+        egress = str(getattr(self.config, "egress", "system") or "system")
+        proxy_url = str(getattr(self.config, "proxy", "") or "")
+        host = urlsplit(request.full_url).hostname or ""
+        opener = egress_opener(egress, proxy_url, host)
+        return opener.open(request, timeout=timeout)
+
     def _get_http_conn(self, host: str, timeout: int):
         conn = self._http_conn
+        egress = str(getattr(self.config, "egress", "system") or "system")
         proxy_url = str(getattr(self.config, "proxy", "") or "")
-        if conn is None or self._http_host != host or self._http_proxy != proxy_url:
+        if conn is None or self._http_host != host or self._http_proxy != f"{egress}|{proxy_url}":
             conn = http.client.HTTPSConnection(host, timeout=max(int(timeout), 30))
-            if proxy_url:
+            from ....egress import (
+                EGRESS_CUSTOM,
+                EGRESS_SYSTEM,
+                apply_system_proxy,
+                normalize_egress,
+            )
+            mode = normalize_egress(egress)
+            if mode == EGRESS_CUSTOM:
                 from ....proxy import ProxyConfigError, parse_proxy
                 try:
                     px = parse_proxy(proxy_url)
                     if px is not None:
                         px.apply(conn, host)
-                        self.logger.info("使用代理出口: %s", px.describe())
+                        self.logger.info("出口: 自定义代理 %s", px.describe())
                     else:
-                        self.logger.warning("代理配置无效，回退直连: %r", proxy_url)
+                        self.logger.warning("自定义代理无效，回退直连: %r", proxy_url)
                 except ProxyConfigError as exc:
-                    self.logger.warning("代理配置无效，回退直连: %s", exc)
+                    self.logger.warning("自定义代理无效，回退直连: %s", exc)
+            elif mode == EGRESS_SYSTEM:
+                if apply_system_proxy(conn, host):
+                    self.logger.info("出口: 跟随系统代理")
+                else:
+                    self.logger.info("出口: 系统代理未启用 → 直连")
+            else:
+                self.logger.info("出口: 直连（已显式忽略系统代理）")
             self._http_conn = conn
             self._http_host = host
-            self._http_proxy = proxy_url
+            self._http_proxy = f"{egress}|{proxy_url}"
         return conn
 
     def _drop_http_conn(self) -> None:
@@ -1472,7 +1502,8 @@ class DeepSeekWebClient:
                 method="POST",
                 headers=headers,
             )
-            response = urllib.request.urlopen(request, timeout=self.config.request_timeout)
+            response = self._open_with_egress(
+                request, timeout=self.config.request_timeout)
             self.auth.absorb_response_cookies(response)
         except urllib.error.HTTPError as exc:
             error_payload = self._read_error_payload(exc)

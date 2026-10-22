@@ -5,7 +5,8 @@
 deepseek2api / deepseek2api-fixed（MIT License），在其基础上做了修改与集成。
 """
 
-__version__ = "0.1.12"
+__version__ = "0.1.13"
+
 
 
 

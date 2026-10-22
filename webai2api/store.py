@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     note         TEXT NOT NULL DEFAULT '',
     profile      TEXT NOT NULL DEFAULT '{}',
     proxy        TEXT NOT NULL DEFAULT '',
+    egress       TEXT NOT NULL DEFAULT 'system',
     health       TEXT NOT NULL DEFAULT '',
     checked_at   REAL NOT NULL DEFAULT 0,
     created_at   REAL NOT NULL,
@@ -128,6 +129,9 @@ class Store:
                 c.execute("ALTER TABLE accounts ADD COLUMN profile TEXT NOT NULL DEFAULT '{}'")
             if "proxy" not in acols:
                 c.execute("ALTER TABLE accounts ADD COLUMN proxy TEXT NOT NULL DEFAULT ''")
+            if "egress" not in acols:
+                c.execute(
+                    "ALTER TABLE accounts ADD COLUMN egress TEXT NOT NULL DEFAULT 'system'")
             if "health" not in acols:
                 c.execute("ALTER TABLE accounts ADD COLUMN health TEXT NOT NULL DEFAULT ''")
             if "checked_at" not in acols:
@@ -240,20 +244,21 @@ class Store:
             c.execute(
                 """INSERT INTO accounts
                    (id, provider, name, auth_token, device_id, settings_token, cookie,
-                    enabled, note, proxy, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,1,?,?,?,?)""",
+                    enabled, note, proxy, egress, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?)""",
                 (aid, provider, name,
                  credentials.get("auth_token", ""),
                  credentials.get("device_id", ""),
                  credentials.get("settings_token", ""),
                  credentials.get("cookie", ""),
-                 note, credentials.get("proxy", ""), t, t),
+                 note, credentials.get("proxy", ""),
+                 credentials.get("egress", "system"), t, t),
             )
         return self.get_account(aid)  # type: ignore[return-value]
 
     def update_account(self, account_id: str, **fields: Any) -> None:
         allowed = {"name", "auth_token", "device_id", "settings_token", "cookie",
-                   "enabled", "note", "profile", "proxy"}
+                   "enabled", "note", "profile", "proxy", "egress"}
         sets, vals = [], []
         for k, v in fields.items():
             if k in allowed:

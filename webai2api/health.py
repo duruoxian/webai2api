@@ -60,11 +60,29 @@ def deepseek_headers(account: dict) -> dict:
     return headers
 
 
+def _open_account(account: dict, req: urllib.request.Request, timeout: int):
+    """按账号 egress 发起请求（与聊天链路保持同源出口）。
+
+    direct → 强制忽略系统代理；system → 跟随系统；custom → 账号代理。
+    """
+    from urllib.parse import urlsplit
+
+    from .egress import egress_opener
+
+    host = urlsplit(req.full_url).hostname or ""
+    opener = egress_opener(
+        str(account.get("egress") or "system"),
+        str(account.get("proxy") or ""),
+        host,
+    )
+    return opener.open(req, timeout=timeout)
+
+
 def _deepseek_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
     base = "https://chat.deepseek.com"
     headers = deepseek_headers(account)
     req = urllib.request.Request(base + "/api/v0/users/current", headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _open_account(account, req, timeout) as r:
         data = json.load(r)
     biz = (data.get("data") or {}).get("biz_data") or {}
     if not biz.get("id"):
@@ -112,7 +130,7 @@ def _chatglm_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
         headers={**_hdr(refresh), "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _open_account(account, req, timeout) as r:
         data = json.load(r)
     result = data.get("result") or {}
     access = result.get("access_token") or ""
@@ -122,7 +140,7 @@ def _chatglm_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
         DEFAULT_BASE_URL + "/chatglm/user-api/user/info",
         headers={**_hdr(access), "Accept": "application/json"},
     )
-    with urllib.request.urlopen(req2, timeout=timeout) as r2:
+    with _open_account(account, req2, timeout) as r2:
         info = json.load(r2)
     res = info.get("result") or {}
     profile = {

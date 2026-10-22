@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.12">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.13">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -16,7 +16,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.12"></script>
+<script src="/admin/static/hyalite.js?v=0.1.13"></script>
 </head>
 <body>
 
@@ -499,13 +499,31 @@
       </label>
     </div>
     <div class="hint" id="accCredHint" style="margin:0 0 14px">DeepSeek：浏览器登录后会自动抓取，下面的凭证可以留空。</div>
-    <label class="fld"><span>出口代理（可选，强烈建议每账号独立 IP）</span>
-      <input id="accProxy" placeholder="http://user:pass@host:port 或 socks5://host:port，留空=直连"></label>
-    <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px">
-      <button class="btn gray sm" onclick="testProxy()">测试代理</button>
-      <span id="proxyTestResult" class="muted" style="font-size:12px"></span>
+    <label class="fld"><span>连接方式</span>
+      <div class="sel" id="sel-accEgress">
+        <select id="accEgress" class="sel-native" onchange="onEgressChange()">
+          <option value="direct">直连（不走代理）</option>
+          <option value="system">跟随系统代理（Clash 等）</option>
+          <option value="custom">自定义代理</option>
+        </select>
+        <button type="button" class="sel-btn" onclick="selToggle('accEgress')">
+          <span id="lbl-accEgress">跟随系统代理（Clash 等）</span>
+          <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="sel-menu" id="menu-accEgress"></div>
+      </div>
+    </label>
+    <div id="accProxyWrap">
+      <label class="fld"><span>代理地址</span>
+        <input id="accProxy" placeholder="http://user:pass@host:port 或 socks5://host:port"></label>
+      <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px">
+        <button class="btn gray sm" onclick="testProxy()">测试代理</button>
+        <span id="proxyTestResult" class="muted" style="font-size:12px"></span>
+      </div>
     </div>
-    <div class="hint" style="margin:0 0 14px">同一 IP 登多个账号容易被平台关联封禁；每个账号配一个独立出口 IP 是最有效的降低关联手段。</div>
+    <div class="hint" id="accEgressHint" style="margin:0 0 14px">
+      登录、健康检查、聊天请求都会走同一个出口，避免「登录一个 IP、请求另一个 IP」的异常指纹。
+    </div>
     <details class="adv" id="accAdv">
       <summary>手动填写凭证（不推荐）</summary>
       <div class="adv-body">
@@ -703,6 +721,12 @@ function switchTab(name){
   // 切页回到顶部，避免停在上一页的滚动位置
   try{ window.scrollTo({top:0, behavior:'auto'}); }catch(e){ window.scrollTo(0,0); }
 }
+function egressTag(mode){
+  const m=mode||'system';
+  if(m==='direct') return '<span class="tag on">直连</span>';
+  if(m==='custom') return '<span class="tag on">自定义代理</span>';
+  return '<span class="tag off">跟随系统</span>';
+}
 async function loadRisk(){
   const tb=document.querySelector('#riskTable tbody');
   if(!tb) return;
@@ -722,7 +746,7 @@ async function loadRisk(){
       <td class="num-t">${st.active_sessions||0}</td>
       <td class="num-t">${st.upstream_requests||0}</td>
       <td>${st.rate_limit_hits?`<span class="tag err">${st.rate_limit_hits}</span>`:'0'}</td>
-      <td>${x.proxy?'<span class="tag on">独立代理</span>':'<span class="tag off">直连</span>'}</td>
+      <td>${egressTag(x.egress)}</td>
     </tr>`;
   });
   if(!j.accounts.length) tb.innerHTML=empty('还没有账号');
@@ -963,6 +987,10 @@ function renderOverview(s){
     if(k.quota_monthly&&u.month>=k.quota_monthly*0.8) alerts.push(`Key「${k.name}」本月额度已用 ${Math.round(u.month/k.quota_monthly*100)}%`);
   });
   (s.accounts||[]).forEach(a=>{ if(a.health==='expired') alerts.push(`账号「${a.name}」凭证已失效，请重新登录`); });
+  const net=s.network||{};
+  if(net.tun) alerts.push(net.tun_warning||`检测到 TUN 网卡「${net.tun}」，直连账号实际仍会走代理`);
+  const directCount=(s.accounts||[]).filter(a=>(a.egress||'system')==='direct').length;
+  if(net.tun&&directCount) alerts.push(`有 ${directCount} 个账号设为「直连」，但 TUN 开启时不会真正直连`);
   const ab=document.getElementById('alertBar');
   if(ab){
     if(alerts.length){ ab.style.display=''; ab.innerHTML=alerts.slice(0,5).map(x=>`<div class="alert-item">${esc(x)}</div>`).join(''); }
@@ -1208,7 +1236,7 @@ function renderAccounts(s){
     else if(lg.status==='success') loginBadge='<span class="tag on">登录成功</span>';
     else if(lg.status==='error') loginBadge='<span class="tag err">'+esc(lg.message||'失败')+'</span>';
     tb.innerHTML+=`<tr><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
-      <td class="muted mono">${cred} ${loginBadge} ${healthBadge} ${cdBadge}</td>
+      <td class="muted mono">${cred} ${loginBadge} ${healthBadge} ${cdBadge} ${egressTag(a.egress)}</td>
       <td><span class="tag ${a.enabled?'on':'off'}">${a.enabled?'启用':'停用'}</span></td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn sm" onclick="browserLogin('${a.id}')">浏览器登录</button>
@@ -1550,12 +1578,27 @@ function openAccModal(acc){
   ['accToken','accDevice','accSettings','accCookie'].forEach(i=>document.getElementById(i).value='');
   const pxEl=document.getElementById('accProxy');
   if(pxEl) pxEl.value=acc?(acc.proxy||''):'';
+  const eg=acc?(acc.egress||'system'):'system';
+  document.getElementById('accEgress').value=eg;
+  selSync('accEgress');
+  onEgressChange();
   const adv=document.getElementById('accAdv'); if(adv) adv.open=false;
   onProviderChange();
   openModal('accModal');
   setTimeout(()=>document.getElementById('accName').focus(),30);
 }
 function editAcc(a){openAccModal(a);}
+function onEgressChange(){
+  const mode=document.getElementById('accEgress').value;
+  const wrap=document.getElementById('accProxyWrap');
+  if(wrap) wrap.style.display = mode==='custom' ? 'block' : 'none';
+  const hint=document.getElementById('accEgressHint');
+  if(hint){
+    if(mode==='direct') hint.textContent='直连会强制忽略系统代理。注意：若 Clash 开了 TUN 模式，流量仍会被网卡层接管（面板顶部会提示）。';
+    else if(mode==='custom') hint.textContent='自定义代理：登录、健康检查、聊天请求都走这个代理，出口保持一致。';
+    else hint.textContent='跟随系统代理：Clash 开系统代理时走代理，关闭时直连。';
+  }
+}
 function onProviderChange(){
   const p=document.getElementById('accProvider').value;
   const t=document.getElementById('accCredHint');
@@ -1645,8 +1688,11 @@ async function saveAccount(){
   const st=document.getElementById('accSettings').value.trim();
   const c=document.getElementById('accCookie').value.trim();
   const px=document.getElementById('accProxy').value.trim();
+  const eg=document.getElementById('accEgress').value;
   if(t)body.auth_token=t;if(d)body.device_id=d;if(st)body.settings_token=st;if(c)body.cookie=c;
-  if(id){body.proxy=px;}else if(px){body.proxy=px;}
+  body.egress=eg;
+  if(eg==='custom'&&px)body.proxy=px;
+  if(eg!=='custom')body.proxy='';
   if(id)await api('/accounts/'+id,'PUT',body);else await api('/accounts','POST',body);
   closeModal('accModal');refresh();toast('已保存');
 }
@@ -2053,7 +2099,7 @@ ${lines.join(',\n')}
     const mh=document.getElementById('modelHint');
     if(mh) mh.textContent=models.join(' / ');
   };
-  ['accProvider'].forEach(selBuild);
+  ['accProvider','accEgress'].forEach(selBuild);
   if(TOKEN){try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
   setInterval(()=>{
     if(document.getElementById('mainView').style.display==='none') return;
@@ -2064,6 +2110,7 @@ ${lines.join(',\n')}
 </script>
 </body>
 </html>
+
 
 
 

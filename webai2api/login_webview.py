@@ -11,12 +11,16 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
 
 from .paths import user_data_dir
 from .store import Store
+
+# 同一时刻只允许一个登录窗口（WebView2 代理参数是进程级环境变量）
+_WEBVIEW_PROXY_LOCK = threading.Lock()
 
 DEEPSEEK_URL = "https://chat.deepseek.com/"
 CHATGLM_URL = "https://chatglm.cn/main/alltoolsdetail?lang=zh"
@@ -254,7 +258,43 @@ def run_webview_login(acc_id: str) -> None:
                 pass
 
     threading.Thread(target=worker, daemon=True).start()
-    try:
-        webview.start(private_mode=False, storage_path=str(storage))
-    except Exception as exc:  # noqa: BLE001
-        write_state(acc_id, "error", f"内置浏览器启动失败: {exc}")
+    # 内置浏览器（WebView2）的出口要与账号设置一致：
+    #   direct → 强制忽略系统代理；custom → 用账号代理；system → 跟随系统
+    # WebView2 通过 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS 接受额外命令行参数。
+    with _WEBVIEW_PROXY_LOCK:
+        prev_args = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "")
+        extra = _webview_proxy_args(acc)
+        try:
+            if extra:
+                os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
+                    (prev_args + " " + extra).strip())
+            try:
+                webview.start(private_mode=False, storage_path=str(storage))
+            except Exception as exc:  # noqa: BLE001
+                write_state(acc_id, "error", f"内置浏览器启动失败: {exc}")
+        finally:
+            if extra:
+                if prev_args:
+                    os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = prev_args
+                else:
+                    os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
+
+
+def _webview_proxy_args(acc: dict) -> str:
+    """把账号 egress 翻译成 WebView2 的代理参数（空串=不干预）。"""
+    from .egress import EGRESS_CUSTOM, EGRESS_DIRECT, normalize_egress
+    from .proxy import parse_proxy
+
+    mode = normalize_egress(str(acc.get("egress") or "system"))
+    if mode == EGRESS_DIRECT:
+        # 强制绕过系统代理，和聊天请求保持一致
+        return '--proxy-server="direct://" --proxy-bypass-list=*'
+    if mode == EGRESS_CUSTOM:
+        px = parse_proxy(str(acc.get("proxy") or ""))
+        if px is None:
+            return ""
+        scheme = "socks5" if px.scheme.startswith("socks") else "http"
+        # 注意：Chromium 命令行不支持代理认证，带账号密码的自定义代理
+        # 在内置浏览器里可能弹认证框；聊天请求不受影响。
+        return f'--proxy-server="{scheme}://{px.host}:{px.port}"'
+    return ""

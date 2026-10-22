@@ -493,17 +493,29 @@ class ChatGlmWebClient:
     def _conn(self, url: str, timeout: int) -> http.client.HTTPSConnection:
         host, _ = self._split(url)
         conn = http.client.HTTPSConnection(host, timeout=max(int(timeout), 30))
-        proxy_url = str(getattr(self.config, "proxy", "") or "")
-        if proxy_url:
+        from ....egress import (
+            EGRESS_CUSTOM,
+            EGRESS_SYSTEM,
+            apply_system_proxy,
+            normalize_egress,
+        )
+
+        mode = normalize_egress(getattr(self.config, "egress", "system"))
+        if mode == EGRESS_CUSTOM:
+            proxy_url = str(getattr(self.config, "proxy", "") or "")
             from ....proxy import ProxyConfigError, parse_proxy
             try:
                 px = parse_proxy(proxy_url)
                 if px is not None:
                     px.apply(conn, host)
+                    self.logger.info("出口: 自定义代理 %s", px.describe())
                 else:
-                    self.logger.warning("代理配置无效，回退直连: %r", proxy_url)
+                    self.logger.warning("自定义代理无效，回退直连: %r", proxy_url)
             except ProxyConfigError as exc:
-                self.logger.warning("代理配置无效，回退直连: %s", exc)
+                self.logger.warning("自定义代理无效，回退直连: %s", exc)
+        elif mode == EGRESS_SYSTEM:
+            if apply_system_proxy(conn, host):
+                self.logger.info("出口: 跟随系统代理")
         return conn
 
     def _post_json(self, url: str, body: dict, headers: dict, timeout: int) -> dict:
