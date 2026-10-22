@@ -324,6 +324,20 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         return {"ok": True}
 
     # ── 风险指标 ──
+    @router.post("/proxy/test")
+    async def proxy_test(request: Request):
+        """测试代理连通性并返回出口 IP（用于配代理时自检）。"""
+        g = _guard(request)
+        if g:
+            return g
+        b = await _json(request)
+        if b is None:
+            return {"ok": False, "error": "请求格式错误"}
+        proxy_url = str(b.get("proxy") or "").strip()
+        if not proxy_url:
+            return {"ok": False, "error": "请先填写代理地址"}
+        return await run_in_threadpool(_proxy_probe, proxy_url)
+
     @router.get("/risk")
     async def risk_metrics(request: Request):
         """每账号的风控相关指标：会话创建/删除、缓存命中率、限流次数、日用量。"""
@@ -809,6 +823,99 @@ def _reveal_file(path) -> None:
             subprocess.Popen(["explorer", "/select,", str(path)])
     except Exception:
         pass
+
+
+def _proxy_probe(proxy_url: str) -> dict:
+    """通过指定代理请求一个回显 IP 的服务，返回出口 IP 与耗时。
+
+    用 http://ip-api.com/json（HTTP，走普通代理）与 https://api.ipify.org（HTTPS，走 CONNECT）
+    双通道，任一成功即可判断代理是否可用。
+    """
+    import json as _json
+    import time as _time
+    import urllib.error
+    import urllib.request
+
+    from .proxy import ProxyConfigError, parse_proxy
+
+    started = _time.perf_counter()
+    try:
+        px = parse_proxy(proxy_url)
+    except ProxyConfigError as exc:
+        return {"ok": False, "error": str(exc)}
+    if px is None:
+        return {"ok": False, "error": "代理地址为空或无法解析"}
+
+    # 直连作为对照（用于识别「代理没生效但能上网」的情况）
+    def _direct_ip() -> str:
+        try:
+            with urllib.request.urlopen("https://api.ipify.org", timeout=8) as r:
+                return r.read().decode().strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    direct = _direct_ip()
+
+    handlers = []
+    if px.scheme.startswith("socks"):
+        try:
+            import socks  # noqa: F401
+        except Exception:  # noqa: BLE001
+            return {"ok": False, "error": "SOCKS 代理需要 PySocks（已内置，请重启程序）",
+                    "direct_ip": direct}
+        # PySocks 的 urllib 支持走全局 socket 包装，不在本函数内使用
+        return {"ok": False,
+                "error": "SOCKS 代理的连通性测试暂只支持在聊天请求中验证；"
+                         "HTTP/SOCKS 均已在客户端生效，可直接发一次对话验证",
+                "direct_ip": direct}
+
+    auth = px.auth_header()
+    proxy_handler = urllib.request.ProxyHandler({
+        "http": f"http://{px.host}:{px.port}",
+        "https": f"http://{px.host}:{px.port}",
+    })
+    handlers.append(proxy_handler)
+    if auth:
+        class _AuthProxyHandler(urllib.request.ProxyHandler):
+            def proxy_open(self, req, proxy, type):  # noqa: A003
+                req.add_header("Proxy-Authorization", auth)
+                return super().proxy_open(req, proxy, type)
+
+        handlers[0] = _AuthProxyHandler({
+            "http": f"http://{px.host}:{px.port}",
+            "https": f"http://{px.host}:{px.port}",
+        })
+
+    opener = urllib.request.build_opener(*handlers)
+    exit_ip = ""
+    err = ""
+    try:
+        with opener.open("https://api.ipify.org", timeout=12) as r:
+            exit_ip = r.read().decode().strip()
+    except Exception as exc:  # noqa: BLE001
+        err = str(exc)
+        try:
+            with opener.open("http://httpbin.org/ip", timeout=10) as r:
+                exit_ip = (_json.loads(r.read().decode()).get("origin") or "").split(",")[0].strip()
+                err = ""
+        except Exception as exc2:  # noqa: BLE001
+            err = f"{exc} / {exc2}"
+
+    elapsed = int((_time.perf_counter() - started) * 1000)
+    if not exit_ip:
+        return {"ok": False, "error": f"代理不可用：{err}", "direct_ip": direct,
+                "elapsed_ms": elapsed}
+
+    same = bool(direct) and exit_ip == direct
+    return {
+        "ok": True,
+        "exit_ip": exit_ip,
+        "direct_ip": direct,
+        "changed": not same,
+        "warning": "出口 IP 与直连相同，代理可能未生效" if same else "",
+        "proxy": px.describe(),
+        "elapsed_ms": elapsed,
+    }
 
 
 def _safe_account(a: dict) -> dict:
@@ -1306,4 +1413,5 @@ def _local_license_status() -> dict:
         return {"valid": bool(st.get("valid"))}
     except Exception:
         return {"valid": False}
+
 

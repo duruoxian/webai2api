@@ -103,3 +103,24 @@ def test_deepseek_proxy_field_defaults_empty() -> None:
     assert "proxy" in AppConfig.__dataclass_fields__
     default = AppConfig.__dataclass_fields__["proxy"].default
     assert default == ""
+
+def test_proxy_probe_rejects_invalid_config() -> None:
+    """非法代理配置只返回错误，不能抛异常（面板点「测试代理」不应 500）。"""
+    from webai2api.admin_api import _proxy_probe
+
+    r = _proxy_probe("")
+    assert r["ok"] is False and "代理" in r["error"]
+
+    r2 = _proxy_probe("ftp://bad:1")
+    assert r2["ok"] is False
+    assert "代理" in r2["error"] or "协议" in r2["error"]
+
+
+def test_proxy_probe_unreachable_reports_direct_ip() -> None:
+    """代理连不上时：返回 ok=False，并给出直连 IP 作为对照。"""
+    from webai2api.admin_api import _proxy_probe
+
+    r = _proxy_probe("http://127.0.0.1:1")
+    assert r["ok"] is False
+    assert "直连" in r.get("error", "") or "不可用" in r.get("error", "")
+    assert "direct_ip" in r
