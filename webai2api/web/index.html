@@ -224,7 +224,14 @@
           <div>接口地址&nbsp;&nbsp;<b id="baseHint2">/v1</b></div>
           <div>可用模型&nbsp;&nbsp;<b id="modelHint">deepseek-chat</b></div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">API Key
-            <select id="ocKeySel" onchange="onOcKeyChange()" style="min-width:180px"></select>
+            <div class="sel sel-sm" id="sel-ocKeySel" style="min-width:220px">
+              <select id="ocKeySel" class="sel-native" onchange="onOcKeyChange()"></select>
+              <button type="button" class="sel-btn" onclick="selToggle('ocKeySel')">
+                <span id="lbl-ocKeySel">无可用 Key</span>
+                <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+              <div class="sel-menu" id="menu-ocKeySel"></div>
+            </div>
             <button class="btn sm" id="ocConnectBtn" onclick="ocConnectCurrent()">接入</button>
             <button class="btn gray sm" id="ocDisconnectBtn" onclick="ocDisconnectCurrent()">移除</button>
           </div>
@@ -1714,6 +1721,7 @@ ${lines.join(',\n')}
     const opts=getOcKeys();
     const prev=sel.value;
     sel.innerHTML=opts.length?opts.map((k,i)=>`<option value="${esc(k.id)}" ${(prev?k.id===prev:i===0)?'selected':''}>${esc(k.name)} ${esc(maskKey(k))}</option>`).join(''):'<option value="">无可用 Key</option>';
+    if(typeof selBuild==='function') selBuild('ocKeySel');
     const gh=document.getElementById('guideKeyHint');
     if(gh){ const ok=sel.value?(opts.find(k=>k.id===sel.value)||opts[0]):opts[0]; gh.textContent=ok?maskKey(ok):'在上方列表中选择或生成'; }
     const cb=document.getElementById('ocConnectBtn');
