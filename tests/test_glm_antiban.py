@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from webai2api.adapters.chatglm.client import (
     ChatGlmWebClient,
@@ -113,3 +114,41 @@ def test_default_antiban_knobs() -> None:
     assert cfg.long_pause_chance == 0.02
     assert cfg.min_request_interval == 1.2
     assert cfg.max_turns_per_session == 40
+
+def test_conv_cache_persists_across_instances(tmp_path) -> None:
+    """会话缓存落盘：新实例（模拟重启）仍能复用同一 conversation_id。"""
+    path = str(tmp_path / "glm.json")
+    cfg = GlmConfig(refresh_token="t", session_store_path=path)
+    c1 = _client(cfg)
+    c1._store_conv("conv-key", "conv-abc")
+    c1.flush_cache()
+
+    c2 = _client(cfg)
+    assert c2._cached_conv("conv-key") == "conv-abc", "重启后应复用同一会话"
+
+
+def test_conv_cache_corrupt_file_is_tolerated(tmp_path) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text("{not json", encoding="utf-8")
+    cfg = GlmConfig(refresh_token="t", session_store_path=str(path))
+    c = _client(cfg)                     # 不应抛异常
+    assert c._cached_conv("nope") == ""
+
+
+def test_cleanup_stale_sessions_removes_expired(tmp_path) -> None:
+    cfg = GlmConfig(refresh_token="t", session_store_path=str(tmp_path / "s.json"),
+                    session_cache_ttl=10, max_turns_per_session=40)
+    c = _client(cfg)
+    c._store_conv("fresh", "conv-fresh")
+    with c._conv_lock:
+        c._conv_cache["old"] = ("conv-old", 0.0, 1)
+        c._conv_cache["full"] = ("conv-full", time.time(), 40)
+    # 打桩：不真的发删除请求
+    deleted: list[str] = []
+    c._access = lambda: "tok"                     # type: ignore[assignment]
+    c._delete_conversation = lambda cid, tok: deleted.append(cid)  # type: ignore[assignment]
+    c.cleanup_stale_sessions()
+    assert "old" not in c._conv_cache
+    assert "full" not in c._conv_cache
+    assert "fresh" in c._conv_cache
+    assert set(deleted) == {"conv-old", "conv-full"}

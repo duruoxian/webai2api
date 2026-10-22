@@ -35,6 +35,7 @@ class GlmConfig:
     min_request_interval: float = 1.2
     daily_request_limit: int = 600
     max_turns_per_session: int = 40
+    session_store_path: str = ""   # 会话缓存落盘路径（空=不持久化）
 
     @property
     def refresh_url(self) -> str:
@@ -78,6 +79,19 @@ def _stable_device_id(account: dict) -> str:
     return hashlib.sha256(f"glm-device:{seed}".encode()).hexdigest()[:32]
 
 
+def _session_store_path(account: dict) -> str:
+    """会话缓存落盘路径：data/glm_sessions/<账号>.json。失败返回空串（不持久化）。"""
+    try:
+        from ...paths import user_data_dir
+
+        d = user_data_dir() / "glm_sessions"
+        d.mkdir(parents=True, exist_ok=True)
+        aid = str(account.get("id") or "unknown")
+        return str(d / f"{aid}.json")
+    except Exception:
+        return ""
+
+
 def build_config(store, account: dict) -> GlmConfig:
     """按账号 + 全局默认构造一份 GlmConfig。"""
     def g(key: str, default: str) -> str:
@@ -111,4 +125,5 @@ def build_config(store, account: dict) -> GlmConfig:
         min_request_interval=float(g("glm_min_request_interval", "1.2")),
         daily_request_limit=int(g("glm_daily_limit", "600")),
         max_turns_per_session=int(g("glm_max_turns", "40")),
+        session_store_path=_session_store_path(account),
     )

@@ -303,9 +303,91 @@ class ChatGlmWebClient:
         # 会话缓存：同一段对话复用 conversation_id，多轮只发增量（与 DeepSeek 行为一致）
         self._conv_lock = threading.Lock()
         self._conv_cache: dict[str, tuple[str, float, int]] = {}
+        # 落盘节流（重启后仍能复用会话，避免重新建会话）
+        self._persist_path: str = str(getattr(config, "session_store_path", "") or "")
+        self._dirty = False
+        self._last_persist = 0.0
+        self._persist_min_interval = 5.0
+        if self._persist_path:
+            self._load_conv_cache()
         # 同账号上游请求最小间隔
         self._last_call_at: float = 0.0
         self._last_call_lock = threading.Lock()
+
+    # ── 会话缓存持久化 ──────────────────────────────────
+    def _load_conv_cache(self) -> None:
+        path = self._persist_path
+        if not path:
+            return
+        try:
+            import os
+
+            if not os.path.exists(path):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("GLM 会话缓存载入失败: %s", exc)
+            return
+        if not isinstance(raw, dict):
+            return
+        now = time.time()
+        loaded = 0
+        for key, item in raw.items():
+            if not isinstance(key, str) or not isinstance(item, dict):
+                continue
+            conv_id = item.get("conversation_id")
+            if not isinstance(conv_id, str) or not conv_id:
+                continue
+            try:
+                ts = float(item.get("last_used") or now)
+                turns = int(item.get("turns") or 0)
+            except (TypeError, ValueError):
+                continue
+            if now - ts > self.config.session_cache_ttl:
+                continue
+            self._conv_cache[key] = (conv_id, ts, turns)
+            loaded += 1
+        while len(self._conv_cache) > self.config.session_cache_max_size:
+            oldest = min(self._conv_cache.items(), key=lambda kv: kv[1][1])[0]
+            self._conv_cache.pop(oldest, None)
+        if loaded:
+            self.logger.info("GLM 会话缓存恢复 %d 条（%s）", loaded, path)
+
+    def _persist_conv(self, force: bool = False) -> None:
+        """调用方需持有 self._conv_lock。节流写盘，异常只记 debug。"""
+        path = self._persist_path
+        if not path:
+            return
+        now = time.time()
+        if not force and now - self._last_persist < self._persist_min_interval:
+            self._dirty = True
+            return
+        try:
+            import os
+
+            data = {
+                k: {
+                    "conversation_id": v[0],
+                    "last_used": v[1],
+                    "turns": v[2],
+                }
+                for k, v in self._conv_cache.items()
+            }
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, path)
+            self._dirty = False
+            self._last_persist = now
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("GLM 会话缓存落盘失败: %s", exc)
+
+    def flush_cache(self) -> None:
+        """强制落盘（关机前调用）。"""
+        with self._conv_lock:
+            if self._persist_path and self._dirty:
+                self._persist_conv(force=True)
 
     def _conv_key(self, payload: dict) -> str:
         """稳定会话指纹：system + 首条 user + model + key_id。
@@ -336,13 +418,16 @@ class ChatGlmWebClient:
             conv_id, ts, turns = item
             if time.time() - ts > self.config.session_cache_ttl:
                 self._conv_cache.pop(key, None)
+                self._persist_conv()
                 return ""
             max_turns = int(getattr(self.config, "max_turns_per_session", 40) or 40)
             if turns >= max_turns:
                 self._conv_cache.pop(key, None)
+                self._persist_conv()
                 self.logger.info("会话轮次已达上限(%d) → 新建会话", max_turns)
                 return ""
             self._conv_cache[key] = (conv_id, time.time(), turns)
+            self._persist_conv()
             return conv_id
 
     def _store_conv(self, key: str, conv_id: str) -> None:
@@ -355,10 +440,12 @@ class ChatGlmWebClient:
             prev = self._conv_cache.get(key)
             turns = (prev[2] + 1) if prev and prev[0] == conv_id else 1
             self._conv_cache[key] = (conv_id, time.time(), turns)
+            self._persist_conv()
 
     def _drop_conv(self, key: str) -> None:
         with self._conv_lock:
             self._conv_cache.pop(key, None)
+            self._persist_conv()
 
     # ── HTTP 基础 ──────────────────────────────────────
     @staticmethod
@@ -522,6 +609,40 @@ class ChatGlmWebClient:
         delay = min(max(delay, lo), max(1.0, hi * 3))
         self.logger.info("AntiRateLimit | sleep=%.2fs before upstream request", delay)
         time.sleep(delay)
+
+    # ── 会话清理（供后台清理线程调用） ─────────────────
+    def cleanup_stale_sessions(self) -> None:
+        """删除已过期/超轮次的智谱会话，并从缓存移除。
+
+        与 DeepSeek 保持一致：低频批量清理，而不是每请求删除。
+        """
+        now = time.time()
+        ttl = self.config.session_cache_ttl
+        max_turns = int(getattr(self.config, "max_turns_per_session", 40) or 40)
+        stale: list[tuple[str, str]] = []
+        with self._conv_lock:
+            for key, (conv_id, ts, turns) in list(self._conv_cache.items()):
+                if now - ts > ttl or turns >= max_turns:
+                    stale.append((key, conv_id))
+                    self._conv_cache.pop(key, None)
+            if stale:
+                self._persist_conv(force=True)
+        if not stale:
+            return
+        try:
+            token = self._access()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.debug("会话清理跳过（token 获取失败）: %s", exc)
+            return
+        removed = 0
+        for _key, conv_id in stale:
+            try:
+                self._delete_conversation(conv_id, token)
+                removed += 1
+            except Exception:  # noqa: BLE001
+                pass
+        if removed:
+            self.logger.info("GLM 会话清理：删除 %d 个过期会话", removed)
 
     # ── 事件流 ─────────────────────────────────────────
     def _iter_events(self, resp):
