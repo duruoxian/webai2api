@@ -36,7 +36,8 @@ DEEPSEEK_EXTRACT_JS = r"""
     settings = val&&val.jwt ? val.jwt : (typeof val==='string'?val:''); }catch(e){ settings=raw.s; } }
   return JSON.stringify({
     auth_token: typeof token==='string'?token:'',
-    device_id: raw.d||'', settings_token: settings||'', cookie: raw.c||''
+    device_id: raw.d||'', settings_token: settings||'', cookie: raw.c||'',
+    u: navigator.userAgent||'', p: navigator.platform||''
   });
 })()
 """
@@ -204,13 +205,33 @@ def run_webview_login(acc_id: str) -> None:
                 continue
             # 给 WebView2 一点时间把 cookie 落盘
             time.sleep(1.2)
-            store.update_account(
-                acc_id,
-                auth_token=token,
-                device_id=creds.get("device_id", ""),
-                settings_token=creds.get("settings_token", ""),
-                cookie=creds.get("cookie", ""),
-            )
+            fields: dict = {
+                "auth_token": token,
+                "device_id": creds.get("device_id", ""),
+                "settings_token": creds.get("settings_token", ""),
+                "cookie": creds.get("cookie", ""),
+            }
+            # 记录登录时真实浏览器画像（WebView2/Edge 的 UA 与 platform），
+            # 供后续 API 请求复用，避免同一 token 出现两套 UA。
+            ua = (creds.get("ua") or "").strip()
+            platform = (creds.get("p") or "").strip()
+            if ua or platform:
+                try:
+                    cur = store.get_account(acc_id) or {}
+                    try:
+                        profile = json.loads(cur.get("profile") or "{}")
+                    except (TypeError, ValueError):
+                        profile = {}
+                    if not isinstance(profile, dict):
+                        profile = {}
+                    if ua:
+                        profile["ua"] = ua
+                    if platform:
+                        profile["platform"] = platform
+                    fields["profile"] = json.dumps(profile, ensure_ascii=False)
+                except Exception:
+                    pass
+            store.update_account(acc_id, **fields)
             done["v"] = True
             write_state(acc_id, "success", "登录成功，凭证已保存")
             time.sleep(0.6)

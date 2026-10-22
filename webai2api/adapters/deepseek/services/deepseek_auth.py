@@ -28,6 +28,11 @@ class HIFTokens:
         return time.time() > self.fetched_at + self.ttl_seconds - 30
 
 
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:156.0) Gecko/20100101 Firefox/156.0"
+)
+
+
 class DeepSeekAuthManager:
     def __init__(self, config: AppConfig, logger: Logger) -> None:
         self.config = config
@@ -42,8 +47,7 @@ class DeepSeekAuthManager:
             "Accept": "*/*",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
             "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64; rv:156.0) "
-                "Gecko/20100101 Firefox/156.0"
+                getattr(self.config, "user_agent", "") or DEFAULT_USER_AGENT
             ),
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Origin": "https://chat.deepseek.com",
@@ -58,7 +62,7 @@ class DeepSeekAuthManager:
             **self.get_browser_headers(),
             "Authorization": f"Bearer {self.config.auth_token}",
             "x-device-id": self.config.device_id,
-            "x-device-model": "",
+            "x-device-model": getattr(self.config, "device_model", "") or "",
             "x-client-bundle-id": "com.deepseek.chat",
             "x-client-platform": "web",
             "x-client-version": "2.5.0",

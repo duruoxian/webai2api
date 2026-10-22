@@ -19,6 +19,7 @@ import threading
 import time
 from collections import OrderedDict
 from logging import Logger
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
@@ -214,14 +215,51 @@ _STICKY: "OrderedDict[str, tuple[str, float]]" = OrderedDict()
 _STICKY_LOCK = threading.Lock()
 
 
+def _msg_text(content: Any) -> str:
+    """把 message.content 规整成纯文本（兼容 OpenAI 的多段 content 数组）。"""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for seg in content:
+            if isinstance(seg, str):
+                parts.append(seg)
+            elif isinstance(seg, dict):
+                txt = seg.get("text")
+                if txt is None and isinstance(seg.get("content"), str):
+                    txt = seg.get("content")
+                if txt is not None:
+                    parts.append(str(txt))
+        return "\n".join(parts)
+    return str(content)
+
+
 def _conv_key(payload: dict, key_id: str) -> str:
-    """用「Key + 模型 + 对话开头」做指纹，整段对话保持一致。"""
+    """用「Key + 模型 + 第一条 user + 第一条 assistant 文本」做指纹。
+
+    跳过所有 system 消息：客户端（如 opencode）每轮的 system 内容可能变化，
+    若计入指纹会让账号粘性失效、会话缓存跨账号 miss。
+    """
     msgs = payload.get("messages") or []
-    head = []
-    for m in msgs[:2]:
-        if isinstance(m, dict):
-            head.append([m.get("role"), str(m.get("content") or "")[:2000]])
-    raw = json.dumps([key_id, payload.get("model"), head], ensure_ascii=False)
+    first_user = ""
+    first_assistant = ""
+    for m in msgs:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role == "system":
+            continue
+        text = _msg_text(m.get("content"))
+        if role == "user" and not first_user:
+            first_user = text[:2000]
+        elif role == "assistant" and not first_assistant:
+            first_assistant = text[:500]
+        if first_user and first_assistant:
+            break
+    raw = json.dumps([key_id, payload.get("model"), first_user, first_assistant],
+                     ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -343,6 +381,8 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
 
         model = payload.get("model") or DEFAULT_MODEL
         stream = bool(payload.get("stream"))
+        # 内部字段（下划线前缀）：仅本进程使用，translator 白名单取字段不会转发到上游。
+        payload["_wapi_key_id"] = key_row["id"]
 
         if key_row.get("expires_at") and float(key_row["expires_at"]) < time.time():
             return _error(403, "该 API Key 已过期", "permission_error")

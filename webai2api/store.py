@@ -250,7 +250,7 @@ class Store:
 
     def update_account(self, account_id: str, **fields: Any) -> None:
         allowed = {"name", "auth_token", "device_id", "settings_token", "cookie",
-                   "enabled", "note"}
+                   "enabled", "note", "profile"}
         sets, vals = [], []
         for k, v in fields.items():
             if k in allowed:

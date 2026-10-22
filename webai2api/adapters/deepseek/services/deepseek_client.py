@@ -19,6 +19,7 @@ import gzip
 import http.client
 import itertools
 import json
+import math
 import socket
 import threading
 import time
@@ -36,7 +37,7 @@ from ..config import AppConfig
 from ..logging_utils import debug_dump
 from .deepseek_auth import DeepSeekAuthManager
 from .pow_solver import PoWSolver
-from .session_cache import SessionCache, SessionState, prefix_hash
+from .session_cache import SessionCache, SessionState, conv_fingerprint, prefix_hash
 from .tool_calling import (
     ParsedToolCall,
     StreamingToolDetector,
@@ -364,11 +365,21 @@ class DeepSeekWebClient:
         self.session_cache = SessionCache(
             max_size=config.session_cache_max_size,
             ttl_seconds=config.session_cache_ttl,
+            persist_path=getattr(config, "session_store_path", "") or None,
         )
         self.cache_enabled = config.session_cache_enabled
 
         self._proxy_sessions: set[str] = set()
         self._proxy_sessions_lock = threading.Lock()
+        # 从持久化缓存恢复的 session 也要纳入追踪，否则重启后这些上游会话
+        # 永远不会被 cleanup_stale_sessions 回收（内存集合重启即空）。
+        try:
+            self._proxy_sessions.update(self.session_cache.active_session_ids())
+        except Exception:  # noqa: BLE001
+            pass
+        # 同账号上游请求最小间隔
+        self._last_upstream_at: float = 0.0
+        self._last_upstream_lock = threading.Lock()
 
         self.file_uploader = FileUploader(
             config=config,
@@ -549,7 +560,34 @@ class DeepSeekWebClient:
         model = str(payload.get("model", self.config.default_model))
         p_hash = prefix_hash(full_prefix, model=model)
 
-        cached = self.session_cache.get(p_hash) if self.cache_enabled else None
+        # 会话 key 用「对话指纹」：只取 system 首段 + 首条 user 首段 + model + key_id，
+        # 不随轮次/工具轮变化，避免每轮都新建上游会话。
+        key_id = str(payload.get("_wapi_key_id") or "")
+        conv = conv_fingerprint(messages, model, key_id)
+        msg_count = len(messages)
+
+        cached = self.session_cache.get(conv) if self.cache_enabled else None
+
+        # 校验：历史被压缩/改写/非延续 → 丢弃缓存条目，走 fresh（不删上游会话）
+        # 注意用 <（不是 <=）：网络重试会原样重发同一 payload，msg_count 相等属正常延续。
+        if cached and cached.msg_count and msg_count < cached.msg_count:
+            self.logger.info(
+                "Cache STALE | conv=%s... | history rewritten (msgs=%d < %d) → fresh",
+                conv[:12], msg_count, cached.msg_count,
+            )
+            self.session_cache.delete(conv)
+            cached = None
+
+        # 校验：轮数超上限 → 丢弃缓存条目，走 fresh（交给清理线程删上游会话）
+        if cached:
+            max_turns = int(getattr(self.config, "max_turns_per_session", 40) or 40)
+            if cached.turn_count >= max_turns:
+                self.logger.info(
+                    "Cache STALE | conv=%s... | max turns reached (%d >= %d) → fresh",
+                    conv[:12], cached.turn_count, max_turns,
+                )
+                self.session_cache.delete(conv)
+                cached = None
 
         if cached:
             ds_payload = convert_openai_to_deepseek_incremental(payload, self.config)
@@ -558,9 +596,9 @@ class DeepSeekWebClient:
                 ds_payload["ref_file_ids"] = ref_file_ids
 
             self.logger.info(
-                "Cache HIT  | prefix=%s... | session=%s... | turn=%d | "
+                "Cache HIT  | conv=%s... | session=%s... | turn=%d | "
                 "prompt_len=%d | files=%d",
-                p_hash[:12], cached.session_id[:12],
+                conv[:12], cached.session_id[:12],
                 cached.turn_count + 1, len(ds_payload.get("prompt", "")),
                 len(ref_file_ids),
             )
@@ -568,12 +606,13 @@ class DeepSeekWebClient:
                 "mode": "cached",
                 "ds_payload": ds_payload,
                 "session_id": cached.session_id,
-                "cache_key": p_hash,
+                "cache_key": conv,
                 "full_prefix": full_prefix,
                 "last_message": last_message,
                 "last_content": last_content,
                 "model": model,
                 "turn_count": cached.turn_count,
+                "msg_count": msg_count,
             }
 
         ds_payload = convert_openai_to_deepseek(payload, self.config)
@@ -581,8 +620,9 @@ class DeepSeekWebClient:
             ds_payload["ref_file_ids"] = ref_file_ids
 
         self.logger.info(
-            "Cache %s | prefix=%s... | prompt_len=%d (full history packed) | files=%d",
+            "Cache %s | conv=%s... | prefix=%s... | prompt_len=%d (full history packed) | files=%d",
             "MISS" if self.cache_enabled else "OFF",
+            conv[:12],
             p_hash[:12],
             len(ds_payload.get("prompt", "")),
             len(ref_file_ids),
@@ -591,12 +631,13 @@ class DeepSeekWebClient:
             "mode": "fresh",
             "ds_payload": ds_payload,
             "session_id": "",
-            "cache_key": p_hash,
+            "cache_key": conv,
             "full_prefix": full_prefix,
             "last_message": last_message,
             "last_content": last_content,
             "model": model,
             "turn_count": 0,
+            "msg_count": msg_count,
         }
 
     def _store_after_response(
@@ -637,11 +678,13 @@ class DeepSeekWebClient:
 
         next_turn = (resolved.get("turn_count") or 0) + 1
         self.session_cache.put(
-            new_hash,
+            resolved["cache_key"],
             SessionState(
                 session_id=session_id,
                 turn_count=next_turn,
                 last_message_id=request_message_id,
+                msg_count=int(resolved.get("msg_count", 0) or 0),
+                history_hash=new_hash,
             ),
         )
 
@@ -649,8 +692,9 @@ class DeepSeekWebClient:
             self._proxy_sessions.add(session_id)
 
         self.logger.info(
-            "Cached     | %s → new_prefix=%s... | session=%s... | turn=%d | tools=%d | msg_id=%s",
-            resolved["mode"], new_hash[:12], session_id[:12], next_turn,
+            "Cached     | %s → conv=%s... | history=%s... | session=%s... | turn=%d | tools=%d | msg_id=%s",
+            resolved["mode"], str(resolved.get("cache_key", ""))[:12], new_hash[:12],
+            session_id[:12], next_turn,
             len(tool_calls) if tool_calls else 0,
             (request_message_id or "N/A")[:12] if request_message_id else "N/A",
         )
@@ -1238,12 +1282,36 @@ class DeepSeekWebClient:
         if not self.config.anti_rate_limit_enabled:
             return
 
-        min_d = self.config.anti_rate_limit_min_delay
-        max_d = self.config.anti_rate_limit_max_delay
+        min_d = max(0.0, float(self.config.anti_rate_limit_min_delay))
+        max_d = float(self.config.anti_rate_limit_max_delay)
         if max_d <= 0:
             return
 
-        delay = max_d if min_d >= max_d else random.uniform(min_d, max_d)
+        # 同账号两次上游请求之间的硬性最小间隔（防突发）
+        # 锁内只做时间戳预约，sleep 放在锁外，避免串行化其它请求。
+        min_interval = float(getattr(self.config, "min_request_interval", 0.0) or 0.0)
+        if min_interval > 0:
+            with self._last_upstream_lock:
+                now = time.time()
+                slot = max(now, self._last_upstream_at + min_interval)
+                self._last_upstream_at = slot
+            wait = slot - time.time()
+            if wait > 0:
+                self.logger.info(
+                    "AntiRateLimit | min-interval sleep=%.2fs%s",
+                    wait, f" ({context})" if context else "",
+                )
+                time.sleep(wait)
+
+        # 长尾分布：绝大多数请求短延迟，少量请求出现 20~60s 的长停顿
+        chance = float(getattr(self.config, "long_pause_chance", 0.02) or 0.0)
+        if chance > 0 and random.random() < chance:
+            delay = random.uniform(20, 60)
+        else:
+            mid = max(0.1, (min_d + max_d) / 2)
+            delay = random.lognormvariate(math.log(mid), 0.6)
+        upper = max(1.0, max_d * 3)
+        delay = min(max(delay, min_d), upper)
 
         self.logger.info(
             "AntiRateLimit | sleep=%.2fs before upstream request%s",

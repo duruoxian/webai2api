@@ -130,3 +130,13 @@ class ProviderRegistry:
         for pool in self._pools.values():
             out.extend(pool.available())
         return out
+
+    def all_accounts(self) -> list[AccountClient]:
+        """跨 provider 汇总所有账号客户端（不过滤健康/冷却，供后台清理线程用）。"""
+        out: list[AccountClient] = []
+        for pool in self._pools.values():
+            try:
+                out.extend(pool.available())
+            except Exception:  # noqa: BLE001
+                pass
+        return out

@@ -10,11 +10,13 @@
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 from logging import Logger
 
 from ...store import Store
+from ...paths import user_data_dir
 from ..base import account_ready
 from . import config as ds_config
 from .services.deepseek_client import DeepSeekWebClient
@@ -43,14 +45,43 @@ def _base_defaults(store: Store) -> dict:
         "max_concurrency": int(store.get_setting("deepseek_max_concurrency", "1")),
         "timeout": int(store.get_setting("deepseek_timeout", "180")),
         "session_cache": store.get_setting("deepseek_session_cache", "true"),
-        "cache_ttl": int(store.get_setting("deepseek_cache_ttl", "7200")),
+        "cache_ttl": int(store.get_setting("deepseek_cache_ttl", "43200")),
+        "cache_max_size": int(store.get_setting("deepseek_cache_max_size", "2000")),
+        "daily_limit": int(store.get_setting("deepseek_daily_limit", "600")),
+        "long_pause_chance": float(store.get_setting("deepseek_long_pause_chance", "0.02")),
+        "max_turns": int(store.get_setting("deepseek_max_turns", "40")),
+        "min_interval": float(store.get_setting("deepseek_min_request_interval", "1.2")),
         "search": store.get_setting("deepseek_search", "false"),
     }
+
+
+def _parse_profile(raw: object) -> dict:
+    """账号 profile 可能是 JSON 字符串 / dict / 空，容错解析。"""
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        data = json.loads(str(raw))
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _session_store_path(account: dict) -> str:
+    """每账号一个会话持久化文件：<user_data>/deepseek_sessions/<id>.json。"""
+    try:
+        d = user_data_dir() / "deepseek_sessions"
+        d.mkdir(parents=True, exist_ok=True)
+        return str(d / f"{account['id']}.json")
+    except OSError:
+        return ""
 
 
 def build_config(store: Store, account: dict) -> ds_config.AppConfig:
     """按账号 + 全局默认构造一份 AppConfig。"""
     d = _base_defaults(store)
+    prof = _parse_profile(account.get("profile"))
     return ds_config.AppConfig(
         env_file_path=store.db_path.parent / ".env.virtual",
         env_file_created=False,
@@ -75,7 +106,15 @@ def build_config(store: Store, account: dict) -> ds_config.AppConfig:
         anti_rate_limit_enabled=True,
         anti_rate_limit_min_delay=d["anti_min"],
         anti_rate_limit_max_delay=d["anti_max"],
+        user_agent=str(prof.get("ua") or ""),
+        device_model=str(prof.get("platform") or ""),
+        session_store_path=_session_store_path(account),
+        daily_request_limit=d["daily_limit"],
+        long_pause_chance=d["long_pause_chance"],
+        max_turns_per_session=d["max_turns"],
+        min_request_interval=d["min_interval"],
         session_cache_enabled=_truthy(d["session_cache"]),
+        session_cache_max_size=max(1, d["cache_max_size"]),
         session_cache_ttl=d["cache_ttl"],
         search_enabled=_truthy(d["search"]),
     )
@@ -94,6 +133,21 @@ class AccountClient:
         self.config = config
         self.cooldown_until = 0.0
         self.rate_hits = 0
+        # ── 日请求配额（跨进程只做本进程内计数）──
+        self.daily_limit = int(getattr(config, "daily_request_limit", 0) or 0)
+        self._daily_day = time.strftime("%Y-%m-%d")
+        self._daily_count = 0
+
+    def _roll_day(self) -> None:
+        today = time.strftime("%Y-%m-%d")
+        if today != self._daily_day:
+            self._daily_day = today
+            self._daily_count = 0
+
+    def daily_exhausted(self) -> bool:
+        """当日请求数已达上限则不可用；跨天自动归零。"""
+        self._roll_day()
+        return self.daily_limit > 0 and self._daily_count >= self.daily_limit
 
     def healthy(self) -> bool:
         return self.cooldown_until < time.time()
@@ -110,6 +164,8 @@ class AccountClient:
     def mark_ok(self) -> None:
         self.cooldown_until = 0.0
         self.rate_hits = 0
+        self._roll_day()
+        self._daily_count += 1
 
 
 class ClientPool:
@@ -178,10 +234,11 @@ class ClientPool:
             self._sync()
             items = [c for c in self._clients.values()
                      if c.account["id"] not in exclude and c.healthy()
-                     and account_ready(c.account)]
+                     and account_ready(c.account) and not c.daily_exhausted()]
             if not items:
                 cooling = [c for c in self._clients.values()
-                           if c.account["id"] not in exclude and account_ready(c.account)]
+                           if c.account["id"] not in exclude and account_ready(c.account)
+                           and not c.daily_exhausted()]
                 items = [c for c in cooling if c.cooldown_left() <= 45]
             if allowed:
                 items = [c for c in items if c.account["id"] in allowed]
