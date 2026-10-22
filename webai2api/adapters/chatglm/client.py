@@ -67,20 +67,49 @@ def _make_sign(secret: str) -> tuple[str, str, str]:
     return timestamp, nonce, sign
 
 
-def _build_headers(secret: str, token: str | None = None) -> dict[str, str]:
+def _build_headers(
+    secret: str,
+    token: str | None = None,
+    device_id: str = "",
+    user_agent: str = "",
+    device_model: str = "",
+) -> dict[str, str]:
+    """构造请求头。
+
+    约定：同一账号的 device_id / UA 必须稳定（否则同 token 反复换设备，是强风控信号）。
+    device_id 为空时才退回按 UA 稳定派生，绝不每次随机。
+    """
     ts, nonce, sign = _make_sign(secret)
+    ua = user_agent or USER_AGENTS[0]
+    if device_id:
+        did = device_id
+    else:
+        did = hashlib.sha256(f"glm-device:{ua}".encode()).hexdigest()[:32]
     headers = {
         **BASE_HEADERS,
-        "User-Agent": random.choice(USER_AGENTS),
-        "X-Device-Id": uuid.uuid4().hex,
-        "X-Request-Id": uuid.uuid4().hex,
+        "User-Agent": ua,
+        "X-Device-Id": did,
+        "X-Request-Id": uuid.uuid4().hex,   # 每请求唯一是正常的
         "X-Sign": sign,
         "X-Timestamp": ts,
         "X-Nonce": nonce,
     }
+    if device_model:
+        headers["X-Device-Model"] = device_model
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
+
+
+def _headers_for(config: GlmConfig, token: str | None = None) -> dict[str, str]:
+    """按账号配置构造稳定指纹的请求头。"""
+    return _build_headers(
+        config.sign_secret,
+        token,
+        device_id=getattr(config, "device_id", "") or "",
+        user_agent=getattr(config, "user_agent", "") or "",
+        device_model=getattr(config, "device_model", "") or "",
+    )
 
 
 def _text_of(msg: dict) -> str:
@@ -273,10 +302,16 @@ class ChatGlmWebClient:
         self._token_expire = 0.0
         # 会话缓存：同一段对话复用 conversation_id，多轮只发增量（与 DeepSeek 行为一致）
         self._conv_lock = threading.Lock()
-        self._conv_cache: dict[str, tuple[str, float]] = {}
+        self._conv_cache: dict[str, tuple[str, float, int]] = {}
+        # 同账号上游请求最小间隔
+        self._last_call_at: float = 0.0
+        self._last_call_lock = threading.Lock()
 
     def _conv_key(self, payload: dict) -> str:
-        """用「首条用户消息 + system」做会话指纹。"""
+        """稳定会话指纹：system + 首条 user + model + key_id。
+
+        不随轮次/工具轮变化，避免每轮新建上游会话；带 key_id 做租户隔离。
+        """
         msgs = payload.get("messages") or []
         first = ""
         system = ""
@@ -287,7 +322,8 @@ class ChatGlmWebClient:
                 system = text
             elif role == "user" and not first:
                 first = text
-        raw = f"{system}\x00{first}\x00{payload.get('model') or ''}"
+        raw = (f"{system[:200]}\x00{first[:500]}\x00"
+               f"{payload.get('model') or ''}\x00{payload.get('_wapi_key_id') or ''}")
         return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
 
     def _cached_conv(self, key: str) -> str:
@@ -297,11 +333,16 @@ class ChatGlmWebClient:
             item = self._conv_cache.get(key)
             if not item:
                 return ""
-            conv_id, ts = item
+            conv_id, ts, turns = item
             if time.time() - ts > self.config.session_cache_ttl:
                 self._conv_cache.pop(key, None)
                 return ""
-            self._conv_cache[key] = (conv_id, time.time())
+            max_turns = int(getattr(self.config, "max_turns_per_session", 40) or 40)
+            if turns >= max_turns:
+                self._conv_cache.pop(key, None)
+                self.logger.info("会话轮次已达上限(%d) → 新建会话", max_turns)
+                return ""
+            self._conv_cache[key] = (conv_id, time.time(), turns)
             return conv_id
 
     def _store_conv(self, key: str, conv_id: str) -> None:
@@ -311,7 +352,9 @@ class ChatGlmWebClient:
             if len(self._conv_cache) >= self.config.session_cache_max_size:
                 oldest = min(self._conv_cache.items(), key=lambda kv: kv[1][1])[0]
                 self._conv_cache.pop(oldest, None)
-            self._conv_cache[key] = (conv_id, time.time())
+            prev = self._conv_cache.get(key)
+            turns = (prev[2] + 1) if prev and prev[0] == conv_id else 1
+            self._conv_cache[key] = (conv_id, time.time(), turns)
 
     def _drop_conv(self, key: str) -> None:
         with self._conv_lock:
@@ -370,7 +413,7 @@ class ChatGlmWebClient:
                 raise GlmError("缺少 refresh_token，请先在面板登录智谱清言账号", 401)
             data = self._post_json(
                 self.config.refresh_url, {},
-                _build_headers(self.config.sign_secret, self.config.refresh_token),
+                _headers_for(self.config, self.config.refresh_token),
                 min(self.config.request_timeout, 30),
             )
             code = data.get("code", data.get("status"))
@@ -449,12 +492,36 @@ class ChatGlmWebClient:
         }
 
     def _throttle(self) -> None:
+        """防风控节奏：硬性最小间隔 + 长尾延迟（大多数短、少量长停顿）。"""
         if not self.config.anti_rate_limit_enabled:
             return
-        lo = self.config.anti_rate_limit_min_delay
-        hi = max(lo, self.config.anti_rate_limit_max_delay)
-        if hi > 0:
-            time.sleep(random.uniform(lo, hi))
+        # 同账号两次上游请求的硬性最小间隔
+        min_interval = float(getattr(self.config, "min_request_interval", 0.0) or 0.0)
+        if min_interval > 0:
+            with self._last_call_lock:
+                now = time.time()
+                slot = max(now, self._last_call_at + min_interval)
+                self._last_call_at = slot
+            wait = slot - time.time()
+            if wait > 0:
+                time.sleep(wait)
+
+        lo = max(0.0, float(self.config.anti_rate_limit_min_delay))
+        hi = max(lo, float(self.config.anti_rate_limit_max_delay))
+        if hi <= 0:
+            return
+
+        # 长尾：少量请求出现 20~60s 长停顿，其余按对数正态分布
+        chance = float(getattr(self.config, "long_pause_chance", 0.02) or 0.0)
+        if chance > 0 and random.random() < chance:
+            delay = random.uniform(20, 60)
+        else:
+            import math
+            mid = max(0.1, (lo + hi) / 2)
+            delay = random.lognormvariate(math.log(mid), 0.6)
+        delay = min(max(delay, lo), max(1.0, hi * 3))
+        self.logger.info("AntiRateLimit | sleep=%.2fs before upstream request", delay)
+        time.sleep(delay)
 
     # ── 事件流 ─────────────────────────────────────────
     def _iter_events(self, resp):
@@ -496,14 +563,15 @@ class ChatGlmWebClient:
         token = self._access()
         # 命中会话缓存则复用 conversation_id（与 DeepSeek 的多轮增量行为一致）
         conv_key = self._conv_key(payload)
-        cached_conv = self._cached_conv(conv_key)
+        cached_conv = self._cached_conv(conv_key) or ""
         conn, resp = self._open_stream(
             self.config.stream_url,
             self._body(
                 content, model,
+                conv_id=cached_conv,
                 effort=str(payload.get("reasoning_effort") or self.config.default_effort),
             ),
-            _build_headers(self.config.sign_secret, token),
+            _headers_for(self.config, token),
             self.config.request_timeout,
         )
         conv_id = ""
@@ -544,7 +612,7 @@ class ChatGlmWebClient:
             self._post_json(
                 self.config.delete_url,
                 {"assistant_id": self.config.assistant_id, "conversation_id": conv_id},
-                _build_headers(self.config.sign_secret, token),
+                _headers_for(self.config, token),
                 min(self.config.request_timeout, 15),
             )
         except Exception as exc:  # noqa: BLE001
@@ -656,4 +724,6 @@ class ChatGlmWebClient:
         yield chunk({}, usage=_usage(payload, sent_text))
         yield chunk({}, finish="stop")
         yield "data: [DONE]\n\n"
+
+
 

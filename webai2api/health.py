@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -80,13 +81,35 @@ def _chatglm_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
     from .adapters.chatglm.client import _build_headers
     from .adapters.chatglm.config import DEFAULT_BASE_URL, SIGN_SECRET
 
+    # 与聊天请求使用同一套账号级固定指纹，避免「同 token 换设备」的强风控信号
+    def _prof() -> dict:
+        raw = account.get("profile")
+        if isinstance(raw, dict):
+            return raw
+        try:
+            data = json.loads(raw or "{}")
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    prof = _prof()
+    dev_id = str(prof.get("device_id") or "") or hashlib.sha256(
+        f"glm-device:{account.get('id') or account.get('name') or ''}".encode()
+    ).hexdigest()[:32]
+    ua = str(prof.get("ua") or "")
+    dev_model = str(prof.get("platform") or "")
+
+    def _hdr(token: str) -> dict:
+        return _build_headers(SIGN_SECRET, token, device_id=dev_id,
+                              user_agent=ua, device_model=dev_model)
+
     refresh = account.get("auth_token", "")
     if not refresh:
         raise RuntimeError("缺少 refresh_token")
     req = urllib.request.Request(
         DEFAULT_BASE_URL + "/chatglm/user-api/user/refresh",
         data=b"{}",
-        headers={**_build_headers(SIGN_SECRET, refresh), "Content-Type": "application/json"},
+        headers={**_hdr(refresh), "Content-Type": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -97,7 +120,7 @@ def _chatglm_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
         raise RuntimeError(data.get("message") or "refresh_token 已失效")
     req2 = urllib.request.Request(
         DEFAULT_BASE_URL + "/chatglm/user-api/user/info",
-        headers={**_build_headers(SIGN_SECRET, access), "Accept": "application/json"},
+        headers={**_hdr(access), "Accept": "application/json"},
     )
     with urllib.request.urlopen(req2, timeout=timeout) as r2:
         info = json.load(r2)

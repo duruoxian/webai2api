@@ -228,6 +228,12 @@ def run_webview_login(acc_id: str) -> None:
                         profile["ua"] = ua
                     if platform:
                         profile["platform"] = platform
+                    # 智谱需要账号级固定设备指纹：首次登录生成一次，之后永不改变
+                    if not profile.get("device_id"):
+                        import hashlib
+                        seed = f"{acc_id}:{ua or platform or token[:16]}"
+                        profile["device_id"] = hashlib.sha256(
+                            f"glm-device:{seed}".encode()).hexdigest()[:32]
                     fields["profile"] = json.dumps(profile, ensure_ascii=False)
                 except Exception:
                     pass
