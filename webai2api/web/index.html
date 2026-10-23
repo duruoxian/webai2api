@@ -452,9 +452,9 @@
             <div class="set-group-title">思考强度</div>
             <span class="hint" style="display:block;line-height:1.9">
               在客户端里选（opencode 的推理强度下拉）。<br>
-              只有 <b>qwen3.7-plus</b>（千问）有「快速 / 思考研究」两档：
-              <b>Low</b>→快速 · <b>Medium 及以上</b>→思考研究。<br>
-              <b>qwen3.8-max</b>、<b>qwen3.8-omni-flash</b> 不支持思考研究（选任何档位都按快速）。
+              <b>qwen3.7-plus</b> / <b>qwen3.8-max</b>：自动 / 思考 / 快速 三档
+              （<b>Medium</b>→自动 · <b>High / Max</b>→思考 · <b>Low</b>→快速）。<br>
+              <b>qwen3.8-omni-flash</b> 只有 思考 / 快速 两档（无自动）。
             </span>
           </div>
           <div class="btn-row">
@@ -2162,7 +2162,9 @@ function tuneGlass(dark){
           ? `,\n      "variants": { "标准": { "reasoningEffort": "low" }, "进阶": { "reasoningEffort": "high" } }`
           : `,\n      "variants": { "标准": { "reasoningEffort": "low" }, "进阶": { "reasoningEffort": "high" }, "极致": { "reasoningEffort": "max" } }`;
       }else if(prov==='qwen'){
-        if(low.includes('plus')) variants=`,\n      "variants": { "快速": { "reasoningEffort": "low" }, "思考研究": { "reasoningEffort": "max" } }`;
+        variants = low.includes('flash')
+          ? `,\n      "variants": { "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`
+          : `,\n      "variants": { "自动": { "reasoningEffort": "medium" }, "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`;
       }
       lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)}, "attachment": true, "reasoning": ${reason},\n`
         +`      "modalities": { "input": ["image","text"], "output": ["text"] },\n`

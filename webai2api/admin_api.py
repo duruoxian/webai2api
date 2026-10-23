@@ -1133,10 +1133,14 @@ def _build_opencode_snippet(host: str, key: str, models: list[str]) -> str:
                             '"进阶": { "reasoningEffort": "high" }, '
                             '"极致": { "reasoningEffort": "max" } }')
         elif prov == "qwen":
-            # 只有 Qwen3.7-Plus 有「快速 / 思考研究」两档；Max / Flash 单一模式
-            if "plus" in low:
-                variants = (',\n      "variants": { "快速": { "reasoningEffort": "low" }, '
-                            '"思考研究": { "reasoningEffort": "max" } }')
+            # Plus / Max：自动 / 思考 / 快速；Omni-Flash：只有 思考 / 快速
+            if "flash" in low:
+                variants = (',\n      "variants": { "思考": { "reasoningEffort": "high" }, '
+                            '"快速": { "reasoningEffort": "low" } }')
+            else:
+                variants = (',\n      "variants": { "自动": { "reasoningEffort": "medium" }, '
+                            '"思考": { "reasoningEffort": "high" }, '
+                            '"快速": { "reasoningEffort": "low" } }')
         lines.append(
             f'    {jmid}: {{ "name": {jmid}, "attachment": true, "reasoning": {reasoning},\n'
             f'      "modalities": {{ "input": ["image","text"], "output": ["text"] }},\n'

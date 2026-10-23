@@ -96,22 +96,44 @@ def _usage(payload: dict, text: str) -> dict:
     return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
 
 
-def _supports_research(model: str) -> bool:
-    """通义千问：只有 Qwen3.7-Plus 有「快速 / 思考研究」两档；
-    Qwen3.8-Max、Qwen3.8-Omni-Flash 不支持思考研究（恒为非思考）。"""
+def _supports_auto(model: str) -> bool:
+    """Qwen3.7-Plus / Qwen3.8-Max 有「自动」档；Omni-Flash 没有。"""
     m = (model or "").lower()
-    return "plus" in m
+    return "flash" not in m
+
+
+def _qwen_tier(effort: str, model: str) -> str:
+    """客户端 reasoning_effort → 千问思考档：自动 / 思考 / 快速。
+
+    - 自动（auto）：由模型自行决定是否思考（auto_thinking）
+    - 思考（thinking）：强制思考
+    - 快速（fast）：不思考
+    Omni-Flash 只有 思考 / 快速 两档，请求"自动"降为"思考"。
+    """
+    e = (effort or "").strip().lower()
+    if e in ("minimal", "auto", "medium"):
+        return "自动" if _supports_auto(model) else "思考"
+    if e in ("high", "max", "highest", "extreme"):
+        return "思考"
+    if e in ("none", "low", "fast"):
+        return "快速"
+    # 未指定 → 自动（Flash 无自动档 → 思考）
+    return "自动" if _supports_auto(model) else "思考"
 
 
 def _effort_to_payload(effort: str, model: str = "") -> dict:
     """客户端 reasoning_effort → OpenWebUI 的思考开关。
 
-    仅 Qwen3.7-Plus 有「快速 / 思考研究」两档（medium 及以上进入思考研究）；
-    Max / Flash 无思考研究，恒返回不思考。
+    自动 → thinking_enabled=False + auto_thinking=True
+    思考 → thinking_enabled=True
+    快速 → thinking_enabled=False
     """
-    e = (effort or "").strip().lower()
-    on = _supports_research(model) and e in ("medium", "high", "max", "highest", "extreme")
-    return {"thinking_enabled": on}
+    tier = _qwen_tier(effort, model)
+    if tier == "自动":
+        return {"thinking_enabled": False, "auto_thinking": True}
+    if tier == "思考":
+        return {"thinking_enabled": True, "auto_thinking": False}
+    return {"thinking_enabled": False, "auto_thinking": False}
 
 
 class QwenWebClient:

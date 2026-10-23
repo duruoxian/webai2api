@@ -119,17 +119,24 @@ def test_qwen_end_to_end(mock_server):
     cap = Handler.captured["qwen"]
     assert cap["headers"]["Authorization"] == "Bearer tok-q"
     assert cap["body"]["model"] == "kimi-k3"
-    assert cap["body"]["thinking_enabled"] is False      # 非 plus 模型恒不思考
-    # plus 模型 effort → 思考研究
+    assert cap["body"]["thinking_enabled"] is False      # 未指定档位 → 自动
+    assert cap["body"]["auto_thinking"] is True
+    # 显式"思考"
     p = _payload(); p["model"] = "qwen3.7-plus"; p["reasoning_effort"] = "high"
     c.chat_completion(p)
     assert Handler.captured["qwen"]["body"]["thinking_enabled"] is True
-    # plus 但 low → 快速（不思考）
+    assert Handler.captured["qwen"]["body"]["auto_thinking"] is False
+    # 显式"快速"
     p2 = _payload(); p2["model"] = "qwen3.7-plus"; p2["reasoning_effort"] = "low"
     c.chat_completion(p2)
     assert Handler.captured["qwen"]["body"]["thinking_enabled"] is False
-    # 第二轮带 chat_id query 参数
+    assert Handler.captured["qwen"]["body"]["auto_thinking"] is False
+    # 同一 plus 会话第二轮带 chat_id query 参数
     assert "chat_id=q-chat-1" in Handler.captured["qwen"]["path"]
+    # flash 无自动档：medium→思考
+    p3 = _payload(); p3["model"] = "qwen3.8-omni-flash"; p3["reasoning_effort"] = "medium"
+    c.chat_completion(p3)
+    assert Handler.captured["qwen"]["body"]["thinking_enabled"] is True
 
 
 def test_kimi_stream_chunks(mock_server):

@@ -91,7 +91,9 @@ def test_conv_cache_persist_and_ttl() -> None:
 # ── 思考档位映射（模型感知）──────────────────────────────
 def test_effort_mapping_tier_aware() -> None:
     from webai2api.adapters.kimi.client import _effort_to_payload as ke, _tier_for
-    from webai2api.adapters.qwen.client import _effort_to_payload as qe, _supports_research
+    from webai2api.adapters.qwen.client import (
+        _effort_to_payload as qe, _qwen_tier, _supports_auto,
+    )
 
     # Kimi 三档
     assert _tier_for("low", "kimi-k3") == "标准"
@@ -103,14 +105,22 @@ def test_effort_mapping_tier_aware() -> None:
     assert ke("high", "kimi-k3")["thinking"]["type"] == "enabled"
     assert ke("max", "kimi-k2.6")["thinking"]["type"] == "enabled"  # 降为进阶仍思考
 
-    # Qwen 仅 Plus 有思考研究
-    assert _supports_research("qwen3.7-plus") is True
-    assert _supports_research("qwen3.8-max") is False
-    assert _supports_research("qwen3.8-omni-flash") is False
-    assert qe("max", "qwen3.7-plus")["thinking_enabled"] is True
-    assert qe("max", "qwen3.8-max")["thinking_enabled"] is False
-    assert qe("high", "qwen3.7-plus")["thinking_enabled"] is True
-    assert qe("low", "qwen3.7-plus")["thinking_enabled"] is False
+    # Qwen：plus / max 三档（自动/思考/快速），flash 两档
+    assert _supports_auto("qwen3.7-plus") is True
+    assert _supports_auto("qwen3.8-max") is True
+    assert _supports_auto("qwen3.8-omni-flash") is False
+    assert _qwen_tier("medium", "qwen3.7-plus") == "自动"
+    assert _qwen_tier("high", "qwen3.7-plus") == "思考"
+    assert _qwen_tier("low", "qwen3.7-plus") == "快速"
+    assert _qwen_tier("", "qwen3.7-plus") == "自动"
+    # flash 无自动档 → 自动降为思考
+    assert _qwen_tier("medium", "qwen3.8-omni-flash") == "思考"
+    assert _qwen_tier("low", "qwen3.8-omni-flash") == "快速"
+    # payload
+    assert qe("medium", "qwen3.7-plus") == {"thinking_enabled": False, "auto_thinking": True}
+    assert qe("high", "qwen3.7-plus") == {"thinking_enabled": True, "auto_thinking": False}
+    assert qe("low", "qwen3.7-plus") == {"thinking_enabled": False, "auto_thinking": False}
+    assert qe("medium", "qwen3.8-omni-flash")["thinking_enabled"] is True
 
 
 def test_kimi_body_passes_model_to_tier() -> None:
@@ -145,12 +155,13 @@ def test_snippet_variants_by_provider() -> None:
     assert '"快速"' in snip and '"极致"' in snip               # glm
     assert '"标准"' in snip and '"进阶"' in snip                # kimi 三档命名
     assert '"极致": { "reasoningEffort": "max" }' in snip      # kimi 非 k2.6 有极致
-    assert '"思考研究"' in snip                                 # qwen plus 专有档
+    assert '"思考研究"' not in snip                              # 旧档名已废弃
+    assert '"自动"' in snip and '"思考"' in snip and '"快速"' in snip
     assert '"reasoning": false' in snip                        # deepseek-chat 非思考
     assert json.loads("{\n" + snip.strip().rstrip(",") + "\n}")  # 外壳结构可解析
 
-    # k2.6 不应带极致档；qwen max 不带 variants
+    # k2.6 不应带极致档；flash 三档里没有"自动"
     k26 = _build_opencode_snippet("http://x", "sk", ["kimi-k2.6"])
     assert "极致" not in k26 and "进阶" in k26
-    qmax = _build_opencode_snippet("http://x", "sk", ["qwen3.8-max"])
-    assert "variants" not in qmax
+    flash = _build_opencode_snippet("http://x", "sk", ["qwen3.8-omni-flash"])
+    assert "自动" not in flash and "思考" in flash and "快速" in flash
