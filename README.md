@@ -18,7 +18,7 @@
 | 功能 | 说明 |
 |---|---|
 | 多账号 | 每个账号一套独立登录凭证，轮询调度，互不冲突 |
-| 多平台 | 支持 DeepSeek 网页版、智谱清言（chatglm.cn） |
+| 多平台 | 支持 DeepSeek 网页版、智谱清言（chatglm.cn）、Kimi（kimi.com）、通义千问（chat.qwen.ai） |
 | 多 Key | 给不同的人/用途发不同的 Key，可随时启用/停用/删除 |
 | 用量统计 | 每个模型、每个账号、每个 Key 的输入/输出 token 明细 |
 | 中文面板 | 浏览器打开 `/admin` 可视化操作（单文件面板 `webai2api/web/index.html`） |
@@ -95,7 +95,7 @@ copy(JSON.stringify({
 
 - **Base URL**：`http://127.0.0.1:8800/v1`
 - **API Key**：你生成的 `sk-...`
-- **模型**：`deepseek-chat` / `deepseek-reasoner` / `GLM-5.3` / `GLM-5.3-Flash`
+- **模型**：`deepseek-chat` / `deepseek-reasoner` / `GLM-5.3` / `GLM-5.3-Flash` / `kimi-k3` / `kimi-k2.8` / `kimi-k2.6` / `qwen3.7-plus` / `qwen3.8-max` / `qwen3.8-omni-flash`
 
 ## opencode 接入示例
 
@@ -285,7 +285,8 @@ webai2api/
 - [x] 打包成 Windows exe（PyInstaller）
 - [x] 原生桌面窗口（pywebview + 系统 WebView2，关闭窗口即退出）
 - [x] 接入智谱清言（chatglm.cn）：GLM-5.3 / GLM-5.3-Flash
-- [ ] 接入更多平台：Kimi / Qwen …
+- [x] 接入 Kimi（网页版 Connect 协议）：`kimi-k3` / `kimi-k2.8` / `kimi-k2.6`
+- [x] 接入通义千问（每账号隐藏浏览器中继，绕阿里风控）：`qwen3.7-plus` / `qwen3.8-max` / `qwen3.8-omni-flash`
 
 ## 测试
 
