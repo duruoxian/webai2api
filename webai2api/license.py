@@ -554,6 +554,14 @@ def _verify_record(rec: dict) -> dict:
     if info is None:
         return {"valid": False, "reason": "授权码无效", "code": "bad_code"}
 
+    # 绑定码：码里嵌了签发对象机器码的摘要，换机器直接拒绝
+    if info.get("bound"):
+        want = str(info.get("machine_digest") or "")
+        got = issuer.machine_digest(cur).hex().upper()
+        if want and want != got:
+            return {"valid": False, "code": "other_device",
+                    "reason": "此授权码不是为这台机器签发的", "machine": cur}
+
     days = int(info["days"])
     try:
         activated = float(rec.get("activated_at") or 0)
@@ -600,6 +608,13 @@ def activate(data_dir: Path, code: str) -> dict:
     info = issuer.verify_code((code or "").strip(), public_key())
     if info is None:
         return {"ok": False, "error": "授权码无效，请确认复制完整"}
+
+    # 绑定码：激活前先核对本机机器码
+    if info.get("bound"):
+        want = str(info.get("machine_digest") or "")
+        got = issuer.machine_digest(machine_code()).hex().upper()
+        if want and want != got:
+            return {"ok": False, "error": "此授权码不是为这台机器签发的，请向作者索取本机专用码"}
 
     # 从三份副本里取记录（data 被删也能拿到原来的激活时间）
     rec = _best_record(data_dir)

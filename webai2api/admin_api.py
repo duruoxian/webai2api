@@ -661,11 +661,17 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         except Exception:
             return {"ok": False, "error": "参数错误"}
         note = str(b.get("note") or "").strip()
+        machine = str(b.get("machine") or "").strip().upper()
+        # 绑定码一次只能签一个（一个码只对一台机器有效）
+        if machine and count != 1:
+            return {"ok": False, "error": "绑定机器码时只能签 1 个"}
         out = []
         for _ in range(count):
-            info = issuer.make_code(seed, days)
+            info = issuer.make_code(seed, days, machine_code=machine)
             out.append({"code": info["code"], "id": info["id"],
-                        "days": info["days"], "issued": info["issued"], "note": note})
+                        "days": info["days"], "issued": info["issued"],
+                        "note": note, "bound": info["bound"],
+                        "machine_digest": info["machine_digest"]})
         await run_in_threadpool(_issuer_log, out)
         return {"ok": True, "items": out}
 
