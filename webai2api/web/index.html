@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api 客户版</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%235cbeff'/><stop offset='1' stop-color='%230a84ff'/></linearGradient></defs><rect width='100' height='100' rx='24' fill='url(%23g)'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.17">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.18">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -16,7 +16,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.17"></script>
+<script src="/admin/static/hyalite.js?v=0.1.18"></script>
 </head>
 <body>
 
@@ -387,7 +387,7 @@
       <label class="fld"><span>名称</span><input id="accName" placeholder="例如：我的 DeepSeek"></label>
       <label class="fld"><span id="accProviderLabel">平台</span>
         <div class="sel" id="sel-accProvider">
-          <select id="accProvider" class="sel-native" onchange="onProviderChange()"><option value="deepseek">DeepSeek 网页版</option><option value="chatglm">智谱清言（chatglm.cn）</option></select>
+          <select id="accProvider" class="sel-native" onchange="onProviderChange()"><option value="deepseek">DeepSeek 网页版</option><option value="chatglm">智谱清言（chatglm.cn）</option><option value="kimi">Kimi（kimi.com）</option><option value="qwen">通义千问（chat.qwen.ai）</option></select>
           <button type="button" class="sel-btn" onclick="selToggle('accProvider')">
             <span id="lbl-accProvider">DeepSeek 网页版</span>
             <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
@@ -416,6 +416,7 @@
         <input id="accProxy" placeholder="http://user:pass@host:port 或 socks5://host:port"></label>
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px">
         <button class="btn gray sm" onclick="testProxy()">测试代理</button>
+        <button class="btn gray sm" id="clashPreset" onclick="useClash()" style="display:none">交给 Clash 分流</button>
         <span id="proxyTestResult" class="muted" style="font-size:12px"></span>
       </div>
     </div>
@@ -885,9 +886,10 @@ function renderOverview(s){
   });
   (s.accounts||[]).forEach(a=>{ if(a.health==='expired') alerts.push(`账号「${a.name}」凭证已失效，请重新登录`); });
   const net=s.network||{};
-  if(net.tun) alerts.push(net.tun_warning||`检测到 TUN 网卡「${net.tun}」，直连账号实际仍会走代理`);
+  window.__clashProxy=net.clash_proxy||'';
+  if(net.tun) alerts.push(net.tun_note||`检测到 TUN 网卡「${net.tun}」：规则模式下国内站直连有效，全局模式下会走节点`);
   const directCount=(s.accounts||[]).filter(a=>(a.egress||'system')==='direct').length;
-  if(net.tun&&directCount) alerts.push(`有 ${directCount} 个账号设为「直连」，但 TUN 开启时不会真正直连`);
+  if(net.tun&&directCount&&net.global_mode) alerts.push(`有 ${directCount} 个账号设为「直连」：Clash 处于全局模式时它们也会走节点`);
   const lic=s.license||{};
   if(lic.enabled){
     if(!lic.valid) alerts.push(`授权不可用：${lic.reason||'请到设置里输入授权码'}`);
@@ -1440,19 +1442,31 @@ function onEgressChange(){
   const mode=document.getElementById('accEgress').value;
   const wrap=document.getElementById('accProxyWrap');
   if(wrap) wrap.style.display = mode==='custom' ? 'block' : 'none';
+  const cp=document.getElementById('clashPreset');
+  if(cp) cp.style.display = (mode==='custom' && window.__clashProxy) ? '' : 'none';
   const hint=document.getElementById('accEgressHint');
   if(hint){
-    if(mode==='direct') hint.textContent='直连会强制忽略系统代理。注意：若 Clash 开了 TUN 模式，流量仍会被网卡层接管（面板顶部会提示）。';
-    else if(mode==='custom') hint.textContent='自定义代理：登录、健康检查、聊天请求都走这个代理，出口保持一致。';
+    if(mode==='direct') hint.textContent='直连：强制忽略系统代理。若 Clash 是 TUN+规则模式，国内站（DeepSeek/Kimi/千问）出口仍是家宽 IP；仅当 Clash 切「全局模式」时直连才会走节点。';
+    else if(mode==='custom') hint.textContent='自定义代理：登录、健康检查、聊天请求都走这个代理，出口保持一致。本机开着 Clash 时可点「交给 Clash 分流」按它的规则走。';
     else hint.textContent='跟随系统代理：Clash 开系统代理时走代理，关闭时直连。';
   }
+}
+function useClash(){
+  const px=window.__clashProxy||'http://127.0.0.1:7897';
+  const el=document.getElementById('accProxy');
+  if(el) el.value=px;
+  const out=document.getElementById('proxyTestResult');
+  if(out) out.textContent='已填入 '+px+'（点击「测试代理」验证出口）';
 }
 function onProviderChange(){
   const p=document.getElementById('accProvider').value;
   const t=document.getElementById('accCredHint');
-  if(t) t.textContent = p==='chatglm'
-    ? '智谱清言：浏览器登录后会自动抓取 refresh_token（也可在下面手动粘贴）。'
-    : 'DeepSeek：浏览器登录后会自动抓取，下面的凭证可以留空。';
+  const hints={
+    chatglm:'智谱清言：浏览器登录后会自动抓取 refresh_token（也可在下面手动粘贴）。',
+    kimi:'Kimi：浏览器登录后会自动抓取 accessToken（Authorization Bearer；也可手动粘贴）。',
+    qwen:'通义千问：浏览器登录后会自动抓取 access_token（OpenWebUI；也可手动粘贴）。'
+  };
+  if(t) t.textContent = hints[p] || 'DeepSeek：浏览器登录后会自动抓取，下面的凭证可以留空。';
 }
 function closeModal(id){
   document.getElementById(id).classList.remove('show');
@@ -1781,16 +1795,29 @@ function tuneGlass(dark){
   document.getElementById('baseHint').textContent=loc+'/v1';
   document.getElementById('baseHint2').textContent=loc+'/v1';
   let OC_SNIP='';
-  let LIMITS={deepseek:{context:1000000,output:384000},chatglm:{context:1000000,output:128000}};
+  let LIMITS={deepseek:{context:1000000,output:384000},chatglm:{context:1000000,output:128000},kimi:{context:262144,output:32768},qwen:{context:262144,output:65536}};
+  const provOf=m=>{const s=String(m||'').toLowerCase();
+    if(s.startsWith('glm'))return'chatglm'; if(s.startsWith('kimi')||s.startsWith('moonshot'))return'kimi';
+    if(s.startsWith('qwen'))return'qwen'; return'deepseek';};
   function buildSnippet(models,keyVal){
     const lines=[];
     for(const m of models){
-      const isGlm=m.toLowerCase().startsWith('glm');
-      const lim=isGlm?LIMITS.chatglm:LIMITS.deepseek;
-      const reason=isGlm||/reasoner/i.test(m);
-      const variants=isGlm
-        ? `,\n      "variants": { "快速": { "reasoningEffort": "low" }, "深度": { "reasoningEffort": "medium" }, "极致": { "reasoningEffort": "max" } }`
-        : '';
+      const low=m.toLowerCase();
+      const prov=provOf(m);
+      const lim=LIMITS[prov]||LIMITS.deepseek;
+      const reason=!(low==='deepseek-chat'||low==='deepseek-v4-flash');
+      let variants='';
+      if(prov==='chatglm'){
+        variants=`,\n      "variants": { "快速": { "reasoningEffort": "low" }, "深度": { "reasoningEffort": "medium" }, "极致": { "reasoningEffort": "max" } }`;
+      }else if(prov==='kimi'){
+        variants=low.includes('k2.6')
+          ? `,\n      "variants": { "标准": { "reasoningEffort": "low" }, "进阶": { "reasoningEffort": "high" } }`
+          : `,\n      "variants": { "标准": { "reasoningEffort": "low" }, "进阶": { "reasoningEffort": "high" }, "极致": { "reasoningEffort": "max" } }`;
+      }else if(prov==='qwen'){
+        variants = low.includes('flash')
+          ? `,\n      "variants": { "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`
+          : `,\n      "variants": { "自动": { "reasoningEffort": "medium" }, "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`;
+      }
       lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)}, "attachment": true, "reasoning": ${reason},\n`
         +`      "modalities": { "input": ["image","text"], "output": ["text"] },\n`
         +`      "limit": { "context": ${lim.context}, "output": ${lim.output} }${variants} }`);
@@ -1811,10 +1838,12 @@ ${lines.join(',\n')}
   window.__setLimits=function(settings){
     const n=(v,d)=>{const x=Number(v);return Number.isFinite(x)&&x>0?x:d;};
     LIMITS={deepseek:{context:n(settings.deepseek_context_limit,1000000),output:n(settings.deepseek_output_limit,384000)},
-            chatglm:{context:n(settings.glm_context_limit,1000000),output:n(settings.glm_output_limit,128000)}};
+            chatglm:{context:n(settings.glm_context_limit,1000000),output:n(settings.glm_output_limit,128000)},
+            kimi:{context:n(settings.kimi_context_limit,262144),output:n(settings.kimi_output_limit,32768)},
+            qwen:{context:n(settings.qwen_context_limit,262144),output:n(settings.qwen_output_limit,65536)}};
     if(window.__lastModels) window.__setSnippet(window.__lastModels);
   };
-  const DEFAULT_MODELS=['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash'];
+  const DEFAULT_MODELS=['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash','kimi-k3','kimi-k2.8','kimi-k2.6','qwen3.7-plus','qwen3.8-max','qwen3.8-omni-flash'];
   // sel.value 始终是 Key 的 id；明文 key 仅通过 LAST_STATE.keys 按 id 查找
   function getOcKeys(){ return ((LAST_STATE&&LAST_STATE.keys)||[]).filter(k=>k.enabled); }
   function maskKey(k){ const v=String((k&&k.key)||''); if(v.length<=12) return v; return v.slice(0,8)+'…'+v.slice(-4); }

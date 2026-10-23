@@ -154,10 +154,84 @@ def _chatglm_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
     return "ok", profile, new_refresh
 
 
+def _kimi_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
+    """Kimi：GET /api/user（Bearer auth_token）。401 → 由外层记 expired。"""
+    token = str(account.get("auth_token") or "").strip()
+    if not token:
+        raise RuntimeError("缺少 accessToken，请先在面板登录 Kimi")
+    profile = _parse_profile(account)
+    ua = str(profile.get("ua") or "").strip()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": ua or DEFAULT_DEEPSEEK_UA,
+        "Origin": "https://www.kimi.com",
+        "Referer": "https://www.kimi.com/",
+    }
+    if account.get("cookie"):
+        headers["Cookie"] = account["cookie"]
+    req = urllib.request.Request("https://www.kimi.com/api/user", headers=headers)
+    with _open_account(account, req, timeout) as r:
+        data = json.load(r)
+    # 兼容 {"data":{...}} 与直接返回用户对象两种形态
+    user = data.get("data") if isinstance(data.get("data"), dict) else data
+    uid = str(user.get("id") or user.get("user_id") or user.get("uid") or "")
+    if not uid:
+        raise RuntimeError(str(data.get("message") or "token 无效"))
+    return "ok", {
+        "uid": uid,
+        "nickname": str(user.get("name") or user.get("nickname") or ""),
+    }, ""
+
+
+def _qwen_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
+    """通义千问：GET /api/v2/auths/（OpenWebUI 用户接口）。
+
+    注意 Qwen 的信封：HTTP 200 也可能 {"success":false,...,"code":"Unauthorized"}，
+    必须按 body 判断而不是状态码。
+    """
+    token = str(account.get("auth_token") or "").strip()
+    if not token:
+        raise RuntimeError("缺少 access_token，请先在面板登录通义千问")
+    profile = _parse_profile(account)
+    ua = str(profile.get("ua") or "").strip()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": ua or DEFAULT_DEEPSEEK_UA,
+        "Origin": "https://chat.qwen.ai",
+        "Referer": "https://chat.qwen.ai/",
+    }
+    if account.get("cookie"):
+        headers["Cookie"] = account["cookie"]
+    req = urllib.request.Request("https://chat.qwen.ai/api/v2/auths/", headers=headers)
+    with _open_account(account, req, timeout) as r:
+        data = json.load(r)
+    if data.get("success") is False:
+        err = (data.get("data") or {})
+        msg = str(err.get("code") or err.get("details") or "token 无效")
+        if "unauth" in msg.lower():
+            raise RuntimeError(f"access_token 已过期: {msg}")
+        raise RuntimeError(msg)
+    user = data.get("data") or data
+    uid = str(user.get("id") or user.get("user_id") or "")
+    if not uid:
+        raise RuntimeError("token 无效（响应缺少用户 id）")
+    return "ok", {
+        "uid": uid,
+        "email": str(user.get("email") or ""),
+        "nickname": str(user.get("name") or user.get("nickname") or ""),
+    }, ""
+
+
 def check_account(account: dict) -> tuple[str, dict, str]:
     provider = account.get("provider", "")
     if provider == "chatglm":
         return _chatglm_check(account)
+    if provider == "kimi":
+        return _kimi_check(account)
+    if provider == "qwen":
+        return _qwen_check(account)
     return _deepseek_check(account)
 
 

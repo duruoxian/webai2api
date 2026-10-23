@@ -3,7 +3,7 @@
 ;   & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\webai2api-lite.iss
 
 #define MyAppName "webai2api 客户版"
-#define MyAppVersion "0.1.17"
+#define MyAppVersion "0.1.18"
 #define MyAppPublisher "DuRuoxian"
 #define MyAppURL "https://github.com/duruoxian/webai2api"
 #define MyAppExeName "webai2api.exe"
