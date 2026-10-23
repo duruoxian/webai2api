@@ -28,7 +28,8 @@ from .store import Store
 router = APIRouter(prefix="/admin/api")
 
 INTERNAL_KEY_NAME = "internal"
-PROVIDER_LABEL = {"deepseek": "DeepSeek", "chatglm": "智谱清言"}
+PROVIDER_LABEL = {"deepseek": "DeepSeek", "chatglm": "智谱清言",
+                   "kimi": "Kimi", "qwen": "通义千问"}
 
 # 面向普通用户的模型说明（不暴露技术细节）
 MODEL_INFO = {
@@ -150,7 +151,7 @@ def create_lite_router(store: Store, registry: ProviderRegistry,
         except Exception:
             body = {}
         provider = str(body.get("provider") or "deepseek").strip().lower()
-        if provider not in ("deepseek", "chatglm"):
+        if provider not in ("deepseek", "chatglm", "kimi", "qwen"):
             return _err("不支持的平台")
 
         # 复用同平台第一个账号；没有则新建

@@ -34,6 +34,12 @@
         <button class="choice" onclick="pickProvider('chatglm')">
           <b>智谱清言</b><span>GLM-5.3 · GLM-5.3-Flash</span>
         </button>
+        <button class="choice" onclick="pickProvider('kimi')">
+          <b>Kimi</b><span>kimi-k3 · kimi-k2.8 · kimi-k2.6</span>
+        </button>
+        <button class="choice" onclick="pickProvider('qwen')">
+          <b>通义千问</b><span>qwen3.7-plus · qwen3.8-max · omni-flash</span>
+        </button>
       </div>
     </div>
 
@@ -156,6 +162,8 @@
 let TOKEN='';
 let STATE=null;
 let PROVIDER='deepseek';
+const PROV_LABEL={deepseek:'DeepSeek',chatglm:'智谱清言',kimi:'Kimi',qwen:'通义千问'};
+function provLabel(p){ return PROV_LABEL[p]||p||'DeepSeek'; }
 let LOGIN_ACC='';
 let LOGIN_TIMER=null;
 
@@ -224,7 +232,7 @@ function setStep(n){
 }
 function pickProvider(p){
   PROVIDER=p;
-  $('loginProviderName').textContent = p==='chatglm' ? '智谱清言' : 'DeepSeek';
+  $('loginProviderName').textContent = provLabel(p);
   setStep(2);
 }
 async function startLogin(){
@@ -318,7 +326,7 @@ function showLogin(){
 }
 async function relogin(id, provider){
   PROVIDER=provider;
-  $('loginProviderName').textContent = provider==='chatglm' ? '智谱清言' : 'DeepSeek';
+  $('loginProviderName').textContent = provLabel(provider);
   show('wizard'); setStep(2);
   const j=await api('/lite/login','POST',{provider});
   if(j&&j.ok){ LOGIN_ACC=j.account_id; $('loginState').textContent='正在打开登录窗口…'; pollLogin(); }
