@@ -78,7 +78,7 @@ def _open_account(account: dict, req: urllib.request.Request, timeout: int):
     return opener.open(req, timeout=timeout)
 
 
-def _deepseek_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
+def _deepseek_check(account: dict, timeout: int = 15) -> tuple[str, dict, str, str]:
     base = "https://chat.deepseek.com"
     headers = deepseek_headers(account)
     req = urllib.request.Request(base + "/api/v0/users/current", headers=headers)
@@ -92,10 +92,10 @@ def _deepseek_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
         "email": biz.get("email", ""),
         "phone": biz.get("mobile_number", ""),
     }
-    return "ok", profile, ""
+    return "ok", profile, "", ""
 
 
-def _chatglm_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
+def _chatglm_check(account: dict, timeout: int = 15) -> tuple[str, dict, str, str]:
     from .adapters.chatglm.client import _build_headers
     from .adapters.chatglm.config import DEFAULT_BASE_URL, SIGN_SECRET
 
@@ -151,18 +151,27 @@ def _chatglm_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
     }
     # 顺带把轮换后的 refresh_token 存回去
     new_refresh = result.get("refresh_token") or ""
-    return "ok", profile, new_refresh
+    return "ok", profile, new_refresh, ""
 
 
-def _kimi_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
-    """Kimi：GET /api/user（Bearer auth_token）。401 → 由外层记 expired。"""
-    token = str(account.get("auth_token") or "").strip()
-    if not token:
-        raise RuntimeError("缺少 accessToken，请先在面板登录 Kimi")
+def _kimi_refresh(account: dict, timeout: int = 15) -> tuple[str, str]:
+    """用 refreshToken 换新 accessToken。返回 (access, refresh)，失败 ("","")。
+
+    兼容老数据：0.1.19 及以前登录的 Kimi 账号可能把 refresh 存进了 auth_token，
+    所以 settings_token 为空时，回退用 auth_token 试作 refresh。
+    """
+    refresh = str(account.get("settings_token") or "").strip()
+    if not refresh:
+        cand = str(account.get("auth_token") or "").strip()
+        from .adapters.kimi.config import _is_refresh_jwt
+        if _is_refresh_jwt(cand):
+            refresh = cand
+    if not refresh:
+        return "", ""
     profile = _parse_profile(account)
     ua = str(profile.get("ua") or "").strip()
     headers = {
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"Bearer {refresh}",
         "Accept": "application/json",
         "User-Agent": ua or DEFAULT_DEEPSEEK_UA,
         "Origin": "https://www.kimi.com",
@@ -170,10 +179,59 @@ def _kimi_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
     }
     if account.get("cookie"):
         headers["Cookie"] = account["cookie"]
-    req = urllib.request.Request("https://www.kimi.com/api/user", headers=headers)
-    with _open_account(account, req, timeout) as r:
-        data = json.load(r)
-    # 兼容 {"data":{...}} 与直接返回用户对象两种形态
+    req = urllib.request.Request(
+        "https://www.kimi.com/api/auth/token/refresh", headers=headers)
+    try:
+        with _open_account(account, req, timeout) as r:
+            data = json.load(r)
+    except Exception:  # noqa: BLE001
+        return "", ""
+    return (str(data.get("access_token") or ""),
+            str(data.get("refresh_token") or ""))
+
+
+def _kimi_check(account: dict, timeout: int = 15) -> tuple[str, dict, str, str]:
+    """Kimi：GET /api/user（Bearer accessToken）。
+
+    accessToken 只有 15 分钟有效，失败时自动用 refreshToken 续期并重试，
+    第三个返回值是新的 access，第四个是新的 refresh（可能轮换），由上层写库。
+    """
+    token = str(account.get("auth_token") or "").strip()
+    profile = _parse_profile(account)
+    ua = str(profile.get("ua") or "").strip()
+    from .adapters.kimi.config import _is_refresh_jwt
+    # auth_token 里其实是 refresh → 不当它用，直接走续期
+    usable = "" if _is_refresh_jwt(token) else token
+
+    def _call(tok: str) -> dict:
+        headers = {
+            "Authorization": f"Bearer {tok}",
+            "Accept": "application/json",
+            "User-Agent": ua or DEFAULT_DEEPSEEK_UA,
+            "Origin": "https://www.kimi.com",
+            "Referer": "https://www.kimi.com/",
+        }
+        if account.get("cookie"):
+            headers["Cookie"] = account["cookie"]
+        req = urllib.request.Request("https://www.kimi.com/api/user", headers=headers)
+        with _open_account(account, req, timeout) as r:
+            return json.load(r)
+
+    new_access = ""
+    new_refresh = ""
+    data: dict = {}
+    try:
+        if not usable:
+            raise RuntimeError("no access token")
+        data = _call(usable)
+    except Exception:  # noqa: BLE001
+        access, refresh = _kimi_refresh(account, timeout)
+        if not access:
+            raise RuntimeError("accessToken 已过期，且续期失败，请重新登录 Kimi")
+        data = _call(access)
+        new_access = access
+        new_refresh = refresh
+
     user = data.get("data") if isinstance(data.get("data"), dict) else data
     uid = str(user.get("id") or user.get("user_id") or user.get("uid") or "")
     if not uid:
@@ -181,10 +239,35 @@ def _kimi_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
     return "ok", {
         "uid": uid,
         "nickname": str(user.get("name") or user.get("nickname") or ""),
-    }, ""
+    }, new_access, new_refresh
 
 
-def _qwen_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
+def _qwen_refresh(account: dict, timeout: int = 15) -> str:
+    """用登录 cookie 换新 access_token（GET /api/v2/auths/refresh）。"""
+    cookie = str(account.get("cookie") or "").strip()
+    if not cookie:
+        return ""
+    profile = _parse_profile(account)
+    ua = str(profile.get("ua") or "").strip()
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": ua or DEFAULT_DEEPSEEK_UA,
+        "Origin": "https://chat.qwen.ai",
+        "Referer": "https://chat.qwen.ai/",
+        "Cookie": cookie,
+    }
+    req = urllib.request.Request(
+        "https://chat.qwen.ai/api/v2/auths/refresh", headers=headers)
+    try:
+        with _open_account(account, req, timeout) as r:
+            data = json.load(r)
+    except Exception:  # noqa: BLE001
+        return ""
+    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return str(inner.get("access_token") or "")
+
+
+def _qwen_check(account: dict, timeout: int = 15) -> tuple[str, dict, str, str]:
     """通义千问：GET /api/v2/auths/（OpenWebUI 用户接口）。
 
     注意 Qwen 的信封：HTTP 200 也可能 {"success":false,...,"code":"Unauthorized"}，
@@ -204,9 +287,24 @@ def _qwen_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
     }
     if account.get("cookie"):
         headers["Cookie"] = account["cookie"]
-    req = urllib.request.Request("https://chat.qwen.ai/api/v2/auths/", headers=headers)
-    with _open_account(account, req, timeout) as r:
-        data = json.load(r)
+    def _call(tok: str) -> dict:
+        h = dict(headers)
+        h["Authorization"] = f"Bearer {tok}"
+        req = urllib.request.Request("https://chat.qwen.ai/api/v2/auths/", headers=h)
+        with _open_account(account, req, timeout) as r:
+            return json.load(r)
+
+    new_token = ""
+    try:
+        data = _call(token)
+        if data.get("success") is False:
+            raise RuntimeError("unauthorized")
+    except Exception:  # noqa: BLE001
+        access = _qwen_refresh(account, timeout)
+        if not access:
+            raise RuntimeError("access_token 已过期，且续期失败，请重新登录通义千问")
+        data = _call(access)
+        new_token = access
     if data.get("success") is False:
         err = (data.get("data") or {})
         msg = str(err.get("code") or err.get("details") or "token 无效")
@@ -221,10 +319,10 @@ def _qwen_check(account: dict, timeout: int = 15) -> tuple[str, dict, str]:
         "uid": uid,
         "email": str(user.get("email") or ""),
         "nickname": str(user.get("name") or user.get("nickname") or ""),
-    }, ""
+    }, new_token, ""
 
 
-def check_account(account: dict) -> tuple[str, dict, str]:
+def check_account(account: dict) -> tuple[str, dict, str, str]:
     provider = account.get("provider", "")
     if provider == "chatglm":
         return _chatglm_check(account)
@@ -262,9 +360,10 @@ class HealthMonitor:
             if only_stale and time.time() - float(account.get("checked_at") or 0) < self.interval:
                 continue
             try:
-                status, profile, new_token = check_account(account)
+                status, profile, new_token, new_refresh = check_account(account)
                 self.store.set_account_health(
-                    account["id"], status, profile, new_token or None)
+                    account["id"], status, profile,
+                    new_token or None, new_refresh or None)
                 results.append({"id": account["id"], "status": status})
             except urllib.error.HTTPError as exc:
                 status = "expired" if exc.code in (401, 403) else f"http_{exc.code}"

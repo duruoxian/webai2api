@@ -43,26 +43,20 @@ class QwenConfig:
     session_store_path: str = ""
     proxy: str = ""
     egress: str = "system"
+    account_id: str = ""
+    relay_enabled: bool = True
 
     @property
     def chat_url(self) -> str:
         return f"{self.base_url}/api/v2/chat/completions"
 
     @property
-    def user_url(self) -> str:
-        return f"{self.base_url}/api/v2/auths/"
-
-    @property
-    def models_url(self) -> str:
-        return f"{self.base_url}/api/v2/models/"
+    def refresh_url(self) -> str:
+        """用登录 cookie 换新 access_token（GET /api/v2/auths/refresh）。"""
+        return f"{self.base_url}/api/v2/auths/refresh"
 
     def chat_delete_url(self, chat_id: str) -> str:
         return f"{self.base_url}/api/v2/chats/{chat_id}"
-
-    @property
-    def login_url(self) -> str:
-        return f"{self.base_url}/"
-
 
 def _parse_profile(account: dict) -> dict:
     raw = account.get("profile")
@@ -133,4 +127,5 @@ def build_config(store, account: dict) -> QwenConfig:
         session_store_path=_session_store_path(account),
         proxy=str(account.get("proxy") or ""),
         egress=str(account.get("egress") or "system"),
+        account_id=str(account.get("id") or ""),
     )

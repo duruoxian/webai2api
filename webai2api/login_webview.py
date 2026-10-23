@@ -107,11 +107,23 @@ def _jwt_find_js(guest_markers: str) -> str:
     if(pl && (pl.is_anonymous === true || pl.anonymous === true || pl.is_guest === true)) return true;
     return !!(pl && pl.uid === 'anonymous');
   };
-  let auth = '', key = '';
+  // 只接受「访问令牌」：明确排除 refresh（Kimi 会同时下发 access/refresh，
+  // 用 refresh 调 /api/user 会 401 auth.token.invalid）
+  const isRefreshToken = (t, key) => {
+    if(key && /refresh/i.test(key)) return true;
+    const pl = decodePayload(t);
+    return !!(pl && (pl.typ === 'refresh' || pl.type === 'refresh'));
+  };
+  let auth = '', key = '', refreshTok = '';
   const consider = (val, k) => {
     if(typeof val !== 'string' || auth) return;
     if(!JWT.test(val)) return;
     if(isGuestToken(val, k)) return;
+    if(isRefreshToken(val, k)){
+      // 顺手记住 refresh token，供 Kimi 自动续期（access 只有 15 分钟）
+      if(!refreshTok) refreshTok = val;
+      return;
+    }
     auth = val; key = k || '';
   };
   const walk = (obj, path, depth) => {
@@ -130,8 +142,22 @@ def _jwt_find_js(guest_markers: str) -> str:
     const lk = localStorage.key(i);
     const raw = localStorage.getItem(lk);
     if(!raw) continue;
-    if(JWT.test(raw) && !isGuestToken(raw, lk)){ auth = raw; key = lk; break; }
+    // 键名优先：access_token / accessToken 一定要排在 refresh 前面处理
+    if(JWT.test(raw) && !isGuestToken(raw, lk) && !isRefreshToken(raw, lk)){
+      auth = raw; key = lk; break;
+    }
     try{ walk(JSON.parse(raw), lk, 0); }catch(e){}
+  }
+  // 兜底：先扫一遍所有 access 键，再扫 JSON 嵌套（避免随机遍历顺序拿到 refresh）
+  if(!auth){
+    for(let i = 0; i < localStorage.length && !auth; i++){
+      const lk = localStorage.key(i);
+      if(!/access/i.test(lk)) continue;
+      const raw = localStorage.getItem(lk);
+      if(raw && JWT.test(raw) && !isGuestToken(raw, lk) && !isRefreshToken(raw, lk)){
+        auth = raw; key = lk;
+      }
+    }
   }
   if(!auth){ try{ walk(window.__INITIAL_STATE__ || {}, 'state', 0); }catch(e){} }
   let guest = false;
@@ -155,7 +181,7 @@ def _jwt_find_js(guest_markers: str) -> str:
     }
   }
   return JSON.stringify({
-    auth_token: auth, device_id: '', settings_token: '',
+    auth_token: auth, device_id: '', settings_token: refreshTok,
     cookie: document.cookie||'', guest: guest,
     token_key: key,
     u: navigator.userAgent||'', p: navigator.platform||''

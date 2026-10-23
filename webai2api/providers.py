@@ -45,6 +45,10 @@ MODEL_PREFIXES: tuple[tuple[str, str], ...] = (
 
 DEFAULT_PROVIDER = "deepseek"
 
+# 对外可用的平台：DeepSeek / 智谱 / Kimi / 千问。
+# Kimi 走网页版 Connect 协议；千问走每个账号一个隐藏 WebView2 中继（绕阿里风控）。
+PUBLIC_PROVIDERS: tuple[str, ...] = ("deepseek", "chatglm", "kimi", "qwen")
+
 
 def infer_provider(model: str | None) -> str:
     m = (model or "").strip().lower()
@@ -86,7 +90,8 @@ class ProviderRegistry:
         out: list[dict] = []
         # 1) 默认清单，但有可用账号的 provider 才展示
         active = {p for p in self._pools if self.store.list_accounts(p)}
-        active = active or set(self._pools)
+        active = active or set(PUBLIC_PROVIDERS)
+        active &= set(PUBLIC_PROVIDERS)
         for prov in active:
             for mid in PROVIDER_MODELS.get(prov, []):
                 if mid not in seen:
@@ -150,8 +155,11 @@ class ProviderRegistry:
                 return ac
         return None
 
-    def refresh(self) -> None:
-        for pool in self._pools.values():
+    def refresh(self, provider: str | None = None) -> None:
+        """刷新账号池。指定 provider 时只重建该平台的池（增删账号只需一个）。"""
+        pools = ([self._pools[provider]] if provider in self._pools
+                 else self._pools.values())
+        for pool in pools:
             try:
                 pool.refresh()
             except Exception as exc:  # noqa: BLE001

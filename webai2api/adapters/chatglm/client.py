@@ -475,12 +475,6 @@ class ChatGlmWebClient:
             if first_time:
                 self._bump("created")
 
-    def _drop_conv(self, key: str) -> None:
-        with self._conv_lock:
-            self._conv_cache.pop(key, None)
-            self._persist_conv()
-
-    # ── HTTP 基础 ──────────────────────────────────────
     @staticmethod
     def _split(url: str) -> tuple[str, str]:
         parts = urlsplit(url)
@@ -526,6 +520,8 @@ class ChatGlmWebClient:
             resp = conn.getresponse()
             raw = resp.read()
             if resp.status >= 400:
+                if resp.status == 429:
+                    self._bump("rate_limit")
                 raise GlmError(f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
             try:
                 return json.loads(raw.decode("utf-8"))
@@ -543,6 +539,8 @@ class ChatGlmWebClient:
         conn.request("POST", path, body=json.dumps(body).encode("utf-8"), headers=headers)
         resp = conn.getresponse()
         if resp.status >= 400:
+            if resp.status == 429:
+                self._bump("rate_limit")
             raw = resp.read()
             conn.close()
             raise GlmError(f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
@@ -576,12 +574,6 @@ class ChatGlmWebClient:
                 self.config.refresh_token = result["refresh_token"]
             return self._access_token
 
-    def _invalidate(self) -> None:
-        with self._lock:
-            self._access_token = ""
-            self._token_expire = 0.0
-
-    # ── 请求体 ─────────────────────────────────────────
     def _assistant_id(self, model: str) -> str:
         # 24 位以上纯小写字母数字 → 视为智能体 ID
         if len(model) >= 24 and model.isalnum() and model.islower():

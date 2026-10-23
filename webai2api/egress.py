@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import urllib.request
 
-from .proxy import Proxy, parse_proxy
+from .proxy import parse_proxy
 
 # 出口模式
 EGRESS_DIRECT = "direct"    # 强制直连（忽略系统代理）

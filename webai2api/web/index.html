@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api 客户版</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%235cbeff'/><stop offset='1' stop-color='%230a84ff'/></linearGradient></defs><rect width='100' height='100' rx='24' fill='url(%23g)'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.19">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.20">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -16,7 +16,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.19"></script>
+<script src="/admin/static/hyalite.js?v=0.1.20"></script>
 </head>
 <body>
 
@@ -398,7 +398,7 @@
       <label class="fld"><span>名称</span><input id="accName" placeholder="例如：我的 DeepSeek"></label>
       <label class="fld"><span id="accProviderLabel">平台</span>
         <div class="sel" id="sel-accProvider">
-          <select id="accProvider" class="sel-native" onchange="onProviderChange()"><option value="deepseek">DeepSeek 网页版</option><option value="chatglm">智谱清言（chatglm.cn）</option><option value="kimi">Kimi（kimi.com）</option><option value="qwen">通义千问（chat.qwen.ai）</option></select>
+          <select id="accProvider" class="sel-native" onchange="onProviderChange()"><option value="deepseek">DeepSeek 网页版</option><option value="chatglm">智谱清言（chatglm.cn）</option></select>
           <button type="button" class="sel-btn" onclick="selToggle('accProvider')">
             <span id="lbl-accProvider">DeepSeek 网页版</span>
             <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>

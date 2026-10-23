@@ -14,6 +14,8 @@ import json
 import random
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from logging import Logger
 from urllib.parse import quote, urlsplit
@@ -140,9 +142,16 @@ class QwenWebClient:
     def __init__(self, config: QwenConfig, logger: Logger) -> None:
         self.config = config
         self.logger = logger
+        # access_token 只有 15 分钟：用登录 cookie 调 /auths/refresh 自动续期
+        self._token_lock = threading.Lock()
+        self._access_token = str(getattr(config, "auth_token", "") or "")
+        self._token_checked_at = 0.0
+        self._token_ttl = 300.0
         self._conv_lock = threading.Lock()
-        self._conv_cache: dict[str, tuple[str, float, int]] = {}
+        self._conv_cache: dict[str, tuple[str, float, int, str]] = {}
         self._persist_path = str(getattr(config, "session_store_path", "") or "")
+        self._relay_port: int = 0
+        self._relay_lock = threading.Lock()
         self._dirty = False
         self._last_persist = 0.0
         self._persist_min_interval = 5.0
@@ -183,7 +192,8 @@ class QwenWebClient:
                 continue
             if now - ts > self.config.session_cache_ttl:
                 continue
-            self._conv_cache[key] = (chat_id, ts, turns)
+            response_id = str(item.get("response_id") or "")
+            self._conv_cache[key] = (chat_id, ts, turns, response_id)
             loaded += 1
         while len(self._conv_cache) > self.config.session_cache_max_size:
             oldest = min(self._conv_cache.items(), key=lambda kv: kv[1][1])[0]
@@ -203,7 +213,12 @@ class QwenWebClient:
             import os
 
             data = {
-                k: {"chat_id": v[0], "last_used": v[1], "turns": v[2]}
+                k: {
+                    "chat_id": v[0],
+                    "last_used": v[1],
+                    "turns": v[2],
+                    "response_id": v[3],
+                }
                 for k, v in self._conv_cache.items()
             }
             tmp = f"{path}.tmp"
@@ -245,7 +260,7 @@ class QwenWebClient:
             item = self._conv_cache.get(key)
             if not item:
                 return ""
-            chat_id, ts, turns = item
+            chat_id, ts, turns, response_id = item
             if time.time() - ts > self.config.session_cache_ttl:
                 self._conv_cache.pop(key, None)
                 self._persist_conv()
@@ -258,16 +273,21 @@ class QwenWebClient:
                 self._bump("stale")
                 self.logger.info("会话轮次已达上限(%d) → 新建会话", max_turns)
                 return ""
-            self._conv_cache[key] = (chat_id, time.time(), turns)
+            self._conv_cache[key] = (chat_id, time.time(), turns, response_id)
             self._persist_conv()
             self._bump("hit")
             return chat_id
+
+    def _cached_response_id(self, key: str) -> str:
+        with self._conv_lock:
+            item = self._conv_cache.get(key)
+            return item[3] if item else ""
 
     def risk_stats(self) -> dict:
         with self._conv_lock:
             total = len(self._conv_cache)
             now = time.time()
-            active = sum(1 for (_c, ts, _t) in self._conv_cache.values()
+            active = sum(1 for (_c, ts, _t, _r) in self._conv_cache.values()
                          if now - ts <= self.config.session_cache_ttl)
             hit = getattr(self, "_stat_hit", 0)
             miss = getattr(self, "_stat_miss", 0)
@@ -289,7 +309,7 @@ class QwenWebClient:
     def _bump(self, name: str) -> None:
         setattr(self, f"_stat_{name}", getattr(self, f"_stat_{name}", 0) + 1)
 
-    def _store_conv(self, key: str, chat_id: str) -> None:
+    def _store_conv(self, key: str, chat_id: str, response_id: str = "") -> None:
         if not self.config.session_cache_enabled or not chat_id:
             return
         with self._conv_lock:
@@ -299,7 +319,8 @@ class QwenWebClient:
             prev = self._conv_cache.get(key)
             turns = (prev[2] + 1) if prev and prev[0] == chat_id else 1
             first_time = prev is None or prev[0] != chat_id
-            self._conv_cache[key] = (chat_id, time.time(), turns)
+            resp = response_id or (prev[3] if prev and prev[0] == chat_id else "")
+            self._conv_cache[key] = (chat_id, time.time(), turns, resp)
             self._persist_conv()
             if first_time:
                 self._bump("created")
@@ -355,6 +376,8 @@ class QwenWebClient:
             resp = conn.getresponse()
             raw = resp.read()
             if resp.status >= 400:
+                if resp.status == 429:
+                    self._bump("rate_limit")
                 raise QwenError(f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
             try:
                 return json.loads(raw.decode("utf-8"))
@@ -372,10 +395,62 @@ class QwenWebClient:
         conn.request("POST", path, body=json.dumps(body).encode("utf-8"), headers=headers)
         resp = conn.getresponse()
         if resp.status >= 400:
+            if resp.status == 429:
+                self._bump("rate_limit")
             raw = resp.read()
             conn.close()
             raise QwenError(f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
         return conn, resp
+
+    # ── access_token 自动续期 ───────────────────────────
+    def _valid_token(self, force: bool = False) -> str:
+        """返回可用的 access_token；过期时用登录 cookie 换新的。
+
+        Qwen 的 JWT 只有 15 分钟，续期接口：
+          GET /api/v2/auths/refresh（withCredentials，靠 cookie 鉴权）
+        返回 {"success":true,"data":{"access_token":...,"expires_at":...}}
+        """
+        with self._token_lock:
+            now = time.time()
+            if not force and self._access_token and now - self._token_checked_at < self._token_ttl:
+                return self._access_token
+            if not self.config.cookie:
+                self._token_checked_at = now
+                return self._access_token
+            url = self.config.refresh_url
+            headers = {
+                "Accept": "application/json",
+                "User-Agent": self.config.user_agent or USER_AGENTS[0],
+                "Origin": self.config.base_url,
+                "Referer": self.config.base_url + "/",
+                "Cookie": self.config.cookie,
+            }
+            try:
+                conn = self._conn(url, 20)
+                _, path = self._split(url)
+                conn.request("GET", path, headers=headers)
+                resp = conn.getresponse()
+                raw = resp.read()
+                conn.close()
+                if resp.status >= 400:
+                    if resp.status == 429:
+                        self._bump("rate_limit")
+                    self.logger.warning("Qwen 续期失败 HTTP %s", resp.status)
+                    self._token_checked_at = now
+                    return self._access_token
+                data = json.loads(raw.decode("utf-8"))
+                inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+                acc = str(inner.get("access_token") or "")
+                if acc:
+                    self._access_token = acc
+                    self.config.auth_token = acc
+                    self.logger.info("Qwen access_token 已自动续期")
+                self._token_checked_at = now
+                return self._access_token
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("Qwen 续期异常: %s", exc)
+                self._token_checked_at = now
+                return self._access_token
 
     # ── 请求体 ─────────────────────────────────────────
     def _body(self, payload: dict, chat_id: str = "") -> dict:
@@ -433,7 +508,7 @@ class QwenWebClient:
         max_turns = int(getattr(self.config, "max_turns_per_session", 40) or 40)
         stale: list[tuple[str, str]] = []
         with self._conv_lock:
-            for key, (chat_id, ts, turns) in list(self._conv_cache.items()):
+            for key, (chat_id, ts, turns, _resp) in list(self._conv_cache.items()):
                 if now - ts > ttl or turns >= max_turns:
                     stale.append((key, chat_id))
                     self._conv_cache.pop(key, None)
@@ -442,12 +517,15 @@ class QwenWebClient:
         if not stale:
             return
         removed = 0
-        headers = _build_headers(self.config, stream=False)
+        port = int(self._relay_port or 0)
         for _key, chat_id in stale:
+            if port and self._relay_delete(port, chat_id):
+                removed += 1
+                continue
             try:
                 conn = self._conn(self.config.chat_delete_url(chat_id), 15)
                 _, path = self._split(self.config.chat_delete_url(chat_id))
-                conn.request("DELETE", path, headers=headers)
+                conn.request("DELETE", path, headers=_build_headers(self.config, stream=False))
                 resp = conn.getresponse()
                 resp.read()
                 conn.close()
@@ -458,6 +536,19 @@ class QwenWebClient:
             self.logger.info("Qwen 会话清理：删除 %d 个过期会话", removed)
             for _ in range(removed):
                 self._bump("deleted")
+
+    def _relay_delete(self, port: int, chat_id: str) -> bool:
+        """优先用中继删除会话（绕风控）；失败返回 False 让调用方走直连兜底。"""
+        try:
+            raw = json.dumps({"chat_id": chat_id}, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/delete", data=raw, method="POST",
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=35) as resp:
+                data = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+            return bool(data.get("ok"))
+        except Exception:  # noqa: BLE001
+            return False
 
     # ── SSE 解析 ───────────────────────────────────────
     @staticmethod
@@ -501,7 +592,150 @@ class QwenWebClient:
             except Exception:
                 pass
 
+    def _ensure_relay(self) -> int:
+        with self._relay_lock:
+            if self._relay_port:
+                return self._relay_port
+            from ...qwen_relay import RelayManager
+
+            manager = RelayManager(self.config.account_id, self.logger)
+            self._relay_port = manager.ensure()
+            return self._relay_port
+
+    def _stream_via_relay(self, payload: dict):
+        conv_key = self._conv_key(payload)
+        cached = self._cached_conv(conv_key)
+        parent = self._cached_response_id(conv_key) if cached else ""
+        if not cached:
+            self._bump("miss")
+
+        messages = payload.get("messages") or []
+        user_text = ""
+        system_text = ""
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role")
+            text = _text_of(m)
+            if role == "system" and not system_text:
+                system_text = text
+            elif role == "user":
+                user_text = text
+
+        model = str(payload.get("model") or self.config.default_model)
+        effort = str(payload.get("reasoning_effort") or self.config.default_effort)
+        opts = _effort_to_payload(effort, model)
+        tier = _qwen_tier(effort, model)
+        mode = {"自动": "Auto", "思考": "Thinking", "快速": "Fast"}.get(tier, "Auto")
+
+        req_body = {
+            "prompt": user_text,
+            "system": system_text,
+            "model": model,
+            "chat_id": cached or "",
+            "parent_id": parent or "",
+            "thinking_enabled": bool(opts.get("thinking_enabled")),
+            "auto_thinking": bool(opts.get("auto_thinking")),
+            "thinking_mode": mode,
+            "auto_search": bool(self.config.search_enabled),
+            "base_url": self.config.base_url,
+        }
+        self._throttle()
+        self._bump("upstream")
+        try:
+            port = self._ensure_relay()
+        except Exception as exc:  # noqa: BLE001
+            self._relay_port = 0
+            raise QwenError(f"通义千问中继启动失败: {exc}") from exc
+
+        url = f"http://127.0.0.1:{port}/chat"
+        raw = json.dumps(req_body, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=raw, method="POST",
+            headers={"Content-Type": "application/json",
+                     "Accept": "text/event-stream"})
+        try:
+            resp = urllib.request.urlopen(req, timeout=self.config.request_timeout)
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                pass
+            self._relay_port = 0
+            raise QwenError(f"通义千问中继不可用: HTTP {exc.code} {detail}") from exc
+        except Exception as exc:  # noqa: BLE001
+            self._relay_port = 0
+            raise QwenError(f"通义千问中继不可用: {exc}") from exc
+
+        chat_id = cached
+        response_id = parent
+        text = ""
+        reasoning = ""
+        try:
+            for line in resp:
+                try:
+                    line = line.decode("utf-8", "replace").strip()
+                except Exception:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                payload_txt = line[5:].strip()
+                if not payload_txt:
+                    continue
+                try:
+                    event = json.loads(payload_txt)
+                except Exception:
+                    continue
+                typ = event.get("type")
+                if typ == "meta":
+                    cid = event.get("chat_id")
+                    if isinstance(cid, str) and cid:
+                        chat_id = cid
+                    rid = event.get("response_id")
+                    if isinstance(rid, str) and rid:
+                        response_id = rid
+                    yield {"text": text, "reasoning": reasoning,
+                           "chat_id": chat_id or response_id}
+                elif typ == "reasoning":
+                    reasoning += str(event.get("content") or "")
+                    yield {"text": text, "reasoning": reasoning,
+                           "chat_id": chat_id or response_id}
+                elif typ == "delta":
+                    text += str(event.get("content") or "")
+                    yield {"text": text, "reasoning": reasoning,
+                           "chat_id": chat_id or response_id}
+                elif typ == "done":
+                    cid = event.get("chat_id")
+                    if isinstance(cid, str) and cid:
+                        chat_id = cid
+                    rid = event.get("response_id")
+                    if isinstance(rid, str) and rid:
+                        response_id = rid
+                    break
+                elif typ == "error":
+                    self.logger.warning("Qwen 中继错误: %s", event)
+                    msg = str(event.get("message") or "中继请求失败")
+                    body = event.get("body")
+                    if body:
+                        msg = f"{msg} | {str(body)[:400]}"
+                    raise QwenError(msg, int(event.get("status") or 502))
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+        if chat_id and self.config.session_cache_enabled:
+            self._store_conv(conv_key, chat_id, response_id)
+        yield {"__done__": True, "text": text, "reasoning": reasoning,
+               "chat_id": chat_id or response_id}
+
     def _stream_events(self, payload: dict):
+        if self.config.relay_enabled and self.config.account_id:
+            yield from self._stream_via_relay(payload)
+            return
+
         conv_key = self._conv_key(payload)
         cached = self._cached_conv(conv_key)
         if not cached:
@@ -513,8 +747,17 @@ class QwenWebClient:
         if cached:
             url = f"{url}?chat_id={quote(cached)}"
         body = self._body(payload, chat_id=cached)
-        conn, resp = self._open_stream(
-            url, body, _build_headers(self.config), self.config.request_timeout)
+        try:
+            conn, resp = self._open_stream(
+                url, body, _build_headers(self.config, self._valid_token()),
+                self.config.request_timeout)
+        except QwenError as exc:
+            if "401" not in str(exc):
+                raise
+            self.logger.info("Qwen 返回 401，尝试续期后重试")
+            conn, resp = self._open_stream(
+                url, body, _build_headers(self.config, self._valid_token(force=True)),
+                self.config.request_timeout)
         chat_id = cached
         text = ""
         reasoning = ""

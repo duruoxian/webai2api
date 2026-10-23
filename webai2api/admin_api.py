@@ -21,6 +21,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from . import __version__
+from .license import status as _license_status_fn
+from .paths import user_data_dir
 from .providers import DEFAULT_LIMITS, MAX_LIMITS, ProviderRegistry, infer_provider
 from .store import Store
 
@@ -271,7 +273,6 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                     store.get_setting, "qwen_output_limit", "65536"),
                 "admin_password": "******",
             },
-            "license": await run_in_threadpool(_license_info),
         }
 
     # ── 账号 ──
@@ -283,6 +284,10 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         b = await _json(request)
         if b is None:
             return {"ok": False, "error": "请求格式错误"}
+        from .providers import PUBLIC_PROVIDERS
+
+        if str(b.get("provider", "deepseek")).strip().lower() not in PUBLIC_PROVIDERS:
+            return {"ok": False, "error": "该平台暂未开放"}
         acc = await run_in_threadpool(
             store.add_account,
             b.get("provider", "deepseek"),
@@ -297,7 +302,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             },
             b.get("note", ""),
         )
-        registry.refresh()
+        registry.refresh(acc.get("provider"))
         return {"ok": True, "account": _safe_account(acc)}
 
     @router.put("/accounts/{account_id}")
@@ -311,6 +316,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         fields = {k: b[k] for k in
                   ("name", "auth_token", "device_id", "settings_token",
                    "cookie", "enabled", "note", "proxy", "egress") if k in b}
+        acc0 = await run_in_threadpool(store.get_account, account_id)
         if "egress" in fields:
             from .egress import normalize_egress
 
@@ -322,7 +328,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if "enabled" in fields:
             fields["enabled"] = 1 if fields["enabled"] else 0
         await run_in_threadpool(store.update_account, account_id, **fields)
-        registry.refresh()
+        registry.refresh(acc0.get("provider") if acc0 else None)
         return {"ok": True}
 
     @router.post("/accounts/{account_id}/check")
@@ -336,9 +342,10 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if not acc:
             return {"ok": False, "error": "账号不存在"}
         try:
-            status, profile, new_token = await run_in_threadpool(_check, acc)
+            status, profile, new_token, new_refresh = await run_in_threadpool(_check, acc)
             await run_in_threadpool(
-                store.set_account_health, account_id, status, profile, new_token or None)
+                store.set_account_health, account_id, status, profile,
+                new_token or None, new_refresh or None)
             return {"ok": True, "status": status, "profile": profile}
         except Exception as exc:  # noqa: BLE001
             await run_in_threadpool(store.set_account_health, account_id, "expired")
@@ -360,8 +367,9 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         g = _guard(request)
         if g:
             return g
+        acc_del = await run_in_threadpool(store.get_account, account_id)
         await run_in_threadpool(store.delete_account, account_id)
-        registry.refresh()
+        registry.refresh(acc_del.get("provider") if acc_del else None)
         return {"ok": True}
 
     # ── 风险指标 ──
@@ -625,44 +633,28 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             pass
         return {"ok": True}
 
-    # ── 授权（Lite） ──
+    # ── 授权（Pro 版不启用授权卡，保持与客户版同契约） ──
     @router.get("/license")
     async def get_license(request: Request):
         g = _guard(request)
         if g:
             return g
-        info = await run_in_threadpool(_license_info)
-        info["machine"] = await run_in_threadpool(lambda: __import__(
-            "webai2api.license", fromlist=["machine_code"]).machine_code())
-        info["issuer"] = await run_in_threadpool(_issuer_available)
-        return {"ok": True, **info}
+        return {"ok": True, "enabled": False,
+                "issuer": await run_in_threadpool(_issuer_available)}
 
-    @router.post("/license/install")
-    async def install_license(request: Request):
+    # ── 授权签发（仅作者本机，需私钥） ──
+    @router.get("/license/issuer")
+    async def issuer_state(request: Request):
         g = _guard(request)
         if g:
             return g
-        b = await _json(request)
-        if b is None:
-            return {"ok": False, "error": "请求格式错误"}
-        text = str(b.get("content") or "").strip()
-        if not text:
-            return {"ok": False, "error": "请粘贴授权码"}
-        from .license import activate
-        from .paths import user_data_dir
-        res = await run_in_threadpool(activate, user_data_dir(), text)
-        if not res.get("ok"):
-            return {"ok": False, "error": res.get("error") or "授权码无效"}
-        return {"ok": True, **res}
+        return {"ok": True, "available": await run_in_threadpool(_issuer_available)}
 
     @router.post("/license/issue")
     async def issue_license(request: Request):
-        """仅开发端且本机存在作者私钥时可用。"""
         g = _guard(request)
         if g:
             return g
-        if not await run_in_threadpool(_issuer_available):
-            return {"ok": False, "error": "当前版本不提供签发功能"}
         from . import issuer
         seed = await run_in_threadpool(issuer.load_author_seed)
         if seed is None:
@@ -677,33 +669,74 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             return {"ok": False, "error": "参数错误"}
         note = str(b.get("note") or "").strip()
         machine = str(b.get("machine") or "").strip().upper()
+        # 绑定码一次只能签一个（一个码只对一台机器有效）
         if machine and count != 1:
             return {"ok": False, "error": "绑定机器码时只能签 1 个"}
         out = []
         for _ in range(count):
             info = issuer.make_code(seed, days, machine_code=machine)
-            out.append({
-                "code": info["code"], "id": info["id"], "days": info["days"],
-                "issued": info["issued"], "note": note,
-                "bound": info["bound"], "machine_digest": info["machine_digest"],
-            })
-        _issuer_log(out)
+            out.append({"code": info["code"], "id": info["id"],
+                        "days": info["days"], "issued": info["issued"],
+                        "note": note, "bound": info["bound"],
+                        "machine_digest": info["machine_digest"]})
+        await run_in_threadpool(_issuer_log, out)
         return {"ok": True, "items": out}
 
     @router.get("/license/issued")
-    async def issued_list(request: Request):
+    async def issued_list(request: Request, limit: int = 200, q: str = ""):
+        g = _guard(request)
+        if g:
+            return g
+        items = await run_in_threadpool(_issuer_read_log)
+        total = len(items)
+        if q.strip():
+            needle = q.strip().lower()
+            items = [it for it in items
+                     if needle in str(it.get("code", "")).lower()
+                     or needle in str(it.get("note", "")).lower()
+                     or needle in str(it.get("id", "")).lower()]
+        items = list(reversed(items))
+        limit = max(1, min(int(limit or 200), 2000))
+        return {"ok": True, "items": items[:limit], "total": total,
+                "matched": len(items)}
+
+    @router.post("/license/issued/export")
+    async def export_issued(request: Request):
+        """把签发记录写成 CSV 存到数据目录，并返回路径。"""
+        g = _guard(request)
+        if g:
+            return g
+        items = await run_in_threadpool(_issuer_read_log)
+        if not items:
+            return {"ok": False, "error": "暂无签发记录"}
+        path = await run_in_threadpool(_write_issued_csv, items)
+        await run_in_threadpool(_reveal_file, path)
+        return {"ok": True, "path": str(path)}
+
+    @router.delete("/license/issued/{code_id}")
+    async def delete_issued(code_id: str, request: Request):
+        """删除单条签发记录（只删记录，不影响已发出的授权码本身）。"""
         g = _guard(request)
         if g:
             return g
         if not await run_in_threadpool(_issuer_available):
             return {"ok": False, "error": "当前版本不提供签发功能"}
-        return {"ok": True, "items": _issuer_read_log()}
+        removed = await run_in_threadpool(_issuer_delete, [code_id])
+        if not removed:
+            return {"ok": False, "error": "记录不存在"}
+        return {"ok": True, "removed": removed}
 
-    @router.post("/license/activate")
-    async def activate_license(request: Request):
-        """专业版自用：给自己开一个授权（不绑定机器码校验失败时用）。"""
-        return await install_license(request)  # type: ignore[misc]
-
+    @router.post("/license/issued/clear")
+    async def clear_issued(request: Request):
+        """清空全部签发记录。"""
+        g = _guard(request)
+        if g:
+            return g
+        if not await run_in_threadpool(_issuer_available):
+            return {"ok": False, "error": "当前版本不提供签发功能"}
+        items = await run_in_threadpool(_issuer_read_log)
+        removed = await run_in_threadpool(_issuer_delete, None)
+        return {"ok": True, "removed": removed, "total_before": len(items)}
 
     # ── opencode 接入 ──
     @router.post("/keys/{key_id}/opencode/connect")
@@ -771,9 +804,6 @@ def _issuer_log_path():
 
 def _issuer_available() -> bool:
     try:
-        from .edition import is_lite
-        if is_lite():
-            return False  # 客户版永远不显示、不提供签发
         from . import issuer
         return issuer.load_author_seed() is not None
     except Exception:
@@ -800,6 +830,68 @@ def _issuer_log(items: list[dict]) -> None:
                         for it in items)
         p.write_text(json.dumps(existing[-5000:], ensure_ascii=False, indent=2),
                      encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _issuer_delete(code_ids: list[str] | None) -> int:
+    """删除签发记录：传码 ID 列表删指定项，传 None 清空。返回删除条数。
+
+    只删本地记录，不影响已发出授权码的有效性（授权验证不依赖此文件）。
+    """
+    try:
+        p = _issuer_log_path()
+        if not p.exists():
+            return 0
+        existing = _issuer_read_log()
+        if code_ids is None:
+            kept: list[dict] = []
+        else:
+            wanted = {str(x) for x in code_ids}
+            kept = [it for it in existing if str(it.get("id", "")) not in wanted]
+        removed = len(existing) - len(kept)
+        if removed <= 0:
+            return 0
+        p.write_text(json.dumps(kept, ensure_ascii=False, indent=2), encoding="utf-8")
+        return removed
+    except Exception:
+        return 0
+
+
+def _issued_expiry(it: dict) -> str:
+    """按签发日 + 天数算参考到期日（实际从客户激活当天算）。"""
+    base = str(it.get("issued") or it.get("created") or "")[:10]
+    try:
+        import datetime as _dt
+        d = _dt.date.fromisoformat(base)
+        return (d + _dt.timedelta(days=int(it.get("days") or 0))).isoformat()
+    except Exception:
+        return ""
+
+
+def _write_issued_csv(items: list[dict]):
+    import csv
+    import io
+
+    p = _issuer_log_path().parent / "issued_codes.csv"
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["授权码", "码ID", "有效天数", "签发日", "参考到期日", "备注", "生成时间"])
+    for it in items:
+        w.writerow([it.get("code", ""), it.get("id", ""), it.get("days", ""),
+                    it.get("issued", ""), _issued_expiry(it),
+                    it.get("note", ""), it.get("created", "")])
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\ufeff" + buf.getvalue(), encoding="utf-8", newline="")
+    return p
+
+
+def _reveal_file(path) -> None:
+    """在资源管理器里定位到文件。"""
+    try:
+        if os.name == "nt":
+            import subprocess
+            subprocess.Popen(["explorer", "/select,", str(path)])
     except Exception:
         pass
 
@@ -982,23 +1074,9 @@ def _safe_account(a: dict) -> dict:
     }
 
 
-def _license_info() -> dict:
-    """授权信息。客户版会校验；专业版只决定是否显示签发卡。"""
-    issuer_ok = _issuer_available()
-    try:
-        from .edition import is_lite
-        if not is_lite():
-            return {"enabled": False, "issuer": issuer_ok}
-        from .license import status
-        from .paths import user_data_dir
-        st = status(user_data_dir(), store=None)
-        return {"enabled": True, "issuer": issuer_ok, **st}
-    except Exception:
-        return {"enabled": False, "issuer": issuer_ok}
-
-
 def _safe_accounts(items: list[dict]) -> list[dict]:
     return [_safe_account(a) for a in items]
+
 
 # ── opencode 配置辅助 ──────────────────────────────
 def _opencode_config_path() -> Path:
@@ -1343,7 +1421,6 @@ def _write_opencode_config(snippet: str) -> dict:
     backup = path.with_name(f"{path.name}.bak_{datetime.now().strftime('%Y%m%d%H%M%S_%f')}")
     backup.write_text(text, encoding="utf-8")
 
-    stripped = _strip_jsonc_comments(text)
     span = _find_provider_span(text)
     if not span:
         raise RuntimeError("配置里找不到 provider 段，请手动粘贴")
@@ -1484,15 +1561,11 @@ def _remove_opencode_provider() -> dict:
 
 
 def _local_license_status() -> dict:
-    # Lite 已有授权实现（与 lite_api._license_status 同一取法），避免两份实现
     try:
-        from .license import status as _license_status_fn
-        from .paths import user_data_dir
         data_dir = user_data_dir()
-        try:
-            st = _license_status_fn(data_dir, Store(data_dir / "webai2api.db"))
-        except Exception:
-            st = _license_status_fn(data_dir, None)
+        st = _license_status_fn(data_dir, Store(data_dir / "webai2api.db"))
         return {"valid": bool(st.get("valid"))}
     except Exception:
         return {"valid": False}
+
+
