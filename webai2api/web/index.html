@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api 客户版</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%235cbeff'/><stop offset='1' stop-color='%230a84ff'/></linearGradient></defs><rect width='100' height='100' rx='24' fill='url(%23g)'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.18">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.19">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -16,7 +16,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.18"></script>
+<script src="/admin/static/hyalite.js?v=0.1.19"></script>
 </head>
 <body>
 
@@ -324,6 +324,15 @@
         <div class="lic-bar"><i id="licBarFill" style="width:0%"></i></div>
         <div class="lic-note" id="licReason"></div>
 
+        <div class="lic-meta" style="margin-top:14px">
+          <span>本机机器码</span>
+          <b><code id="licMachine" class="mono">—</code>
+             <button class="btn gray sm" style="margin-left:8px" onclick="copyText(document.getElementById('licMachine').textContent)">复制</button></b>
+        </div>
+        <div class="hint" style="display:block;margin:6px 0 2px">
+          购买/续期时把这一串发给作者，会为你签发只认这台机器的授权码；换机/重装系统后机器码会变化，需要重新索取。
+        </div>
+
         <label class="fld" style="margin-top:18px"><span>授权码</span>
           <textarea id="licInput" rows="3" placeholder="粘贴作者发给你的一行授权码（WB2. 开头）"></textarea></label>
         <div class="btn-row">
@@ -343,6 +352,8 @@
             <input id="issueCount" inputmode="numeric" value="1"></label>
           <label class="fld" style="flex:1"><span>备注（客户名 / 订单号）</span>
             <input id="issueNote" placeholder="可选"></label>
+          <label class="fld" style="flex:1"><span>绑定机器码（留空=通用码）</span>
+            <input id="issueMachine" placeholder="客户发来的机器码"></label>
         </div>
         <div class="btn-row">
           <button class="btn" onclick="issueCodes()">生成授权码</button>
@@ -1288,6 +1299,7 @@ function renderLicense(lic){
   const chip=document.getElementById('licChip');
   const fill=document.getElementById('licBarFill');
   const reason=document.getElementById('licReason');
+  if(lic.machine) set('licMachine', lic.machine);
 
   if(lic.valid){
     renderLicenseCountdown(lic);
@@ -1374,7 +1386,9 @@ async function issueCodes(){
   const days=Number(document.getElementById('issueDays').value||7);
   const count=Number(document.getElementById('issueCount').value||1);
   const note=document.getElementById('issueNote').value.trim();
-  const j=await api('/license/issue','POST',{days,count,note});
+  const machineEl=document.getElementById('issueMachine');
+  const machine=(machineEl?machineEl.value:'').trim();
+  const j=await api('/license/issue','POST',{days,count,note,machine});
   const box=document.getElementById('issueResult');
   if(!j||!j.ok){ toast((j&&j.error)||'签发失败'); return; }
   box.innerHTML=j.items.map(it=>`<div class="issue-row">

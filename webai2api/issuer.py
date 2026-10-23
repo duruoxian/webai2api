@@ -28,10 +28,24 @@ from pathlib import Path
 from . import ed25519
 
 MAGIC = "WB2"
-VERSION = 1
+VERSION = 1            # 通用码（不绑机器）
+VERSION_BOUND = 2      # 绑定机器码的码
 EPOCH_DAYS = 17532  # 2020-01-01 距 Unix 纪元的天数
 EDITION_LITE = 0
 EDITION_PRO = 1
+
+
+def machine_digest(machine_code: str) -> bytes:
+    """机器码 → 8 字节摘要（写进授权码，用于"只认这一台"）。
+
+    统一口径：去掉分隔符和大写差异，避免客户复制时格式不同导致不匹配。
+    """
+    import hashlib
+
+    norm = "".join(ch for ch in str(machine_code or "").upper() if ch.isalnum())
+    if not norm:
+        return b"\x00" * 8
+    return hashlib.sha256(b"wbm:" + norm.encode("ascii", "ignore")).digest()[:8]
 
 
 def _b64u(b: bytes) -> str:
@@ -54,14 +68,28 @@ def _date_of(day_index: int) -> str:
 
 # ── 签发 ────────────────────────────────────────────
 def make_code(seed: bytes, days: int, edition: int = EDITION_LITE,
-              issued_at: float | None = None) -> dict:
-    """用私钥签一个授权码。返回 {code, id, days, issued, expires}。"""
+              issued_at: float | None = None,
+              machine_code: str = "") -> dict:
+    """用私钥签一个授权码。
+
+    machine_code 为空 → 通用码（旧行为，不绑机器）；
+    填了 → 绑定码：码里带该机器码的摘要，换机器直接拒绝。
+    返回 {code, id, days, issued, expires, bound, machine_digest}。
+    """
     days = max(1, min(int(days), 3650))
     code_id = os.urandom(4)
     issued_day = _day_index(issued_at)
-    payload = struct.pack(
-        ">B4sHHB", VERSION, code_id, days, issued_day & 0xFFFF, edition & 0xFF
-    )
+    bound = bool(str(machine_code or "").strip())
+    dig = machine_digest(machine_code) if bound else b""
+    ver = VERSION_BOUND if bound else VERSION
+    if bound:
+        payload = struct.pack(
+            ">B4sHHB8s", ver, code_id, days, issued_day & 0xFFFF,
+            edition & 0xFF, dig)
+    else:
+        payload = struct.pack(
+            ">B4sHHB", ver, code_id, days, issued_day & 0xFFFF,
+            edition & 0xFF)
     sig = ed25519.sign(seed, payload)
     code = f"{MAGIC}.{_b64u(payload)}.{_b64u(sig)}"
     return {
@@ -70,11 +98,13 @@ def make_code(seed: bytes, days: int, edition: int = EDITION_LITE,
         "days": days,
         "issued": _date_of(issued_day),
         "expires_days": days,
+        "bound": bound,
+        "machine_digest": dig.hex().upper() if bound else "",
     }
 
 
 def parse_code(code: str) -> dict | None:
-    """解析授权码结构（不验签）。"""
+    """解析授权码结构（不验签）。兼容 v1（通用）与 v2（绑机器）。"""
     code = (code or "").strip().replace("\r", "").replace("\n", "")
     parts = code.split(".")
     if len(parts) != 3 or parts[0].upper() != MAGIC:
@@ -83,10 +113,18 @@ def parse_code(code: str) -> dict | None:
         payload = _b64ud(parts[1])
     except Exception:
         return None
-    if len(payload) != 10:
+    if len(payload) == 10:
+        ver, cid, days, issued_day, edition = struct.unpack(">B4sHHB", payload)
+        dig = b""
+    elif len(payload) == 18:
+        ver, cid, days, issued_day, edition, dig = struct.unpack(
+            ">B4sHHB8s", payload
+        )
+    else:
         return None
-    ver, cid, days, issued_day, edition = struct.unpack(">B4sHHB", payload)
-    if ver != VERSION:
+    if ver not in (VERSION, VERSION_BOUND):
+        return None
+    if ver == VERSION_BOUND and len(dig) != 8:
         return None
     return {
         "code": code,
@@ -96,6 +134,8 @@ def parse_code(code: str) -> dict | None:
         "days": days,
         "issued": _date_of(issued_day),
         "edition": edition,
+        "bound": ver == VERSION_BOUND,
+        "machine_digest": dig.hex().upper() if ver == VERSION_BOUND else "",
     }
 
 
