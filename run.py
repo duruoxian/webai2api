@@ -19,7 +19,12 @@ WINDOW_TITLE = "webai2api 控制台"
 
 
 def _graceful_exit() -> None:
-    """退出前把 WAL 落盘，再结束进程。"""
+    """退出前把 WAL 落盘，停掉千问中继，再结束进程。"""
+    try:
+        from webai2api.qwen_relay import stop_all_relays
+        stop_all_relays()
+    except Exception:
+        pass
     try:
         from webai2api.paths import user_data_dir
         from webai2api.store import Store
@@ -170,6 +175,13 @@ def main() -> None:
         from webai2api.login_webview import run_webview_login
 
         run_webview_login(sys.argv[2])
+        return
+
+    # 千问浏览器会话中继：<exe> --relay-qwen <account_id>
+    if len(sys.argv) >= 3 and sys.argv[1] == "--relay-qwen":
+        from webai2api.qwen_relay import run_qwen_relay
+
+        run_qwen_relay(sys.argv[2])
         return
 
     logger = logging.getLogger("webai2api")

@@ -84,7 +84,7 @@ def test_conv_cache_persist_and_ttl() -> None:
     c2 = _qwen(cfg)
     c2._store_conv("e", "chat-2")
     with c2._conv_lock:
-        c2._conv_cache["e"] = ("chat-2", 0.0, 1)
+        c2._conv_cache["e"] = ("chat-2", 0.0, 1, "")
     assert c2._cached_conv("e") == ""                        # 过期
 
 
@@ -101,9 +101,11 @@ def test_effort_mapping_tier_aware() -> None:
     assert _tier_for("max", "kimi-k3") == "极致"
     assert _tier_for("max", "kimi-k2.8") == "极致"
     assert _tier_for("max", "kimi-k2.6") == "进阶"   # K2.6 无极致档
-    assert ke("")["thinking"]["type"] == "disabled"
-    assert ke("high", "kimi-k3")["thinking"]["type"] == "enabled"
-    assert ke("max", "kimi-k2.6")["thinking"]["type"] == "enabled"  # 降为进阶仍思考
+    assert ke("")["thinking"] is False
+    assert ke("high", "kimi-k3")["thinking"] is True
+    assert ke("high", "kimi-k3")["reasoningEffort"] == "REASONING_EFFORT_HIGH"
+    assert ke("max", "kimi-k2.6")["thinking"] is True               # 降为进阶仍思考
+    assert ke("max", "kimi-k2.6")["reasoningEffort"] == "REASONING_EFFORT_HIGH"
 
     # Qwen：plus / max 三档（自动/思考/快速），flash 两档
     assert _supports_auto("qwen3.7-plus") is True
@@ -123,19 +125,40 @@ def test_effort_mapping_tier_aware() -> None:
     assert qe("medium", "qwen3.8-omni-flash")["thinking_enabled"] is True
 
 
+def test_kimi_model_scenario_mapping() -> None:
+    """回归：k3/k2.8 是 agent 模型，必须配 SCENARIO_OK_COMPUTER；
+    普通对话模型走 SCENARIO_CHAT。配错会 invalid_argument（曾被误判为无权限）。"""
+    from webai2api.adapters.kimi.client import _internal_models
+
+    assert _internal_models("kimi-k3")[0] == ("k3-agent", "SCENARIO_OK_COMPUTER")
+    assert _internal_models("kimi-k2.8")[0] == ("k28-agent-preview", "SCENARIO_OK_COMPUTER")
+    assert _internal_models("kimi-k2.6")[0] == ("k2d6-chat", "SCENARIO_CHAT")
+    # 内部 id 直接透传时也能推断出正确 scenario
+    assert _internal_models("k3-agent")[0] == ("k3-agent", "SCENARIO_OK_COMPUTER")
+    assert _internal_models("k28-instant")[0] == ("k28-instant", "SCENARIO_CHAT")
+    # 未知模型名兜底
+    assert _internal_models("whatever")[0] == ("k2d6-chat", "SCENARIO_CHAT")
+
+
 def test_kimi_body_passes_model_to_tier() -> None:
     """回归：极致档必须按模型决定（K2.6 降级），确认 _body 把 model 传进映射。"""
     c = _kimi(KimiConfig(auth_token="t"))
     payload = {"model": "kimi-k2.6",
                "messages": [{"role": "user", "content": "hi"}],
                "reasoning_effort": "max"}
-    body = c._body(payload)
-    assert body["name"] == "kimi-k2.6"
-    assert body["thinking"]["type"] == "enabled"        # 降为进阶，仍思考
-    # k3 极致也应思考
+    body = c._body(payload, internal_model="k2d6-chat", scenario="SCENARIO_CHAT")
+    assert body["options"]["model"] == "k2d6-chat"
+    assert body["scenario"] == "SCENARIO_CHAT"
+    assert body["options"]["thinking"] is True           # 降为进阶，仍思考
+    assert body["options"]["reasoningEffort"] == "REASONING_EFFORT_HIGH"
+    assert body["message"]["blocks"][0]["text"]["content"] == "hi"
+    # k3 极致也应思考，且必须走 agent scenario
     p2 = {"model": "kimi-k3", "messages": payload["messages"],
           "reasoning_effort": "max"}
-    assert c._body(p2)["thinking"]["type"] == "enabled"
+    body2 = c._body(p2, internal_model="k3-agent", scenario="SCENARIO_OK_COMPUTER")
+    assert body2["scenario"] == "SCENARIO_OK_COMPUTER"
+    assert body2["options"]["thinking"] is True
+    assert body2["options"]["reasoningEffort"] == "REASONING_EFFORT_MAX"
 
 
 # ── risk_stats 形状（面板依赖）────────────────────────────

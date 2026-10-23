@@ -17,7 +17,6 @@ from __future__ import annotations
 import codecs
 import gzip
 import http.client
-import itertools
 import json
 import math
 import socket
@@ -801,32 +800,6 @@ class DeepSeekWebClient:
                 len(stale_list), len(self._proxy_sessions), len(active),
             )
 
-    def cleanup_all_sessions(self) -> None:
-        if self.cache_enabled:
-            self.session_cache.clear()
-
-        with self._proxy_sessions_lock:
-            ids = list(self._proxy_sessions)
-            self._proxy_sessions.clear()
-
-        if not ids:
-            self.logger.info("Shutdown   | 无残留会话需要清理")
-            return
-
-        self.logger.info("Shutdown   | deleting %d proxy session(s)...", len(ids))
-        deleted = 0
-        for sid in ids:
-            try:
-                self._delete_session(sid)
-                deleted += 1
-            except Exception:
-                pass
-        self.logger.info("Shutdown   | %d session(s) cleaned up", deleted)
-
-    # ═══════════════════════════════════════════════════════
-    # Public API - non-stream
-    # ═══════════════════════════════════════════════════════
-
     def chat_completion(self, payload: dict[str, object]) -> dict[str, object]:
         resolved = self._resolve_conversation(payload)
         # 一次 completion 内所有 chunk/结果共享同一个 id（OpenAI 规范）。
@@ -1035,10 +1008,6 @@ class DeepSeekWebClient:
         # 一次 completion 内所有 chunk 共享同一个 id（OpenAI 规范）。
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
-        include_usage = bool(
-            (payload.get("stream_options") or {}).get("include_usage", False)
-            if isinstance(payload.get("stream_options"), dict) else False
-        )
         has_tools = _payload_has_tools(payload)
 
         def generate():

@@ -278,7 +278,8 @@ class Store:
 
     def set_account_health(self, account_id: str, health: str,
                            profile: dict | None = None,
-                           auth_token: str | None = None) -> None:
+                           auth_token: str | None = None,
+                           settings_token: str | None = None) -> None:
         sets = ["health=?", "checked_at=?"]
         vals: list[Any] = [health, _now()]
         if profile is not None:
@@ -287,6 +288,9 @@ class Store:
         if auth_token:
             sets.append("auth_token=?")
             vals.append(auth_token)
+        if settings_token:
+            sets.append("settings_token=?")
+            vals.append(settings_token)
         vals.append(account_id)
         with self._conn() as c:
             c.execute(f"UPDATE accounts SET {', '.join(sets)} WHERE id=?", vals)

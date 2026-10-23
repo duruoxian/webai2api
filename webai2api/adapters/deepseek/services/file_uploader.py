@@ -165,13 +165,6 @@ class FileUploader:
         )
         return file_id
 
-    def invalidate(self, image_url: str) -> bool:
-        """清除某 image_url 的缓存（例如上游判定该文件解析失败时）。"""
-        if not image_url:
-            return False
-        key = hashlib.sha256(image_url.encode("utf-8", "ignore")).hexdigest()
-        return self._cache.pop(key, None) is not None
-
     def clear_cache(self) -> int:
         n = len(self._cache)
         self._cache.clear()

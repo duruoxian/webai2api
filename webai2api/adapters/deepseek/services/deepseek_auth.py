@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import base64
 import gzip
 import json
 import threading
 import time
 import urllib.error
 import urllib.request
-import uuid
 from dataclasses import dataclass
 from logging import Logger
 

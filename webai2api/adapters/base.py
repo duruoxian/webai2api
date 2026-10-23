@@ -189,7 +189,3 @@ class GenericClientPool:
             self._sync()
             return self._clients.get(account_id)
 
-    def healthy_count(self) -> int:
-        with self._lock:
-            self._sync()
-            return sum(1 for c in self._clients.values() if c.healthy())

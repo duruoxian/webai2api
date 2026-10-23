@@ -87,6 +87,3 @@ class CookieJar:
                     self._expires.pop(name, None)
             return "; ".join(f"{k}={v}" for k, v in self._jar.items())
 
-    def snapshot(self) -> dict[str, str]:
-        with self._lock:
-            return dict(self._jar)

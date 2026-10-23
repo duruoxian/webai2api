@@ -1,8 +1,7 @@
 """智谱清言适配器配置。"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 
 DEFAULT_BASE_URL = "https://chatglm.cn"
 DEFAULT_ASSISTANT_ID = "65940acff94777010aa6b796"
@@ -50,11 +49,6 @@ class GlmConfig:
     @property
     def delete_url(self) -> str:
         return f"{self.base_url}/chatglm/backend-api/assistant/conversation/delete"
-
-    @property
-    def login_url(self) -> str:
-        return f"{self.base_url}/main/alltoolsdetail"
-
 
 def _parse_profile(account: dict) -> dict:
     import json

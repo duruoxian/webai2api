@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import json
 import time
-import uuid
 from typing import Any
 
-from ..config import AppConfig, EXPOSED_MODELS
+from ..config import AppConfig
 from ..core.openai_compat import gen_chatcmpl_id, system_fingerprint
 from .tool_calling import (
     TOOL_CLOSE_PLURAL,

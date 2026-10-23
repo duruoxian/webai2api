@@ -80,7 +80,12 @@ class Proxy:
     # ── 应用到连接 ─────────────────────────────────────
     def apply(self, conn: http.client.HTTPConnection, target_host: str,
               target_port: int = 443, timeout: int | None = None) -> None:
-        """让现有连接走代理。
+        """让现有连接走代理（必须在首次 request 之前调用）。
+
+        http.client 是「延迟连接」的：构造时并不建连，直到 request() 才按
+        conn.host/port 去连。所以正确姿势是——把连接本身改指到代理服务器，
+        再用 set_tunnel 声明要隧道到的真实目标；二者缺一，CONNECT 会被发到
+        真实主机（被 TUN/Clash 以 400 拒绝），或直接明文打到代理。
 
         http 代理 + HTTPS 目标 → set_tunnel（CONNECT）。
         https 代理 → 需要 TLS 套壳，本实现按 http 处理（多数供应商兼容）。
@@ -89,6 +94,11 @@ class Proxy:
         if self.scheme.startswith("socks"):
             self._apply_socks(conn, target_host, target_port)
             return
+        # 关键：连接指向代理，而非目标主机
+        conn.host = self.host
+        conn.port = self.port
+        if timeout is not None:
+            conn.timeout = max(int(timeout), 1)
         headers = {}
         auth = self.auth_header()
         if auth:

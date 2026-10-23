@@ -18,6 +18,7 @@ DEFAULT_BASE_URL = "https://www.kimi.com"
 class KimiConfig:
     base_url: str = DEFAULT_BASE_URL
     auth_token: str = ""
+    refresh_token: str = ""
     cookie: str = ""
     default_model: str = "kimi-k3"
     default_effort: str = ""
@@ -45,19 +46,15 @@ class KimiConfig:
 
     @property
     def chat_url(self) -> str:
-        return f"{self.base_url}/api/chat"
+        return f"{self.base_url}/apiv2/kimi.gateway.chat.v1.ChatService/Chat"
 
     @property
-    def user_url(self) -> str:
-        return f"{self.base_url}/api/user"
+    def refresh_url(self) -> str:
+        """用 refreshToken 换新 accessToken（GET，refresh 作 Bearer）。"""
+        return f"{self.base_url}/api/auth/token/refresh"
 
-    def chat_delete_url(self, chat_id: str) -> str:
-        return f"{self.base_url}/api/chat/{chat_id}/delete"
-
-    @property
-    def login_url(self) -> str:
-        return f"{self.base_url}/"
-
+    def rpc_url(self, method: str) -> str:
+        return f"{self.base_url}/apiv2/kimi.gateway.chat.v1.ChatService/{method}"
 
 def _parse_profile(account: dict) -> dict:
     raw = account.get("profile")
@@ -93,6 +90,19 @@ def _session_store_path(account: dict) -> str:
         return ""
 
 
+def _is_refresh_jwt(tok: str) -> bool:
+    """不验签，只看 payload.typ：老版本登录可能把 refresh 存进了 auth_token。"""
+    import base64
+
+    try:
+        p = str(tok).split(".")[1]
+        p += "=" * (-len(p) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(p))
+    except Exception:
+        return False
+    return payload.get("typ") == "refresh"
+
+
 def build_config(store, account: dict) -> KimiConfig:
     """按账号 + 全局默认构造一份 KimiConfig。"""
     def g(key: str, default: str) -> str:
@@ -105,7 +115,11 @@ def build_config(store, account: dict) -> KimiConfig:
     prof = _parse_profile(account)
     return KimiConfig(
         base_url=g("kimi_base_url", DEFAULT_BASE_URL).rstrip("/"),
-        auth_token=account.get("auth_token", ""),
+        auth_token=(("" if _is_refresh_jwt(account.get("auth_token", ""))
+                     else account.get("auth_token", ""))),
+        refresh_token=(account.get("settings_token", "")
+                       or (account.get("auth_token", "")
+                           if _is_refresh_jwt(account.get("auth_token", "")) else "")),
         cookie=account.get("cookie", ""),
         default_model=g("kimi_default_model", "kimi-k3"),
         default_effort=g("kimi_default_effort", ""),

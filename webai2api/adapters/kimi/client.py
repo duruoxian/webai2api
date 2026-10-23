@@ -1,20 +1,25 @@
 """Kimi（www.kimi.com）网页版客户端。
 
 把网页版接口封装成 OpenAI 兼容的 chat_completion / stream_chat_completion。
+
 协议（2026-10 实测）：
-  1. Authorization: Bearer <accessToken>（登录时抓取）
-  2. POST /api/chat  body 必须含 name，返回 SSE 流
-  3. 会话缓存：同一段对话复用 chat 会话 id，多轮只发增量；超限轮换
+  1. 网页版使用 Connect 协议：POST /apiv2/kimi.gateway.chat.v1.ChatService/Chat
+  2. Content-Type / Accept = application/connect+json，请求体是 5 字节帧头 + JSON
+  3. 响应是 Connect 流：每帧 5 字节帧头 + JSON 事件（op=set/append + mask）
+  4. 会话缓存：同一段对话复用 chat_id，多轮只发增量；超限轮换
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import http.client
 import json
 import random
+import struct
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from logging import Logger
 from urllib.parse import urlsplit
 
@@ -38,6 +43,34 @@ BASE_HEADERS = {
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-origin",
 }
+
+CONNECT_SERVICE = "kimi.gateway.chat.v1.ChatService"
+DEFAULT_INTERNAL_MODEL = "k2d6-chat"
+
+# 模型选择器 = (内部 model id, scenario)。
+# 实测（2026-10）：k3 / k2.8 是 agent 类模型，必须配 SCENARIO_OK_COMPUTER；
+# 普通对话模型（k2d6-chat / k28-instant）才用 SCENARIO_CHAT。
+# 配错 scenario 会直接 invalid_argument（曾被误当成"账号无权限"）。
+_SCENARIO_CHAT = "SCENARIO_CHAT"
+_SCENARIO_AGENT = "SCENARIO_OK_COMPUTER"
+
+# 对外模型名 → 网页版选择器（按优先级）。前一项 invalid_argument 会自动降到下一项。
+_MODEL_CANDIDATES: dict[str, tuple[tuple[str, str], ...]] = {
+    "kimi-k3": (("k3-agent", _SCENARIO_AGENT),
+                (DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT)),
+    "kimi-k2.8": (("k28-agent-preview", _SCENARIO_AGENT),
+                  ("k28-instant", _SCENARIO_CHAT),
+                  (DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT)),
+    "kimi-k2.6": ((DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT),),
+    "kimi-k2.5": (("k2d5-chat", _SCENARIO_CHAT),
+                  (DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT)),
+    "kimi-k2": ((DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT),),
+    "kimi": ((DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT),),
+    "moonshot-v1": ((DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT),),
+}
+# 内部 id 直接透传时按 id 推断 scenario
+_INTERNAL_AGENT_IDS = {"k3", "k3-agent", "k28-agent-preview", "k28-preview"}
+_INTERNAL_CHAT_IDS = {"k2d6", "k2d6-chat", "k2d5", "k2d5-chat", "k28-instant"}
 
 
 class KimiError(Exception):
@@ -67,6 +100,17 @@ def _build_headers(
         headers["Authorization"] = f"Bearer {tok}"
     if config.cookie:
         headers["Cookie"] = config.cookie
+    return headers
+
+
+def _connect_headers(config: KimiConfig, token: str | None = None) -> dict[str, str]:
+    headers = _build_headers(config, token, stream=True)
+    headers["Content-Type"] = "application/connect+json"
+    headers["Accept"] = "application/connect+json"
+    headers["Connect-Protocol-Version"] = "1"
+    headers["Accept-Encoding"] = "identity"
+    headers.pop("Cache-Control", None)
+    headers.pop("Pragma", None)
     return headers
 
 
@@ -114,23 +158,143 @@ def _tier_for(effort: str, model: str) -> str:
 
 
 def _effort_to_payload(effort: str, model: str = "") -> dict:
-    """把客户端 reasoning_effort 收敛成 Kimi 网页版的思考开关。
-
-    Kimi 网页版思考模式三档：标准（不思考）/ 进阶 / 极致（K2.6 无极致档）。
-    上游具体字段以真实抓包为准；当前按 thinking.type 开关映射：
-      标准 → disabled；进阶/极致 → enabled。
-    """
+    """把 reasoning_effort 收敛成网页版 ChatRequestOptions 字段。"""
     tier = _tier_for(effort, model)
-    return {"thinking": {"type": "disabled" if tier == "标准" else "enabled"}}
+    if tier == "标准":
+        return {"thinking": False}
+    if tier == "进阶":
+        return {"thinking": True, "reasoningEffort": "REASONING_EFFORT_HIGH"}
+    return {"thinking": True, "reasoningEffort": "REASONING_EFFORT_MAX"}
+
+
+def _internal_models(model: str | None) -> list[tuple[str, str]]:
+    """对外模型名 → [(内部 model id, scenario), ...]（按优先级）。"""
+    m = (model or "").strip().lower()
+    if m in _MODEL_CANDIDATES:
+        return list(_MODEL_CANDIDATES[m])
+    if m in _INTERNAL_AGENT_IDS:
+        return [(m, _SCENARIO_AGENT)]
+    if m in _INTERNAL_CHAT_IDS:
+        return [(m, _SCENARIO_CHAT)]
+    return [(DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT)]
+
+
+def _frame(payload: bytes) -> bytes:
+    return struct.pack(">BI", 0, len(payload)) + payload
+
+
+def _read_exact(resp, size: int) -> bytes:
+    buf = b""
+    while len(buf) < size:
+        chunk = resp.read(size - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    return buf
+
+
+def _iter_connect_frames(resp):
+    """逐帧读取 Connect 流：1 字节 flags + 4 字节大端长度 + payload。"""
+    while True:
+        header = _read_exact(resp, 5)
+        if len(header) < 5:
+            return
+        flag = header[0]
+        length = int.from_bytes(header[1:5], "big")
+        payload = _read_exact(resp, length)
+        if len(payload) < length:
+            return
+        if flag & 0x01:
+            try:
+                payload = gzip.decompress(payload)
+            except Exception:
+                pass
+        yield flag & ~0x01, payload
+
+
+def _connect_error(payload: bytes) -> tuple[str, str] | None:
+    try:
+        obj = json.loads(payload.decode("utf-8", "replace"))
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    err = obj.get("error")
+    if not isinstance(err, dict):
+        return None
+    return str(err.get("code") or "unknown"), str(err.get("message") or "")
+
+
+class _ReplyState:
+    """把 ChatResponse 事件累积成最终文本。"""
+
+    def __init__(self) -> None:
+        self.text: OrderedDict[str, str] = OrderedDict()
+        self.think: OrderedDict[str, str] = OrderedDict()
+        self.chat_id = ""
+        self.last_message_id = ""
+        self.assistant_message_id = ""
+        self.error = ""
+        self.done = False
+
+    def apply(self, obj: dict) -> None:
+        if not isinstance(obj, dict):
+            return
+        if obj.get("error"):
+            self.error = str(obj.get("error"))
+        chat = obj.get("chat")
+        if isinstance(chat, dict):
+            cid = chat.get("id")
+            if isinstance(cid, str) and cid:
+                self.chat_id = cid
+        msg = obj.get("message")
+        if isinstance(msg, dict):
+            mid = msg.get("id")
+            if isinstance(mid, str) and mid:
+                self.last_message_id = mid
+                if msg.get("role") == "assistant":
+                    self.assistant_message_id = mid
+        block = obj.get("block")
+        if isinstance(block, dict):
+            bid = str(block.get("id") or "_")
+            op = str(obj.get("op") or "")
+            mask = str(obj.get("mask") or "")
+            for kind, store in (("text", self.text), ("think", self.think)):
+                node = block.get(kind)
+                if not isinstance(node, dict):
+                    continue
+                content = node.get("content")
+                if not isinstance(content, str):
+                    content = ""
+                if op == "append" and mask.endswith(".content"):
+                    store[bid] = store.get(bid, "") + content
+                elif op == "set":
+                    store[bid] = content
+                elif content:
+                    store[bid] = store.get(bid, "") + content
+        if "done" in obj:
+            self.done = True
+
+    def text_value(self) -> str:
+        return "".join(self.text.values())
+
+    def think_value(self) -> str:
+        return "".join(self.think.values())
 
 
 class KimiWebClient:
     def __init__(self, config: KimiConfig, logger: Logger) -> None:
         self.config = config
         self.logger = logger
-        # 会话缓存：conv_key -> (chat_id, last_used, turns)
+        # accessToken 只有 15 分钟：用 refreshToken 自动续期，续期后的 token 缓存在实例上
+        self._token_lock = threading.Lock()
+        self._access_token = str(getattr(config, "auth_token", "") or "")
+        self._refresh_token = str(getattr(config, "refresh_token", "") or "")
+        self._token_checked_at = 0.0
+        self._token_ttl = 300.0  # 5 分钟内不重复续期
+        # 会话缓存：conv_key -> (chat_id, last_used, turns, last_message_id)
         self._conv_lock = threading.Lock()
-        self._conv_cache: dict[str, tuple[str, float, int]] = {}
+        self._conv_cache: dict[str, tuple[str, float, int, str]] = {}
         self._persist_path = str(getattr(config, "session_store_path", "") or "")
         self._dirty = False
         self._last_persist = 0.0
@@ -139,6 +303,8 @@ class KimiWebClient:
             self._load_conv_cache()
         self._last_call_at: float = 0.0
         self._last_call_lock = threading.Lock()
+        # 探测成功的模型映射（避免每轮都先撞一次不可用模型）
+        self._resolved_models: dict[str, tuple[str, str]] = {}
 
     # ── 会话缓存持久化 ──────────────────────────────────
     def _load_conv_cache(self) -> None:
@@ -172,7 +338,8 @@ class KimiWebClient:
                 continue
             if now - ts > self.config.session_cache_ttl:
                 continue
-            self._conv_cache[key] = (chat_id, ts, turns)
+            last_msg = str(item.get("last_message_id") or "")
+            self._conv_cache[key] = (chat_id, ts, turns, last_msg)
             loaded += 1
         while len(self._conv_cache) > self.config.session_cache_max_size:
             oldest = min(self._conv_cache.items(), key=lambda kv: kv[1][1])[0]
@@ -193,7 +360,12 @@ class KimiWebClient:
             import os
 
             data = {
-                k: {"chat_id": v[0], "last_used": v[1], "turns": v[2]}
+                k: {
+                    "chat_id": v[0],
+                    "last_used": v[1],
+                    "turns": v[2],
+                    "last_message_id": v[3],
+                }
                 for k, v in self._conv_cache.items()
             }
             tmp = f"{path}.tmp"
@@ -235,7 +407,7 @@ class KimiWebClient:
             item = self._conv_cache.get(key)
             if not item:
                 return ""
-            chat_id, ts, turns = item
+            chat_id, ts, turns, last_msg = item
             if time.time() - ts > self.config.session_cache_ttl:
                 self._conv_cache.pop(key, None)
                 self._persist_conv()
@@ -248,17 +420,22 @@ class KimiWebClient:
                 self._bump("stale")
                 self.logger.info("会话轮次已达上限(%d) → 新建会话", max_turns)
                 return ""
-            self._conv_cache[key] = (chat_id, time.time(), turns)
+            self._conv_cache[key] = (chat_id, time.time(), turns, last_msg)
             self._persist_conv()
             self._bump("hit")
             return chat_id
+
+    def _cached_last_msg(self, key: str) -> str:
+        with self._conv_lock:
+            item = self._conv_cache.get(key)
+            return item[3] if item else ""
 
     def risk_stats(self) -> dict:
         """风控指标（面板展示，进程内累计）。"""
         with self._conv_lock:
             total = len(self._conv_cache)
             now = time.time()
-            active = sum(1 for (_c, ts, _t) in self._conv_cache.values()
+            active = sum(1 for (_c, ts, _t, _m) in self._conv_cache.values()
                          if now - ts <= self.config.session_cache_ttl)
             hit = getattr(self, "_stat_hit", 0)
             miss = getattr(self, "_stat_miss", 0)
@@ -280,7 +457,7 @@ class KimiWebClient:
     def _bump(self, name: str) -> None:
         setattr(self, f"_stat_{name}", getattr(self, f"_stat_{name}", 0) + 1)
 
-    def _store_conv(self, key: str, chat_id: str) -> None:
+    def _store_conv(self, key: str, chat_id: str, last_msg: str = "") -> None:
         if not self.config.session_cache_enabled or not chat_id:
             return
         with self._conv_lock:
@@ -290,7 +467,8 @@ class KimiWebClient:
             prev = self._conv_cache.get(key)
             turns = (prev[2] + 1) if prev and prev[0] == chat_id else 1
             first_time = prev is None or prev[0] != chat_id
-            self._conv_cache[key] = (chat_id, time.time(), turns)
+            last = last_msg or (prev[3] if prev and prev[0] == chat_id else "")
+            self._conv_cache[key] = (chat_id, time.time(), turns, last)
             self._persist_conv()
             if first_time:
                 self._bump("created")
@@ -338,57 +516,165 @@ class KimiWebClient:
                 self.logger.info("出口: 跟随系统代理")
         return conn
 
-    def _post_json(self, url: str, body: dict, headers: dict, timeout: int) -> dict:
+    def _rpc(self, method: str, body: dict, timeout: int = 20) -> dict:
+        """调用 ChatService 的一元方法（DeleteChat 等）。
+
+        一元方法走普通 JSON（application/json），不走 Connect 流式帧。
+        """
+        url = self.config.rpc_url(method)
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        headers = _build_headers(self.config, self._valid_token(), stream=False)
+        headers["Content-Type"] = "application/json"
+        headers["Accept"] = "application/json"
+        headers.pop("Cache-Control", None)
+        headers.pop("Pragma", None)
         conn = self._conn(url, timeout)
         try:
             _, path = self._split(url)
-            conn.request("POST", path, body=json.dumps(body).encode("utf-8"), headers=headers)
+            conn.request("POST", path, body=payload, headers=headers)
             resp = conn.getresponse()
             raw = resp.read()
             if resp.status >= 400:
-                raise KimiError(f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
+                if resp.status == 429:
+                    self._bump("rate_limit")
+                raise KimiError(
+                    f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
             try:
-                return json.loads(raw.decode("utf-8"))
-            except Exception as exc:  # noqa: BLE001
-                raise KimiError(f"响应不是合法 JSON: {raw[:200]!r}") from exc
+                data = json.loads(raw.decode("utf-8")) if raw else {}
+            except Exception:
+                return {}
+            return data if isinstance(data, dict) else {}
         finally:
             try:
                 conn.close()
             except Exception:
                 pass
 
-    def _open_stream(self, url: str, body: dict, headers: dict, timeout: int):
+    def _open_chat(self, body: dict, token: str, timeout: int):
+        url = self.config.chat_url
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         conn = self._conn(url, timeout)
         _, path = self._split(url)
-        conn.request("POST", path, body=json.dumps(body).encode("utf-8"), headers=headers)
-        resp = conn.getresponse()
+        try:
+            conn.request("POST", path, body=_frame(payload),
+                         headers=_connect_headers(self.config, token))
+            resp = conn.getresponse()
+        except Exception:
+            conn.close()
+            raise
         if resp.status >= 400:
             raw = resp.read()
             conn.close()
-            raise KimiError(f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
+            if resp.status == 429:
+                self._bump("rate_limit")
+            raise KimiError(
+                f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
         return conn, resp
 
-    # ── 请求体 ─────────────────────────────────────────
-    def _body(self, payload: dict, chat_id: str = "") -> dict:
-        """构造 /api/chat 请求体。
+    # ── accessToken 自动续期 ────────────────────────────
+    def _valid_token(self, force: bool = False) -> str:
+        """返回可用的 accessToken；过期/401 时用 refreshToken 换新的。
 
-        注意：网页版是多轮服务端会话制（传 chat_session_id 续聊），
-        这里按 OpenAI 全量消息发送，仅在有缓存会话时带上续聊字段。
+        Kimi 的 accessToken 只有 15 分钟，refreshToken 有 90 天。
+        续期接口：GET /api/auth/token/refresh，refresh 作 Bearer。
+        返回体同时给新的 access 和 refresh，两个都要记住。
         """
+        with self._token_lock:
+            now = time.time()
+            if not force and self._access_token and now - self._token_checked_at < self._token_ttl:
+                return self._access_token
+            if not self._refresh_token:
+                self._token_checked_at = now
+                return self._access_token
+            url = self.config.refresh_url
+            headers = {
+                "Authorization": f"Bearer {self._refresh_token}",
+                "Accept": "application/json",
+                "User-Agent": self.config.user_agent or USER_AGENTS[0],
+                "Origin": self.config.base_url,
+                "Referer": self.config.base_url + "/",
+            }
+            if self.config.cookie:
+                headers["Cookie"] = self.config.cookie
+            try:
+                conn = self._conn(url, 20)
+                _, path = self._split(url)
+                conn.request("GET", path, headers=headers)
+                resp = conn.getresponse()
+                raw = resp.read()
+                conn.close()
+                if resp.status >= 400:
+                    self._bump("rate_limit" if resp.status == 429 else "upstream")
+                    self.logger.warning("Kimi 续期失败 HTTP %s: %s",
+                                        resp.status, raw[:160].decode("utf-8", "replace"))
+                    self._token_checked_at = now
+                    return self._access_token
+                data = json.loads(raw.decode("utf-8"))
+                acc = str(data.get("access_token") or "")
+                ref = str(data.get("refresh_token") or "")
+                if acc:
+                    self._access_token = acc
+                    self.config.auth_token = acc
+                if ref:
+                    self._refresh_token = ref
+                    self.config.refresh_token = ref
+                self._token_checked_at = now
+                if acc:
+                    self.logger.info("Kimi accessToken 已自动续期")
+                return self._access_token
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("Kimi 续期异常: %s", exc)
+                self._token_checked_at = now
+                return self._access_token
+
+    # ── 请求体 ─────────────────────────────────────────
+    def _body(
+        self,
+        payload: dict,
+        chat_id: str = "",
+        parent_id: str = "",
+        internal_model: str = "",
+        scenario: str = _SCENARIO_CHAT,
+    ) -> dict:
         messages = payload.get("messages") or []
+        user_text = ""
+        system_text = ""
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role")
+            text = _text_of(m)
+            if role == "system" and not system_text:
+                system_text = text
+            elif role == "user":
+                user_text = text
         model = str(payload.get("model") or self.config.default_model)
-        body: dict = {
-            "name": model,
-            "model_name": model,
-            "messages": messages,
-            "stream": True,
+        opts = _effort_to_payload(
+            str(payload.get("reasoning_effort") or self.config.default_effort), model)
+        options: dict = {
+            "thinking": bool(opts.get("thinking")),
+            "model": internal_model or _internal_models(model)[0][0],
         }
-        body.update(_effort_to_payload(
-            str(payload.get("reasoning_effort") or self.config.default_effort), model))
+        if opts.get("reasoningEffort"):
+            options["reasoningEffort"] = opts["reasoningEffort"]
+        if system_text:
+            options["systemPrompt"] = system_text
+        body: dict = {
+            "chatId": chat_id,
+            "scenario": scenario,
+            "message": {
+                "role": "user",
+                "blocks": [{"text": {"content": user_text}}],
+            },
+            "options": options,
+        }
+        if parent_id:
+            body["message"]["parentId"] = parent_id
         if self.config.search_enabled:
-            body["search"] = {"type": "auto"}
-        if chat_id:
-            body["chat_id"] = chat_id
+            body["tools"] = [{
+                "type": "TOOL_TYPE_SEARCH",
+                "search": {"force": False},
+            }]
         return body
 
     def _throttle(self) -> None:
@@ -431,7 +717,7 @@ class KimiWebClient:
         max_turns = int(getattr(self.config, "max_turns_per_session", 40) or 40)
         stale: list[tuple[str, str]] = []
         with self._conv_lock:
-            for key, (chat_id, ts, turns) in list(self._conv_cache.items()):
+            for key, (chat_id, ts, turns, _last) in list(self._conv_cache.items()):
                 if now - ts > ttl or turns >= max_turns:
                     stale.append((key, chat_id))
                     self._conv_cache.pop(key, None)
@@ -442,11 +728,8 @@ class KimiWebClient:
         removed = 0
         for _key, chat_id in stale:
             try:
-                self._post_json(
-                    self.config.chat_delete_url(chat_id), {},
-                    _build_headers(self.config, stream=False),
-                    min(self.config.request_timeout, 15),
-                )
+                self._rpc("DeleteChat", {"chatId": chat_id},
+                          timeout=min(self.config.request_timeout, 15))
                 removed += 1
             except Exception:  # noqa: BLE001
                 pass
@@ -455,94 +738,105 @@ class KimiWebClient:
             for _ in range(removed):
                 self._bump("deleted")
 
-    # ── SSE 解析 ───────────────────────────────────────
-    @staticmethod
-    def _parse_event(raw: dict) -> tuple[str, str]:
-        """从 Kimi SSE 事件提取 (text_delta, reasoning_delta)。
-
-        兼容两种常见形态：
-          {"choices":[{"delta":{"content":..,"reasoning_content":..}}]}
-          {"type":"content|think","content":..}
-        """
-        if not isinstance(raw, dict):
-            return "", ""
-        choices = raw.get("choices")
-        if isinstance(choices, list) and choices:
-            delta = choices[0].get("delta") or {}
-            if isinstance(delta, dict):
-                return (str(delta.get("content") or ""),
-                        str(delta.get("reasoning_content") or ""))
-        t = str(raw.get("type") or "")
-        c = raw.get("content")
-        if isinstance(c, str):
-            if t in ("think", "reasoning", "thinking"):
-                return "", c
-            return c, ""
-        return "", ""
-
-    def _iter_events(self, resp):
-        buffer = ""
-        while True:
-            line = resp.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", "replace").rstrip("\r\n")
-            if text.startswith("data:"):
-                buffer += text[5:].strip()
-            elif text == "":
-                if buffer:
-                    if buffer != "[DONE]":
-                        try:
-                            yield json.loads(buffer)
-                        except Exception:
-                            pass
-                    buffer = ""
-        if buffer and buffer != "[DONE]":
-            try:
-                yield json.loads(buffer)
-            except Exception:
-                pass
+    # ── 流式事件 ───────────────────────────────────────
+    def _model_candidates(self, model: str) -> list[tuple[str, str]]:
+        candidates = _internal_models(model)
+        resolved = self._resolved_models.get(model)
+        if resolved and resolved in candidates:
+            candidates.remove(resolved)
+            candidates.insert(0, resolved)
+        return candidates
 
     def _stream_events(self, payload: dict):
-        model = payload.get("model") or self.config.default_model
         conv_key = self._conv_key(payload)
         cached = self._cached_conv(conv_key)
         if not cached:
             self._bump("miss")
+        parent = self._cached_last_msg(conv_key) if cached else ""
 
         self._throttle()
         self._bump("upstream")
-        conn, resp = self._open_stream(
-            self.config.chat_url,
-            self._body(payload, chat_id=cached),
-            _build_headers(self.config),
-            self.config.request_timeout,
-        )
-        chat_id = ""
-        text = ""
-        reasoning = ""
-        try:
-            for event in self._iter_events(resp):
-                cid = event.get("chat_id") or event.get("id")
-                if isinstance(cid, str) and cid and cid != chat_id:
-                    chat_id = cid
-                d_text, d_reason = self._parse_event(event)
-                text += d_text
-                reasoning += d_reason
-                yield {"text": text, "reasoning": reasoning, "chat_id": chat_id}
-        finally:
-            try:
-                resp.read()
-            except Exception:
-                pass
-            try:
-                conn.close()
-            except Exception:
-                pass
 
-        if chat_id and self.config.session_cache_enabled:
-            self._store_conv(conv_key, chat_id)
-        yield {"__done__": True, "text": text, "reasoning": reasoning, "chat_id": chat_id}
+        model = str(payload.get("model") or self.config.default_model)
+        candidates = self._model_candidates(model)
+        last_error: KimiError | None = None
+
+        for idx, (internal, scenario) in enumerate(candidates):
+            body = self._body(payload, chat_id=cached, parent_id=parent,
+                              internal_model=internal, scenario=scenario)
+            try:
+                conn, resp = self._open_chat(
+                    body, self._valid_token(), self.config.request_timeout)
+            except KimiError as exc:
+                # accessToken 过期（15 分钟）→ 用 refreshToken 换新后重试一次
+                if "401" not in str(exc):
+                    raise
+                self.logger.info("Kimi 返回 401，尝试续期后重试")
+                conn, resp = self._open_chat(
+                    body, self._valid_token(force=True), self.config.request_timeout)
+
+            state = _ReplyState()
+            retry_model = False
+            try:
+                for flag, raw in _iter_connect_frames(resp):
+                    if flag == 0x02:
+                        err = _connect_error(raw)
+                        if err is not None:
+                            code, message = err
+                            last_error = KimiError(f"{code}: {message}")
+                            if (code == "invalid_argument"
+                                    and not state.text and not state.think
+                                    and idx + 1 < len(candidates)):
+                                retry_model = True
+                                break
+                            raise last_error
+                        break
+                    try:
+                        event = json.loads(raw.decode("utf-8"))
+                    except Exception:
+                        continue
+                    state.apply(event)
+                    if state.error:
+                        raise KimiError(state.error)
+                    yield {
+                        "text": state.text_value(),
+                        "reasoning": state.think_value(),
+                        "chat_id": state.chat_id,
+                    }
+                    if state.done:
+                        break
+            finally:
+                try:
+                    resp.read()
+                except Exception:
+                    pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            if retry_model:
+                self.logger.info("Kimi 模型 %s(%s) 不可用，尝试 %s",
+                                 internal, scenario, candidates[idx + 1])
+                continue
+
+            self._resolved_models[model] = (internal, scenario)
+            chat_id = state.chat_id or cached
+            if chat_id and self.config.session_cache_enabled:
+                self._store_conv(
+                    conv_key, chat_id,
+                    state.assistant_message_id or state.last_message_id)
+            yield {
+                "__done__": True,
+                "text": state.text_value(),
+                "reasoning": state.think_value(),
+                "chat_id": chat_id,
+            }
+            return
+
+        if last_error is not None:
+            raise last_error
+        raise KimiError("没有可用的 Kimi 模型")
 
     # ── 对外接口 ───────────────────────────────────────
     def chat_completion(self, payload: dict) -> dict:

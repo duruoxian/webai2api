@@ -151,6 +151,14 @@ class LoginManager:
         if alive and cur.get("status") in ("opening", "waiting"):
             return {"ok": False, "error": "该账号正在登录中"}
 
+        # 千问中继也占着同一个 profile；登录前先停掉，避免互相杀进程
+        if str(acc.get("provider") or "") == "qwen":
+            try:
+                from .qwen_relay import stop_relay
+                stop_relay(acc_id)
+            except Exception:
+                pass
+
         # 清掉该账号残留的 WebView2 进程，否则新开的窗口会复用旧会话
         self._kill_leftover_browsers(acc_id)
 

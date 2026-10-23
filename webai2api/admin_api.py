@@ -284,6 +284,10 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         b = await _json(request)
         if b is None:
             return {"ok": False, "error": "请求格式错误"}
+        from .providers import PUBLIC_PROVIDERS
+
+        if str(b.get("provider", "deepseek")).strip().lower() not in PUBLIC_PROVIDERS:
+            return {"ok": False, "error": "该平台暂未开放"}
         acc = await run_in_threadpool(
             store.add_account,
             b.get("provider", "deepseek"),
@@ -298,7 +302,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             },
             b.get("note", ""),
         )
-        registry.refresh()
+        registry.refresh(acc.get("provider"))
         return {"ok": True, "account": _safe_account(acc)}
 
     @router.put("/accounts/{account_id}")
@@ -312,6 +316,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         fields = {k: b[k] for k in
                   ("name", "auth_token", "device_id", "settings_token",
                    "cookie", "enabled", "note", "proxy", "egress") if k in b}
+        acc0 = await run_in_threadpool(store.get_account, account_id)
         if "egress" in fields:
             from .egress import normalize_egress
 
@@ -323,7 +328,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if "enabled" in fields:
             fields["enabled"] = 1 if fields["enabled"] else 0
         await run_in_threadpool(store.update_account, account_id, **fields)
-        registry.refresh()
+        registry.refresh(acc0.get("provider") if acc0 else None)
         return {"ok": True}
 
     @router.post("/accounts/{account_id}/check")
@@ -337,9 +342,10 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if not acc:
             return {"ok": False, "error": "账号不存在"}
         try:
-            status, profile, new_token = await run_in_threadpool(_check, acc)
+            status, profile, new_token, new_refresh = await run_in_threadpool(_check, acc)
             await run_in_threadpool(
-                store.set_account_health, account_id, status, profile, new_token or None)
+                store.set_account_health, account_id, status, profile,
+                new_token or None, new_refresh or None)
             return {"ok": True, "status": status, "profile": profile}
         except Exception as exc:  # noqa: BLE001
             await run_in_threadpool(store.set_account_health, account_id, "expired")
@@ -361,8 +367,9 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         g = _guard(request)
         if g:
             return g
+        acc_del = await run_in_threadpool(store.get_account, account_id)
         await run_in_threadpool(store.delete_account, account_id)
-        registry.refresh()
+        registry.refresh(acc_del.get("provider") if acc_del else None)
         return {"ok": True}
 
     # ── 风险指标 ──
@@ -1414,7 +1421,6 @@ def _write_opencode_config(snippet: str) -> dict:
     backup = path.with_name(f"{path.name}.bak_{datetime.now().strftime('%Y%m%d%H%M%S_%f')}")
     backup.write_text(text, encoding="utf-8")
 
-    stripped = _strip_jsonc_comments(text)
     span = _find_provider_span(text)
     if not span:
         raise RuntimeError("配置里找不到 provider 段，请手动粘贴")

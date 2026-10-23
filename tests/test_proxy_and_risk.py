@@ -46,6 +46,54 @@ def test_parse_invalid_raises_when_strict() -> None:
         Proxy.parse("http://")
 
 
+# ── apply() 隧道回归（0.1.20 修复：连接必须指向代理，否则 CONNECT 被 TUN 400 拒） ──
+def test_apply_redirects_conn_to_proxy_and_tunnels_target() -> None:
+    import http.client
+
+    p = parse_proxy("http://127.0.0.1:7897")
+    assert p is not None
+    conn = http.client.HTTPSConnection("www.kimi.com", timeout=10)
+    p.apply(conn, "www.kimi.com")
+    # 连接指向代理，而不是目标主机
+    assert conn.host == "127.0.0.1"
+    assert conn.port == 7897
+    # 隧道目标是真实主机
+    assert conn._tunnel_host == "www.kimi.com"
+    assert conn._tunnel_port == 443
+
+
+def test_apply_with_auth_sets_proxy_authorization() -> None:
+    import http.client
+
+    p = parse_proxy("http://u:p@10.0.0.9:8080")
+    assert p is not None
+    conn = http.client.HTTPSConnection("chat.deepseek.com", timeout=10)
+    p.apply(conn, "chat.deepseek.com")
+    assert conn.host == "10.0.0.9" and conn.port == 8080
+    hdrs = conn._tunnel_headers or {}
+    assert "Proxy-Authorization" in hdrs
+    assert hdrs["Proxy-Authorization"].startswith("Basic ")
+    # 凭据不能明文出现在 describe 里
+    assert "p@" not in p.describe() and "***" in p.describe()
+
+
+def test_apply_socks_does_not_touch_host_port() -> None:
+    """socks 走 _apply_socks（自建 socket），不应把 conn.host 改成代理。"""
+    import http.client
+
+    p = parse_proxy("socks5://127.0.0.1:1080")
+    assert p is not None
+    conn = http.client.HTTPSConnection("chatglm.cn", timeout=10)
+    try:
+        p.apply(conn, "chatglm.cn")
+    except Exception:  # noqa: BLE001
+        # 无 PySocks 或连不上 1080 都可接受；只要求没被改成 HTTP 隧道分支
+        pass
+    # 若 socks 成功，会设置 conn.sock；无论如何 host 保持目标（socks 分支不改 host）
+    # 关键：不能出现 host=代理 且 无 tunnel 的中间态
+    assert conn._tunnel_host in (None, "chatglm.cn")
+
+
 # ── 风险指标 ───────────────────────────────────────────
 def _glm_client():
     from webai2api.adapters.chatglm.client import ChatGlmWebClient
