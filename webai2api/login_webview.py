@@ -336,6 +336,10 @@ def run_webview_login(acc_id: str) -> None:
         if legacy.exists():
             # 删不掉也不影响本次登录，仅清理登录态文件，避免磁盘膨胀
             _purge_login_state(legacy)
+    # 千问例外：它的聊天请求靠一个**常驻的隐藏中继窗口**在页面里发 fetch，
+    # 登录态必须在登录窗口关闭后仍然存在，所以不能像其它平台那样用完即删。
+    # 做法仍是「绝对干净」：先建全新目录，登录成功后再整体搬到中继用的固定目录。
+    keep_profile = provider == "qwen"
     storage = data_dir / "browser_profiles" / "_session" / f"{acc_id}-{uuid.uuid4().hex[:12]}"
     storage.mkdir(parents=True, exist_ok=True)
     from .egress import normalize_egress
@@ -507,6 +511,20 @@ def run_webview_login(acc_id: str) -> None:
                     os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = prev_args
                 else:
                     os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
+            # 千问：把本次登录的干净 profile 迁到中继专用目录，供常驻中继窗口复用
+            if keep_profile and storage.exists():
+                try:
+                    target = data_dir / "browser_profiles" / acc_id
+                    _kill_webview_processes_for(target)
+                    for _ in range(8):
+                        shutil.rmtree(target, ignore_errors=True)
+                        if not target.exists():
+                            break
+                        time.sleep(0.3)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(storage, target, dirs_exist_ok=True)
+                except Exception:
+                    pass
             # 一次性 profile：窗口关闭后整目录丢弃，不留在磁盘上
             _kill_webview_processes_for(storage)
             for _ in range(10):
