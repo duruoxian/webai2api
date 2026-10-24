@@ -14,8 +14,34 @@ import threading
 import time
 
 HOST = "127.0.0.1"
-DEFAULT_PORT = int(os.environ.get("WEBAI2API_PORT", "8800"))
-WINDOW_TITLE = "webai2api 控制台"
+
+
+def _default_port() -> int:
+    if os.environ.get("WEBAI2API_PORT"):
+        return int(os.environ["WEBAI2API_PORT"])
+    if getattr(sys, "frozen", False):
+        try:
+            from webai2api.edition import is_lite
+            return 8802 if is_lite() else 8800
+        except Exception:
+            return 8800
+    return 8800
+
+
+def _is_lite_edition() -> bool:
+    # 只在打包环境判定（main 仓库根可能残留陈旧 edition.txt，源码一律按 Pro）
+    if not getattr(sys, "frozen", False):
+        return False
+    try:
+        from webai2api.edition import is_lite
+        return is_lite()
+    except Exception:
+        return False
+
+
+DEFAULT_PORT = _default_port()
+WINDOW_TITLE = "webai2api 客户版" if _is_lite_edition() else "webai2api 控制台"
+APP_ICON_NAME = "webai2api-lite.ico" if _is_lite_edition() else "webai2api.ico"
 
 
 def _graceful_exit() -> None:
@@ -335,7 +361,7 @@ def main() -> None:
             width=1180, height=800, min_size=(900, 600),
             background_color="#eceef1",
         )
-        icon = resource_path("assets", "webai2api.ico")
+        icon = resource_path("assets", APP_ICON_NAME)
         webview.start(icon=str(icon) if icon.exists() else None)
         logger.info("窗口已关闭，退出")
         _graceful_exit()
