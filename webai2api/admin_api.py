@@ -1080,10 +1080,30 @@ def _safe_accounts(items: list[dict]) -> list[dict]:
 
 # ── opencode 配置辅助 ──────────────────────────────
 def _opencode_config_path() -> Path:
+    """定位 opencode 配置文件。
+
+    优先级：
+    1. 环境变量 WEBAI2API_OPENCODE_CONFIG（测试/自定义）
+    2. 项目级 .opencode/opencode.json(c)（若有）
+    3. 已存在的用户级 opencode.jsonc / opencode.json
+    4. 默认 ~/.config/opencode/opencode.jsonc（新建）
+    """
     env = os.environ.get("WEBAI2API_OPENCODE_CONFIG", "")
     if env:
         return Path(env)
-    return Path.home() / ".config" / "opencode" / "opencode.jsonc"
+    base = Path.home() / ".config" / "opencode"
+    jsonc = base / "opencode.jsonc"
+    plain = base / "opencode.json"
+    if jsonc.exists():
+        return jsonc
+    if plain.exists():
+        return plain
+    for proj in (Path.cwd() / ".opencode", Path.cwd()):
+        for name in ("opencode.jsonc", "opencode.json"):
+            p = proj / name
+            if p.exists():
+                return p
+    return jsonc
 
 
 def _read_current_port() -> int | None:
@@ -1410,6 +1430,39 @@ def _remove_provider_block(text: str, name: str) -> str:
     return out
 
 
+def _ensure_provider_section(text: str) -> str:
+    """确保顶层存在 "provider": { }，缺则插入；返回新文本。
+
+    兼容：空文件、只有一个 {}、有其它顶层键、带 // 与 /* */ 注释。
+    顶层不是对象（无法安全改写）时原样返回，由调用方报错。
+    """
+    stripped = _strip_jsonc_comments(text).strip()
+    if not stripped:
+        return '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n  }\n}\n'
+
+    # 顶层必须是 { ... }
+    first = _skip_ws_comment(text, 0)
+    if first >= len(text) or text[first] != "{":
+        return text
+    close = _match_close(text, first)
+    if close < 0:
+        return text
+
+    # 已有 provider 键（值不是对象也算存在，交给后续逻辑判断）
+    body = text[first + 1:close]
+    existing = _find_provider_span(text)
+    if existing is not None:
+        return text
+
+    inner = body.strip()
+    insert_at = first + 1
+    if inner:
+        # 有其它键：追加 ", "provider": {}"
+        block = '\n  "provider": {\n  },\n'
+        return text[:insert_at] + block + body.lstrip("\r\n") + text[close:]
+    return text[:insert_at] + '\n  "provider": {\n  }\n' + text[close:]
+
+
 def _write_opencode_config(snippet: str) -> dict:
     path = _opencode_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1421,9 +1474,14 @@ def _write_opencode_config(snippet: str) -> dict:
     backup = path.with_name(f"{path.name}.bak_{datetime.now().strftime('%Y%m%d%H%M%S_%f')}")
     backup.write_text(text, encoding="utf-8")
 
+    # 配置里没有 provider 段（全新安装的 opencode 往往如此）：自动补一个空段，
+    # 而不是让用户手动粘贴——保证无论装在哪台机器都能一键导入。
+    if _find_provider_span(text) is None:
+        text = _ensure_provider_section(text)
+
     span = _find_provider_span(text)
     if not span:
-        raise RuntimeError("配置里找不到 provider 段，请手动粘贴")
+        raise RuntimeError("配置格式异常（顶层不是对象），请手动粘贴")
     _brace, close_pos = span
     # provider 块闭合后下一个非空白字符必须是 , 或 }（顶层对象结尾）
     tail = _strip_jsonc_comments(text[close_pos + 1:]).lstrip(" \t\n\r")

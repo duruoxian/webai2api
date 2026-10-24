@@ -158,8 +158,8 @@ def test_connect_disabled_key(client, store):
     assert r.json() == {"ok": False, "error": "Key 已禁用"}
 
 
-def test_connect_bad_jsonc_returns_ok_false_with_snippet(client, config_path):
-    """配置里没有 provider 段 → 自动写入失败，但要把 snippet 返回给用户手动粘贴。"""
+def test_connect_without_provider_section_auto_creates(client, config_path):
+    """配置里没有 provider 段 → 自动补段并写入，保证任意机器都能一键导入。"""
     config_path.parent.mkdir(parents=True)
     config_path.write_text('{\n  "model": "x"\n}\n', encoding="utf-8")
     tok = _login(client)
@@ -169,14 +169,12 @@ def test_connect_bad_jsonc_returns_ok_false_with_snippet(client, config_path):
                     json={}, headers=_hdr(tok))
     assert r.status_code == 200
     body = r.json()
-    assert body["ok"] is False
-    assert "自动写入失败" in body["error"]
-    assert "snippet" in body
-    # snippet 是一段可解析的 provider 片段
-    parsed = json.loads("{" + body["snippet"] + "}")
-    assert parsed["webai2api"]["options"]["apiKey"] == key["key"]
-    # 原配置文件不被改写（写入失败时只在原地留着用户的配置）
-    assert config_path.read_text(encoding="utf-8") == '{\n  "model": "x"\n}\n'
+    assert body["ok"] is True
+    assert body["provider"] == "webai2api"
+    text = config_path.read_text(encoding="utf-8")
+    parsed = json.loads(api._strip_jsonc_comments(text))
+    assert parsed["provider"]["webai2api"]["options"]["apiKey"] == key["key"]
+    assert parsed["model"] == "x"
 
 
 def test_connect_with_empty_config_creates_provider(client, config_path):

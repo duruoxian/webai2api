@@ -265,6 +265,8 @@ _RELAY_JS = r"""
       }
       let responseId = '';
       let primaryResponseId = '';
+      let answerChars = 0;
+      let sawFinish = false;
       const seenReasoning = {};
       if(!resp.body || !resp.body.getReader){
         await push('error', {message: '当前浏览器不支持流式读取'}); return;
@@ -299,16 +301,17 @@ _RELAY_JS = r"""
           if(ev['response.created']){
             const c = ev['response.created'];
             if(!primaryResponseId) primaryResponseId = c.response_id || '';
-            if(primaryResponseId && c.response_id && c.response_id !== primaryResponseId) continue;
             responseId = primaryResponseId || c.response_id || responseId;
             await push('meta', {chat_id: c.chat_id || chatId, response_id: responseId, parent_id: c.parent_id || parentId});
             continue;
           }
-          if(ev.response_id && primaryResponseId && ev.response_id !== primaryResponseId) continue;
           if(ev.response_id){
             if(!primaryResponseId) primaryResponseId = ev.response_id;
-            responseId = primaryResponseId;
+            responseId = responseId || primaryResponseId;
           }
+          // 关键：绝不因 response_id 不同就整条丢弃事件——
+          // 千问会把「思考/搜索/作答」拆成多条不同 response_id 的流，
+          // 早期版本在这里 continue 掉，导致最终一个字都没输出、直接结束。
           const choices = ev.choices || [];
           for(const ch of choices){
             const d = ch.delta || {};
@@ -323,20 +326,34 @@ _RELAY_JS = r"""
                 seenReasoning[s] = true;
                 await push('reasoning', {content: s});
               }
-            }else if(phase === 'answer' || (!phase && typeof d.content === 'string')){
-              if(typeof d.content === 'string' && d.content){
-                await push('delta', {content: d.content});
+            }else if(phase === 'answer' || phase === '' || !phase){
+              let piece = '';
+              if(typeof d.content === 'string') piece = d.content;
+              else if(Array.isArray(d.content)) piece = d.content.map(x => typeof x === 'string' ? x : (x && x.text) || '').join('');
+              else if(d.content && typeof d.content.text === 'string') piece = d.content.text;
+              if(piece){
+                answerChars += piece.length;
+                await push('delta', {content: piece});
               }
             }
             if(typeof d.reasoning_content === 'string' && d.reasoning_content){
               await push('reasoning', {content: d.reasoning_content});
             }
             if(ch.finish_reason){
-              finished = true;
+              sawFinish = true;
+              // 只有确实拿到过正文才提前收尾；否则继续读后续 response
+              if(answerChars > 0) finished = true;
             }
           }
         }
         if(chunk.done) finished = true;
+      }
+      if(answerChars === 0){
+        await push('error', {
+          message: sawFinish ? '模型返回了空内容，请换个档位或重试' : '模型未返回任何内容，请重试',
+          empty: true,
+        });
+        return;
       }
       await push('done', {chat_id: chatId, response_id: responseId});
     }catch(e){

@@ -323,12 +323,15 @@ def test_write_creates_config_when_absent(monkeypatch, tmp_path):
     assert "webai2api" in doc["provider"]
 
 
-def test_write_rejects_config_without_provider(monkeypatch, tmp_path):
+def test_write_creates_provider_when_missing(monkeypatch, tmp_path):
+    """没有 provider 段时自动创建（一键导入的关键）。"""
     p = _use_config(monkeypatch, tmp_path)
     p.parent.mkdir(parents=True)
     p.write_text('{\n  "model": "x"\n}\n', encoding="utf-8")
-    with pytest.raises(RuntimeError):
-        api._write_opencode_config('"webai2api": {}')
+    api._write_opencode_config('"webai2api": {}')
+    doc = _whole_doc(p.read_text(encoding="utf-8"))
+    assert "webai2api" in doc["provider"]
+    assert doc["model"] == "x"
 
 
 def test_remove_is_idempotent_when_absent(monkeypatch, tmp_path):
