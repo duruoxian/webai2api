@@ -320,27 +320,37 @@ def run_webview_login(acc_id: str) -> None:
 
     write_state(acc_id, "opening", "正在打开内置浏览器…")
 
-    # 每次登录都用**全新的一次性 profile 目录**。
-    # 这是干净页面的根本保证：即使旧目录因进程锁/权限问题删不掉，
-    # 新目录里也不存在任何旧 cookie、localStorage、IndexedDB、缓存，
-    # 页面永远是未登录态，绝不会带出上一个人（或本机浏览器）的账号信息。
-    legacy = data_dir / "browser_profiles" / acc_id
-    if legacy.exists():
-        import shutil
-        _kill_webview_processes_for(legacy)
-        for _ in range(8):
-            shutil.rmtree(legacy, ignore_errors=True)
-            if not legacy.exists():
+    # 内置浏览器登录窗口的 profile 策略：
+    # - 其它平台：每次登录用一个**全新的一次性目录**，绝不复用。页面永远是
+    #   未登录状态，不会带出上一个账号的 cookie / 微信授权信息。
+    #   （pywebview 关窗时可能直接结束进程、跳过清理，所以历史残留在
+    #   每次登录开头统一清扫。）
+    # - 千问例外：它的聊天请求靠一个常驻的隐藏中继窗口在页面里发 fetch，
+    #   登录态必须留在 browser_profiles/<acc_id> 里给中继用，所以固定用该
+    #   目录；干净度靠"打开前彻底删除重建 + 精准兜底清理"保证。
+    base = data_dir / "browser_profiles"
+    session_root = base / "_session"
+    if session_root.exists():
+        for stale in session_root.glob(f"{acc_id}-*"):
+            _kill_webview_processes_for(stale)
+            shutil.rmtree(stale, ignore_errors=True)
+    if provider == "qwen":
+        storage = base / acc_id
+    else:
+        storage = session_root / f"{acc_id}-{uuid.uuid4().hex[:12]}"
+    if storage.exists():
+        _kill_webview_processes_for(storage)
+        cleared = False
+        for _ in range(10):
+            shutil.rmtree(storage, ignore_errors=True)
+            if not storage.exists():
+                cleared = True
                 break
             time.sleep(0.3)
-        if legacy.exists():
-            # 删不掉也不影响本次登录，仅清理登录态文件，避免磁盘膨胀
-            _purge_login_state(legacy)
-    # 千问例外：它的聊天请求靠一个**常驻的隐藏中继窗口**在页面里发 fetch，
-    # 登录态必须在登录窗口关闭后仍然存在，所以不能像其它平台那样用完即删。
-    # 做法仍是「绝对干净」：先建全新目录，登录成功后再整体搬到中继用的固定目录。
-    keep_profile = provider == "qwen"
-    storage = data_dir / "browser_profiles" / "_session" / f"{acc_id}-{uuid.uuid4().hex[:12]}"
+        if not cleared:
+            # 极端情况删不掉：精准清登录态文件（含 WebView2 真实 cookie 路径），
+            # 绝不允许旧 cookie/localStorage 残留导致登录页带出旧账号。
+            _purge_login_state(storage)
     storage.mkdir(parents=True, exist_ok=True)
     from .egress import normalize_egress
     egress_mode = normalize_egress(str(acc.get("egress") or "system"))
@@ -474,7 +484,21 @@ def run_webview_login(acc_id: str) -> None:
             store.update_account(acc_id, **fields)
             done["v"] = True
             write_state(acc_id, "success", "登录成功，凭证已保存")
-            time.sleep(0.6)
+            # 千问要把整个 profile 搬给常驻中继，必须先让 WebView2 把
+            # localStorage/cookie 刷盘（IndexedDB/LevelDB 有延迟写），
+            # 否则搬过去的是空壳，中继会一直认为未登录。
+            if provider == "qwen":
+                try:
+                    # 主动触发一次存储落盘，再多等几秒
+                    window.evaluate_js(
+                        "try{localStorage.setItem('__flush__',Date.now());"
+                        "localStorage.removeItem('__flush__');}catch(e){}"
+                    )
+                except Exception:
+                    pass
+                time.sleep(4.0)
+            else:
+                time.sleep(0.6)
             try:
                 window.destroy()
             except Exception:
@@ -499,40 +523,35 @@ def run_webview_login(acc_id: str) -> None:
                 os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
                     (prev_args + " " + extra).strip())
             try:
-                # private_mode=False 让站点把 cookie/localStorage 正常写进这个
+                # private_mode=False：站点把 cookie/localStorage 正常写进这个
                 # 一次性目录（InPrivate 下部分站点会拒绝登录），目录本身每次
                 # 都是新建的，用完即删，所以同样保证绝对干净。
                 webview.start(private_mode=False, storage_path=str(storage))
             except Exception as exc:  # noqa: BLE001
                 write_state(acc_id, "error", f"内置浏览器启动失败: {exc}")
+            # webview.start 返回后 WebView2 可能仍有残留子进程拖着窗口不放，
+            # 导致本进程永不退出、profile 也没机会落盘。这里主动收尾。
+            if done["v"]:
+                _kill_webview_processes_for(storage)
+                time.sleep(1.5)
         finally:
             if extra:
                 if prev_args:
                     os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = prev_args
                 else:
                     os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
-            # 千问：把本次登录的干净 profile 迁到中继专用目录，供常驻中继窗口复用
-            if keep_profile and storage.exists():
-                try:
-                    target = data_dir / "browser_profiles" / acc_id
-                    _kill_webview_processes_for(target)
-                    for _ in range(8):
-                        shutil.rmtree(target, ignore_errors=True)
-                        if not target.exists():
-                            break
-                        time.sleep(0.3)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copytree(storage, target, dirs_exist_ok=True)
-                except Exception:
-                    pass
-            # 一次性 profile：窗口关闭后整目录丢弃，不留在磁盘上
+            # 先确保 WebView2 把 localStorage / cookie 落盘，再释放文件锁
             _kill_webview_processes_for(storage)
-            for _ in range(10):
-                if not storage.exists():
-                    break
-                shutil.rmtree(storage, ignore_errors=True)
-                if storage.exists():
-                    time.sleep(0.3)
+            time.sleep(1.0)
+            # 一次性 profile（非千问）：窗口关闭后整目录丢弃，不留在磁盘上；
+            # 千问的 profile 是常驻中继要复用的，必须保留，绝不能删。
+            if provider != "qwen":
+                for _ in range(10):
+                    if not storage.exists():
+                        break
+                    shutil.rmtree(storage, ignore_errors=True)
+                    if storage.exists():
+                        time.sleep(0.3)
 
 
 def _webview_proxy_args(acc: dict) -> str:
