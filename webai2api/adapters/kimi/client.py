@@ -188,11 +188,16 @@ def _tools_prompt(tools: list) -> str:
     return "\n".join(lines)
 
 
+def _tools_protocol(tools: list) -> str:
+    """完整的工具协议说明（清单 + 标记约定 + 多轮规则）。"""
+    return TOOL_INSTRUCTION.format(tools=_tools_prompt(tools), marker=TOOL_MARKER)
+
+
 def _inject_tools(messages: list, tools: list) -> list:
     spec = _tools_prompt(tools)
     if not spec:
         return messages
-    instruction = TOOL_INSTRUCTION.format(tools=spec, marker=TOOL_MARKER)
+    instruction = _tools_protocol(tools)
     msgs = list(messages or [])
     for i, m in enumerate(msgs):
         if isinstance(m, dict) and m.get("role") == "system":
@@ -722,6 +727,20 @@ class KimiWebClient:
         # role=tool 的执行结果在这里被渲染成 <tool_result> 发给网页会话，
         # 否则工具结果永远到不了模型眼里，多轮工具链是断的。
         user_text = tool_bridge.increment_text(messages)
+
+        # Kimi 网页版的 options.systemPrompt 实测不生效（CHAT/OK_COMPUTER
+        # 场景都无视它），客户端的 system 与工具协议必须随首条用户消息
+        # 投递——增量协议会把首轮内容永久留在上游会话里，后续轮无需重发。
+        if not chat_id and (system_text or tools):
+            delivery = []
+            if system_text:
+                delivery.append("<system_instructions>\n" + system_text
+                                + "\n</system_instructions>")
+            if tools:
+                delivery.append("<tool_protocol>\n" + _tools_protocol(tools)
+                                + "\n</tool_protocol>")
+            delivery.append(user_text)
+            user_text = "\n\n---\n\n".join(delivery)
         model = str(payload.get("model") or self.config.default_model)
         opts = _effort_to_payload(
             str(payload.get("reasoning_effort") or self.config.default_effort), model)

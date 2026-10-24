@@ -29,7 +29,12 @@ def start_tray(admin_url: str, logger: Logger) -> None:
     import pystray
     from PIL import Image
 
-    icon_path = resource_path("assets", "webai2api.ico")
+    try:
+        from webai2api.edition import is_lite
+        icon_name = "webai2api-lite.ico" if is_lite() else "webai2api.ico"
+    except Exception:
+        icon_name = "webai2api.ico"
+    icon_path = resource_path("assets", icon_name)
     image = Image.open(icon_path) if icon_path.exists() else Image.new("RGBA", (64, 64), (10, 124, 255, 255))
 
     def _open(icon=None, item=None):
@@ -51,6 +56,11 @@ def start_tray(admin_url: str, logger: Logger) -> None:
         pystray.MenuItem("打开面板", _open, default=True),
         pystray.MenuItem("退出", _quit),
     )
-    icon = pystray.Icon("webai2api", image, "webai2api", menu)
+    try:
+        from webai2api.edition import is_lite
+        tray_title = "webai2api 客户版" if is_lite() else "webai2api"
+    except Exception:
+        tray_title = "webai2api"
+    icon = pystray.Icon("webai2api", image, tray_title, menu)
     threading.Thread(target=icon.run, name="tray", daemon=True).start()
     logger.info("系统托盘已启动")

@@ -633,14 +633,46 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             pass
         return {"ok": True}
 
-    # ── 授权（Pro 版不启用授权卡，保持与客户版同契约） ──
+    # ── 授权（统一形状：Pro 只显示签发卡；lite 显示授权卡 + 机器码） ──
     @router.get("/license")
     async def get_license(request: Request):
         g = _guard(request)
         if g:
             return g
-        return {"ok": True, "enabled": False,
-                "issuer": await run_in_threadpool(_issuer_available)}
+        info = await run_in_threadpool(_license_info)
+        try:
+            from .license import machine_code
+            info["machine"] = await run_in_threadpool(machine_code)
+        except Exception:
+            pass
+        return {"ok": True, **info}
+
+    @router.post("/license/install")
+    async def install_license(request: Request):
+        """客户版激活入口：粘贴 WB2. 授权码。"""
+        g = _guard(request)
+        if g:
+            return g
+        b = await _json(request)
+        if b is None:
+            return {"ok": False, "error": "请求格式错误"}
+        text = str(b.get("content") or "").strip()
+        if not text:
+            return {"ok": False, "error": "请粘贴授权码"}
+        from .license import activate
+        from .paths import user_data_dir
+        res = await run_in_threadpool(activate, user_data_dir(), text)
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "授权码无效"}
+        return {"ok": True, **res}
+
+    @router.post("/license/activate")
+    async def activate_license(request: Request):
+        """install 的旧别名，仅客户版可用。"""
+        from .edition import is_lite
+        if not is_lite():
+            return {"ok": False, "error": "当前版本无需激活"}
+        return await install_license(request)
 
     # ── 授权签发（仅作者本机，需私钥） ──
     @router.get("/license/issuer")
@@ -804,10 +836,28 @@ def _issuer_log_path():
 
 def _issuer_available() -> bool:
     try:
+        from .edition import is_lite
+        if is_lite():
+            return False  # 客户版永远不显示、不提供签发
         from . import issuer
         return issuer.load_author_seed() is not None
     except Exception:
         return False
+
+
+def _license_info() -> dict:
+    """授权信息。客户版会校验；专业版只决定是否显示签发卡。"""
+    issuer_ok = _issuer_available()
+    try:
+        from .edition import is_lite
+        if not is_lite():
+            return {"enabled": False, "issuer": issuer_ok}
+        from .license import status
+        from .paths import user_data_dir
+        st = status(user_data_dir(), store=None)
+        return {"enabled": True, "issuer": issuer_ok, **st}
+    except Exception:
+        return {"enabled": False, "issuer": issuer_ok}
 
 
 def _issuer_read_log() -> list[dict]:

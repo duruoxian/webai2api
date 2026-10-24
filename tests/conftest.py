@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -19,6 +20,10 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# 测试套件钉死专业版形态：仓库根可能残留 lite 构建写入的 edition.txt
+# （lite spec 打包时生成），不钉死的话整套测试会随环境漂移成客户版行为。
+os.environ["WEBAI2API_EDITION"] = "pro"
 
 from webai2api import license as _license  # noqa: E402
 

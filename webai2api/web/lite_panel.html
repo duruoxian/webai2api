@@ -1,0 +1,1965 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>webai2api 客户版</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='%235cbeff'/><stop offset='1' stop-color='%230a84ff'/></linearGradient></defs><rect width='100' height='100' rx='24' fill='url(%23g)'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.25">
+<script>
+/* 主题：在首次绘制前定下来，避免闪白 */
+(function(){
+  try{
+    var t = localStorage.getItem('wapi_theme');
+    if (t !== 'dark' && t !== 'light') t = 'light';
+    document.documentElement.setAttribute('data-theme', t);
+  }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
+})();
+</script>
+<script src="/admin/static/hyalite.js?v=0.1.25"></script>
+</head>
+<body>
+
+<div id="loginView" class="login-wrap">
+  <button class="icon-btn login-theme" onclick="toggleTheme()" title="切换深浅色" aria-label="切换深浅色">
+    <svg class="ic-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+    <svg class="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.2 4.2l1.4 1.4m12.8 12.8 1.4 1.4M2 12h2m16 0h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>
+  </button>
+  <div class="brand-logo"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18 L12 5 L19 18" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+  <h1>webai2api 客户版</h1>
+  <p>网页版 AI · 一键变 API</p>
+  <div class="card hyalite" style="padding:22px">
+    <label class="fld" style="text-align:left"><span>管理员密码</span>
+      <input type="password" id="loginPw" placeholder="默认 admin" onkeydown="if(event.key==='Enter')doLogin()">
+    </label>
+    <button class="btn block" onclick="doLogin()">登录</button>
+  </div>
+  <p class="hint" style="margin-top:16px">首次使用默认密码 admin，登录后请尽快修改</p>
+</div>
+
+<div id="mainView" style="display:none">
+  <div class="wrap">
+    <div class="tabs-bar hyalite">
+      <div class="brand">
+        <div class="brand-logo"><svg viewBox="0 0 24 24" fill="none"><path d="M5 18 L12 5 L19 18" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <span class="brand-name">webai2api 客户版</span>
+      </div>
+      <div class="seg">
+      <button class="active" data-tab="overview" onclick="switchTab('overview')">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        总览</button>
+      <button data-tab="accounts" onclick="switchTab('accounts')">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+        账号</button>
+      <button data-tab="keys" onclick="switchTab('keys')">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-3 0 3 3m-5 1 2 2"/></svg>
+        API Key</button>
+      <button data-tab="settings" onclick="switchTab('settings')">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.2 4.2l2.1 2.1m11.4 11.4 2.1 2.1M2 12h3m14 0h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+        设置</button>
+      </div>
+      <div class="tabs-right">
+        <button class="icon-btn" id="themeBtn" onclick="toggleTheme()" title="切换深浅色" aria-label="切换深浅色">
+          <svg class="ic-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>
+          <svg class="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.2 4.2l1.4 1.4m12.8 12.8 1.4 1.4M2 12h2m16 0h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>
+        </button>
+        <span class="stat-pill" id="navAcc">可用账号 <b>0</b></span>
+        <span class="stat-pill" id="navKey">Key <b>0</b></span>
+        <button class="btn gray sm" onclick="logout()">退出</button>
+      </div>
+    </div>
+
+    <div id="tab-overview" class="tabpane active">
+      <div id="alertBar" class="alert-bar" style="display:none"></div>
+      <div class="card">
+        <div class="card-head"><h2>用量总览</h2><div class="sp"></div>
+          <div class="seg seg-sm" id="rangeSeg">
+            <button data-range="today" onclick="setRange('today')">今天</button>
+            <button data-range="7d" onclick="setRange('7d')">7 天</button>
+            <button data-range="30d" onclick="setRange('30d')">30 天</button>
+            <button data-range="month" onclick="setRange('month')">本月</button>
+            <button class="active" data-range="all" onclick="setRange('all')">全部</button>
+            <button data-range="custom" onclick="setRange('custom')">自定义</button>
+          </div>
+        </div>
+        <div id="customRange" class="range-pop">
+          <div class="range-pop-row">
+            <div class="range-field">
+              <span>开始日期</span>
+              <button type="button" class="date-btn" id="rangeStartBtn" onclick="openDatePicker('start',this)">
+                <span id="rangeStartText">选择日期</span>
+                <i class="cal-ic"></i>
+              </button>
+            </div>
+            <div class="range-arrow"></div>
+            <div class="range-field">
+              <span>结束日期</span>
+              <button type="button" class="date-btn" id="rangeEndBtn" onclick="openDatePicker('end',this)">
+                <span id="rangeEndText">选择日期</span>
+                <i class="cal-ic"></i>
+              </button>
+            </div>
+          </div>
+          <div class="range-pop-foot">
+            <span class="muted" id="rangeHint">结束日期留空表示到现在</span>
+            <div class="sp"></div>
+            <button class="btn gray sm" onclick="cancelCustomRange()">取消</button>
+            <button class="btn sm" onclick="applyCustomRange()">应用</button>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat"><div class="lbl">总请求数</div>
+            <div class="num" id="ovReqs">0</div>
+            <div class="foot" id="ovReqsFoot">成功率 –</div></div>
+          <div class="stat"><div class="lbl">总 Token（估算）</div>
+            <div class="num" id="ovTotal">0</div>
+            <div class="foot" id="ovTokFoot">输入 – · 输出 –</div></div>
+          <div class="stat"><div class="lbl">近 24h Token</div>
+            <div class="num" id="ov24">0</div>
+            <div class="foot">不受时间筛选影响</div></div>
+          <div class="stat"><div class="lbl">可用账号</div>
+            <div class="num" id="ovAcc">0</div>
+            <div class="foot">已启用</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>模型用量</h2><div class="sp"></div>
+          <div class="seg seg-sm" id="modelSortSeg">
+            <button class="active" data-sort="token" onclick="setModelSort('token')">按用量</button>
+            <button data-sort="req" onclick="setModelSort('req')">按请求数</button>
+          </div>
+        </div>
+        <div class="model-split">
+          <div class="model-donut">
+            <div class="donut-box">
+              <svg id="donut" viewBox="0 0 140 140" class="donut"></svg>
+              <div id="donutTip" class="donut-tip"></div>
+            </div>
+          </div>
+          <div class="model-table">
+            <div class="tbl-scroll">
+              <table id="modelTable"><thead><tr><th>模型</th><th>请求数</th><th>输入</th><th>输出</th><th>合计</th></tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>每日 Token 消耗</h2><div class="sp"></div>
+          <div class="sel sel-sm" id="sel-dailyKey">
+            <select id="dailyKey" class="sel-native" onchange="onDailyKeyChange()"></select>
+            <button type="button" class="sel-btn" onclick="selToggle('dailyKey')">
+              <span id="lbl-dailyKey">全部 Key</span>
+              <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="sel-menu" id="menu-dailyKey"></div>
+          </div>
+          <div class="seg seg-sm" id="barWinSeg">
+            <button data-win="7" onclick="setBarWindow(7)">7 天</button>
+            <button class="active" data-win="14" onclick="setBarWindow(14)">14 天</button>
+            <button data-win="30" onclick="setBarWindow(30)">30 天</button>
+            <button data-win="90" onclick="setBarWindow(90)">90 天</button>
+          </div>
+        </div>
+        <div id="barchart" class="barchart"></div>
+        <div class="bar-slider">
+          <div class="bar-range-label" id="barRangeLabel"></div>
+          <input type="range" id="barSlider" min="0" max="0" value="0" oninput="onBarSlide(this.value)">
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>最近请求</h2><div class="sp"></div>
+          <div class="sel sel-sm" id="sel-recentKey">
+            <select id="recentKey" class="sel-native" onchange="onRecentFilter()"></select>
+            <button type="button" class="sel-btn" onclick="selToggle('recentKey')">
+              <span id="lbl-recentKey">全部 Key</span>
+              <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="sel-menu" id="menu-recentKey"></div>
+          </div>
+          <div class="sel sel-sm" id="sel-recentAcc">
+            <select id="recentAcc" class="sel-native" onchange="onRecentFilter()"></select>
+            <button type="button" class="sel-btn" onclick="selToggle('recentAcc')">
+              <span id="lbl-recentAcc">全部账号</span>
+              <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <div class="sel-menu" id="menu-recentAcc"></div>
+          </div>
+          <span class="muted" id="recentInfo" style="font-size:12.5px"></span>
+          <button class="btn gray sm" onclick="recentPage(-1)">上一页</button>
+          <button class="btn gray sm" onclick="recentPage(1)">下一页</button>
+        </div>
+        <div class="tbl-scroll tall">
+          <table id="recentTable"><thead><tr><th>时间</th><th>Key</th><th>账号</th><th>模型</th><th>输入</th><th>输出</th><th>合计</th><th>耗时</th><th>状态</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </div>
+
+
+    <div id="tab-accounts" class="tabpane">
+      <div class="card">
+        <div class="card-head"><h2>账号</h2><div class="sp"></div>
+          <button class="btn sm" onclick="openAccModal()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>添加账号</button>
+        </div>
+        <p class="card-sub">每个账号独立存储、互不干扰，也不影响你自己浏览器里的登录状态。<br>
+          <b>用法：</b>点右上角「添加账号」只填<b>名称</b> → 保存 → 回列表点该账号的<b>「浏览器登录」</b>，在弹出的内置浏览器里登录 DeepSeek 即可，凭证会<b>自动抓取</b>。</p>
+        <div class="tbl-scroll tall">
+          <table id="accTable"><thead><tr><th>名称</th><th>平台</th><th>凭证</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>风险指标</h2><div class="sp"></div>
+          <button class="btn gray sm" onclick="loadRisk()">刷新</button>
+        </div>
+        <p class="card-sub">会话创建量、缓存命中率、限流次数是本进程启动以来的累计值（重启归零）。<b>命中率持续为 0 说明会话复用失效</b>，是最需要关注的信号。</p>
+        <div class="tbl-scroll">
+          <table id="riskTable"><thead><tr>
+            <th>账号</th><th>日用量</th><th>会话创建</th><th>缓存命中率</th><th>活跃会话</th><th>上游请求</th><th>限流</th><th>出口</th>
+          </tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-keys" class="tabpane">
+      <div class="card">
+        <div class="card-head"><h2>API Key</h2><div class="sp"></div>
+          <button class="btn sm" onclick="openKeyModal()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>生成 Key</button>
+        </div>
+        <p class="card-sub">把 Key 发给朋友，填进 opencode 等客户端即可。接口地址：<b id="baseHint">/v1</b></p>
+        <div class="tbl-scroll tall">
+          <table id="keyTable"><thead><tr><th>名称</th><th>创建时间</th><th>状态</th><th>最近使用</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>接入方式</h2></div>
+        <div class="hint" style="line-height:2;margin-bottom:14px">
+          <div>接口地址&nbsp;&nbsp;<b id="baseHint2">/v1</b></div>
+          <div>可用模型&nbsp;&nbsp;<b id="modelHint">deepseek-chat</b></div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">API Key
+            <div class="sel sel-sm" id="sel-ocKeySel" style="min-width:220px">
+              <select id="ocKeySel" class="sel-native" onchange="onOcKeyChange()"></select>
+              <button type="button" class="sel-btn" onclick="selToggle('ocKeySel')">
+                <span id="lbl-ocKeySel">无可用 Key</span>
+                <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+              <div class="sel-menu" id="menu-ocKeySel"></div>
+            </div>
+            <button class="btn sm" id="ocConnectBtn" onclick="ocConnectCurrent()">接入</button>
+            <button class="btn gray sm" id="ocDisconnectBtn" onclick="ocDisconnectCurrent()">移除</button>
+          </div>
+        </div>
+
+        <div class="set-group">
+          <div class="set-group-title">OpenCode 配置片段</div>
+          <p class="hint" style="margin-bottom:8px">opencode 不会自动识别模型能力（上下文 / 推理 / 图片），点「接入」可直接写入 <code>~/.config/opencode/opencode.jsonc</code>；也可以复制下面这段完整配置（已带好能力值）手动粘进 provider 里：</p>
+          <pre id="ocSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
+          <button class="btn sm" onclick="copyText(document.getElementById('ocSnippet').textContent)" style="margin-top:10px">复制配置片段</button>
+        </div>
+
+        <div class="set-group" style="margin-top:18px">
+          <div class="set-group-title">其他 OpenAI 兼容客户端</div>
+          <p class="muted" style="margin:-2px 0 12px">在任意支持「自定义提供商 / OpenAI 兼容」的客户端里新建提供商，按下表填写。填完点「提交」，再到客户端里添加模型即可。</p>
+          <div class="guide">
+            <div class="guide-row"><span>提供商 ID</span><code>webai2api</code><button class="btn gray sm" onclick="copyText('webai2api')">复制</button></div>
+            <div class="guide-row"><span>显示名称</span><code>webai2api</code><button class="btn gray sm" onclick="copyText('webai2api')">复制</button></div>
+            <div class="guide-row"><span>基础 URL</span><code id="guideBase">/v1</code><button class="btn gray sm" onclick="copyText(document.getElementById('guideBase').textContent)">复制</button></div>
+            <div class="guide-row"><span>API 密钥</span><code id="guideKeyHint">在上方列表中选择或生成</code><button class="btn gray sm" onclick="document.getElementById('keyTable').scrollIntoView({behavior:'smooth'})">去创建</button></div>
+            <div class="guide-row"><span>模型</span>
+              <div class="guide-models">
+                <div class="guide-model"><code>deepseek-chat</code><span>DeepSeek V4.1-Flash（非思考）</span><button class="btn gray sm" onclick="copyText('deepseek-chat')">复制 ID</button></div>
+                <div class="guide-model"><code>deepseek-reasoner</code><span>DeepSeek V4.1-Flash 思考</span><button class="btn gray sm" onclick="copyText('deepseek-reasoner')">复制 ID</button></div>
+                <div class="guide-model"><code>GLM-5.3</code><span>GLM-5.3（智谱）</span><button class="btn gray sm" onclick="copyText('GLM-5.3')">复制 ID</button></div>
+                <div class="guide-model"><code>GLM-5.3-Flash</code><span>GLM-5.3-Flash（智谱 · 快速）</span><button class="btn gray sm" onclick="copyText('GLM-5.3-Flash')">复制 ID</button></div>
+              </div>
+            </div>
+            <div class="guide-row"><span>请求头</span><code>留空</code></div>
+          </div>
+          <p class="muted" style="margin:12px 0 0">添加模型时：左边填<b>模型 ID</b>（照上表），右边填<b>显示名称</b>（可自定义）。注意：通过界面添加模型时，客户端只会保存名称，<b>不会自动带上上下文 / 推理 / 图片能力</b>；需要这些能力请用上方「OpenCode 配置片段」。GLM 模型需要先在「账号」页登录智谱账号。</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-settings" class="tabpane">
+      <div class="card">
+        <div class="card-head"><h2>通用 / 数据</h2></div>
+        <label class="fld"><span>用量数据保留天数（0 = 永久保留）</span>
+          <input id="setRetain" placeholder="0" inputmode="numeric">
+          <span class="hint" style="display:block;margin-top:6px">每 6 小时自动清理超过该天数的历史记录；改完保存后立即生效，无需重启。</span></label>
+        <div class="fld-row" style="align-items:center;gap:10px;margin-bottom:16px">
+          <button class="btn gray sm" onclick="cleanUsageNow()">立即清理历史用量</button>
+          <span class="hint" id="usageDbHint" style="margin:0"></span>
+        </div>
+        <label class="fld"><span>管理员密码</span>
+          <input id="setPw" type="password" placeholder="留空则不修改"></label>
+        <button class="btn" onclick="saveGeneralSettings()">保存</button>
+
+        <div class="set-group" style="margin-top:18px">
+          <div class="set-group-title">系统</div>
+          <label class="chk"><input type="checkbox" id="setTray" onchange="saveTray()"> 显示系统托盘图标（可打开面板 / 退出）</label>
+          <label class="chk"><input type="checkbox" id="setAutostart" onchange="saveAutostart()"> 开机自动启动</label>
+          <div class="fld-row" style="margin-top:10px">
+            <button class="btn gray sm" onclick="doBackup()">立即备份数据库</button>
+            <button class="btn gray sm" onclick="showLogs()">查看日志</button>
+            <button class="btn danger sm" onclick="doShutdown()">退出程序</button>
+          </div>
+          <span class="hint" style="display:block;margin-top:8px" id="sysHint"></span>
+        </div>
+      </div>
+
+      <div class="card" id="licenseCard">
+        <div class="card-head"><h2>授权</h2><div class="sp"></div>
+          <span class="lic-chip" id="licChip">未激活</span></div>
+
+        <div class="lic-hero" id="licHero">
+          <div class="lic-hero-main">
+            <span class="lic-hero-num" id="licDays">—</span>
+            <span class="lic-hero-unit" id="licHeroUnit">剩余</span>
+          </div>
+          <div class="lic-hero-side">
+            <div class="lic-meta"><span>状态</span><b id="licState">未激活</b></div>
+            <div class="lic-meta"><span>激活日期</span><b id="licActivated">—</b></div>
+            <div class="lic-meta"><span>到期日期</span><b id="licExpires">—</b></div>
+            <div class="lic-meta"><span>授权编号</span><b id="licId" class="mono">—</b></div>
+          </div>
+        </div>
+        <div class="lic-bar"><i id="licBarFill" style="width:0%"></i></div>
+        <div class="lic-note" id="licReason"></div>
+
+        <div class="lic-meta" style="margin-top:14px">
+          <span>本机机器码</span>
+          <b><code id="licMachine" class="mono">—</code>
+             <button class="btn gray sm" style="margin-left:8px" onclick="copyText(document.getElementById('licMachine').textContent)">复制</button></b>
+        </div>
+        <div class="hint" style="display:block;margin:6px 0 2px">
+          购买/续期时把这一串发给作者，会为你签发只认这台机器的授权码；换机/重装系统后机器码会变化，需要重新索取。
+        </div>
+
+        <label class="fld" style="margin-top:18px"><span>授权码</span>
+          <textarea id="licInput" rows="3" placeholder="粘贴作者发给你的一行授权码（WB2. 开头）"></textarea></label>
+        <div class="btn-row">
+          <button class="btn" onclick="installLicense()">激活</button>
+          <span class="hint" style="margin:0">续期时粘贴新授权码即可覆盖</span>
+        </div>
+        <span class="hint" style="display:block;margin-top:8px" id="licHint"></span>
+      </div>
+
+      <div class="card" id="issuerCard" hidden>
+        <div class="card-head"><h2>授权签发</h2><div class="sp"></div>
+          <span class="hint" style="margin:0">仅本机可见（检测到作者私钥）</span></div>
+        <div class="fld-row" style="align-items:flex-end">
+          <label class="fld"><span>有效天数</span>
+            <input id="issueDays" inputmode="numeric" value="7"></label>
+          <label class="fld"><span>数量</span>
+            <input id="issueCount" inputmode="numeric" value="1"></label>
+          <label class="fld" style="flex:1"><span>备注（客户名 / 订单号）</span>
+            <input id="issueNote" placeholder="可选"></label>
+          <label class="fld" style="flex:1"><span>绑定机器码（留空=通用码）</span>
+            <input id="issueMachine" placeholder="客户发来的机器码"></label>
+        </div>
+        <div class="btn-row">
+          <button class="btn" onclick="issueCodes()">生成授权码</button>
+          <button class="btn gray" onclick="exportIssued()">导出记录 CSV</button>
+        </div>
+        <div id="issueResult" class="issue-list"></div>
+      </div>
+
+      <div class="card about">
+        <div class="card-head"><h2>关于</h2></div>
+        <div class="about-row"><span>作者</span><b>DuRuoxian</b></div>
+        <div class="about-row"><span>QQ</span><b>2483724214</b></div>
+        <div class="about-row"><span>版本</span><b id="aboutVer">—</b></div>
+
+        <div class="notice">
+          <h3>使用声明与免责条款</h3>
+          <p>本工具（webai2api）仅用于个人学习、技术研究与自用便利，通过本地代理方式将网页端会话转换为 OpenAI 兼容接口。</p>
+          <p>本工具与 DeepSeek（深度求索）、智谱清言（智谱 AI）及其关联公司<b>没有任何隶属、合作或授权关系</b>，相关名称、商标及服务归其各自权利人所有。</p>
+          <p>使用本工具可能<b>违反上述平台的服务条款/用户协议</b>，并可能导致账号被限流、封禁或其他处置。是否使用、如何使用以及由此产生的一切后果，均由使用者本人自行判断并承担全部责任。</p>
+          <p>作者不对因使用或无法使用本工具而造成的任何直接或间接损失（包括但不限于账号封禁、数据丢失、服务中断、法律纠纷等）承担责任。</p>
+          <p>请勿将本工具用于商业用途、批量注册、恶意爬取、规避付费或其他违法违规行为。如不同意上述条款，请立即停止使用并删除本工具。</p>
+          <p class="notice-foot">本项目以开源形式提供，不提供任何明示或暗示的担保。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="accModal" class="modal-bg">
+  <div class="modal modal-flex">
+    <div class="modal-head">
+      <h2 id="accModalTitle">添加账号</h2>
+      <div class="sp"></div>
+      <button class="modal-x" onclick="closeModal('accModal')" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub">只填「名称」就能保存。之后在列表里点<b>浏览器登录</b>，在弹出的内置浏览器里登录，凭证会自动抓取。</p>
+    <div class="modal-body">
+    <input type="hidden" id="accId">
+    <div class="fld-row">
+      <label class="fld"><span>名称</span><input id="accName" placeholder="例如：我的 DeepSeek"></label>
+      <label class="fld"><span id="accProviderLabel">平台</span>
+        <div class="sel" id="sel-accProvider">
+          <select id="accProvider" class="sel-native" onchange="onProviderChange()"><option value="deepseek">DeepSeek 网页版</option><option value="chatglm">智谱清言（chatglm.cn）</option><option value="kimi">Kimi 网页版（kimi.com）</option><option value="qwen">通义千问（chat.qwen.ai）</option></select>
+          <button type="button" class="sel-btn" onclick="selToggle('accProvider')">
+            <span id="lbl-accProvider">DeepSeek 网页版</span>
+            <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <div class="sel-menu" id="menu-accProvider"></div>
+        </div>
+      </label>
+    </div>
+    <div class="hint" id="accCredHint" style="margin:0 0 14px">DeepSeek：浏览器登录后会自动抓取，下面的凭证可以留空。</div>
+    <label class="fld"><span>连接方式</span>
+      <div class="sel" id="sel-accEgress">
+        <select id="accEgress" class="sel-native" onchange="onEgressChange()">
+          <option value="direct">直连（不走代理）</option>
+          <option value="system">跟随系统代理（Clash 等）</option>
+          <option value="custom">自定义代理</option>
+        </select>
+        <button type="button" class="sel-btn" onclick="selToggle('accEgress')">
+          <span id="lbl-accEgress">跟随系统代理（Clash 等）</span>
+          <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="sel-menu" id="menu-accEgress"></div>
+      </div>
+    </label>
+    <div id="accProxyWrap">
+      <label class="fld"><span>代理地址</span>
+        <input id="accProxy" placeholder="http://user:pass@host:port 或 socks5://host:port"></label>
+      <div style="display:flex;align-items:center;gap:8px;margin:0 0 8px">
+        <button class="btn gray sm" onclick="testProxy()">测试代理</button>
+        <button class="btn gray sm" id="clashPreset" onclick="useClash()" style="display:none">交给 Clash 分流</button>
+        <span id="proxyTestResult" class="muted" style="font-size:12px"></span>
+      </div>
+    </div>
+    <div class="hint" id="accEgressHint" style="margin:0 0 14px">
+      登录、健康检查、聊天请求都会走同一个出口，避免「登录一个 IP、请求另一个 IP」的异常指纹。
+    </div>
+    <details class="adv" id="accAdv">
+      <summary>手动填写凭证（不推荐）</summary>
+      <div class="adv-body">
+        <p class="hint">仅当内置浏览器不可用时才需要。在 chat.deepseek.com 按 F12 → Application → Local Storage 取          <code>userToken</code>（→auth_token）/ <code>deepseek-device-id:chat</code>（→device_id）/ <code>settingsJwt</code>（→settings_token），
+          cookie 取任意请求的 Cookie 请求头整串。</p>
+        <label class="fld"><span>auth_token / refresh_token</span><input id="accToken" placeholder="留空即可"></label>
+        <label class="fld"><span>device_id</span><input id="accDevice" placeholder="留空即可"></label>
+        <label class="fld"><span>settings_token</span><textarea id="accSettings" rows="3" placeholder="留空即可"></textarea></label>
+        <label class="fld"><span>cookie</span><textarea id="accCookie" rows="3" placeholder="留空即可"></textarea></label>
+      </div>
+    </details>
+    </div>
+    <div class="modal-foot">
+      <button class="btn gray" onclick="closeModal('accModal')">取消</button>
+      <button class="btn" onclick="saveAccount()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="keyModal" class="modal-bg">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>生成 API Key</h2>
+      <div class="sp"></div>
+      <button class="modal-x" onclick="closeModal('keyModal')" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub">生成后把这个 Key 发给要用的人，填进 opencode 等客户端即可。</p>
+    <label class="fld"><span>备注（发给谁用）</span><input id="keyName" placeholder="例如：小明"></label>
+    <div class="modal-foot">
+      <button class="btn gray" onclick="closeModal('keyModal')">取消</button>
+      <button class="btn" id="keyGenBtn" onclick="createKey()">生成</button>
+    </div>
+    <div id="keyResult" style="display:none">
+      <p class="hint" style="margin-top:18px">复制这个 Key（仅显示一次）：</p>
+      <div class="copy" id="keyValue"></div>
+      <button class="btn sm" onclick="copyText(document.getElementById('keyValue').textContent)">复制</button>
+    </div>
+  </div>
+</div>
+
+<div id="keyDetailModal" class="modal-bg">
+  <div class="modal modal-flex" style="max-width:760px">
+    <div class="modal-head">
+      <h2 id="kdTitle">Key 详情</h2>
+      <div class="sp"></div>
+      <button class="modal-x" onclick="closeModal('keyDetailModal')" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="today-grid" id="kdTotals" style="grid-template-columns:repeat(3,1fr)"></div>
+      <div class="set-group" style="margin-top:16px">
+        <div class="set-group-title">模型分布</div>
+        <div id="kdModels"></div>
+      </div>
+      <div class="modal-foot" id="kdMore" style="padding-left:0;padding-right:0"></div>
+    </div>
+  </div>
+</div>
+
+<div id="keyViewModal" class="modal-bg">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>API Key</h2>
+      <div class="sp"></div>
+      <button class="modal-x" onclick="closeModal('keyViewModal')" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <p class="modal-sub" id="keyViewMeta"></p>
+    <div class="copy" id="keyViewValue" style="word-break:break-all"></div>
+    <div class="modal-foot">
+      <button class="btn gray" onclick="closeModal('keyViewModal')">关闭</button>
+      <button class="btn" onclick="copyText(document.getElementById('keyViewValue').textContent)">复制 Key</button>
+    </div>
+  </div>
+</div>
+
+<div id="keyEditModal" class="modal-bg">
+  <div class="modal modal-flex">
+    <div class="modal-head">
+      <h2>编辑 API Key</h2>
+      <div class="sp"></div>
+      <button class="modal-x" onclick="closeModal('keyEditModal')" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+    <p class="modal-sub">限定这个 Key 能用哪些账号、哪些模型。不勾选表示不限制。</p>
+    <label class="fld"><span>名称</span><input id="editKeyName" placeholder="例如：小明"></label>
+    <div class="fld-row">
+      <label class="fld"><span>归属人</span><input id="editKeyOwner" placeholder="例如：张三"></label>
+      <label class="fld" style="flex:1.2"><span>到期时间（留空 = 永不过期）</span>
+        <button type="button" class="date-btn empty" id="editKeyExpiresBtn" onclick="openDatePicker('keyexp',this)">
+          <span id="editKeyExpiresText">选择日期</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M8 3v4M16 3v4M3.5 10h17"/></svg>
+        </button>
+      </label>
+    </div>
+    <label class="fld"><span>备注</span><input id="editKeyNote" placeholder="可选"></label>
+    <div class="fld-row">
+      <label class="fld"><span>每日 Token 上限（0 = 不限）</span><input id="editKeyQuotaDay" inputmode="numeric" placeholder="0"></label>
+      <label class="fld"><span>每月 Token 上限（0 = 不限）</span><input id="editKeyQuotaMonth" inputmode="numeric" placeholder="0"></label>
+    </div>
+    <div class="fld"><span>可用账号 <span class="hint-inline">（不勾选 = 全部账号）</span></span>
+      <div id="editKeyAcc" class="pick-list"></div></div>
+    <div class="fld"><span>可用模型 <span class="hint-inline">（仅显示所选账号平台的模型；不勾选 = 全部）</span></span>
+      <div id="editKeyModel" class="pick-list"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn gray" onclick="closeModal('keyEditModal')">取消</button>
+      <button class="btn" onclick="saveKeyEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="logModal" class="modal-bg">
+  <div class="modal modal-flex" style="max-width:760px">
+    <div class="modal-head">
+      <h2>运行日志</h2>
+      <div class="sp"></div>
+      <button class="modal-x" onclick="closeModal('logModal')" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <pre id="logText" style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;font-family:Consolas,monospace;background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:14px"></pre>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hyalite"></div>
+
+<div id="datePicker" class="dp">
+  <div class="dp-head">
+    <button type="button" class="dp-nav" onclick="dpMove(-1)">‹</button>
+    <span id="dpTitle">2026年9月</span>
+    <button type="button" class="dp-nav" onclick="dpMove(1)">›</button>
+  </div>
+  <div class="dp-week"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+  <div id="dpGrid" class="dp-grid"></div>
+  <div class="dp-foot">
+    <button type="button" class="dp-link" onclick="dpClear()">清除</button>
+    <button type="button" class="dp-link" onclick="dpToday()">今天</button>
+  </div>
+</div>
+
+<script>
+let TOKEN = localStorage.getItem('wapi_token') || '';
+
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),1800); }
+function copyText(text){
+  const done=()=>toast('已复制');
+  if(navigator.clipboard&&window.isSecureContext){
+    navigator.clipboard.writeText(text).then(done,()=>fallback());
+  } else fallback();
+  function fallback(){
+    const ta=document.createElement('textarea');
+    ta.value=text; ta.style.cssText='position:fixed;opacity:0';
+    document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); done(); }catch(e){ toast('复制失败'); }
+    ta.remove();
+  }
+}
+async function api(path,method='GET',body=null){
+  const opt={method,headers:{'X-Admin-Token':TOKEN}};
+  if(body){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body);}
+  const r=await fetch('/admin/api'+path,opt);
+  if(r.status===401){showLogin();throw new Error('未登录');}
+  return r.json();
+}
+function showLogin(){document.body.classList.add('no-scroll');document.getElementById('loginView').style.display='flex';
+  document.getElementById('mainView').style.display='none';}
+function showMain(){document.body.classList.remove('no-scroll');document.getElementById('loginView').style.display='none';
+  document.getElementById('mainView').style.display='block';}
+async function doLogin(){
+  const pw=document.getElementById('loginPw').value;
+  const r=await fetch('/admin/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+  const j=await r.json();
+  if(j.ok){TOKEN=j.token;localStorage.setItem('wapi_token',TOKEN);showMain();refresh();
+    if(j.default_password) setTimeout(()=>toast('当前仍是默认密码 admin，建议到「设置」里修改'),1500);
+    else toast('已登录');}
+  else toast(j.error||'登录失败');
+}
+async function logout(){try{await api('/logout','POST')}catch(e){}TOKEN='';localStorage.removeItem('wapi_token');showLogin();}
+
+function switchTab(name){
+  document.querySelectorAll('.seg button').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active',p.id==='tab-'+name));
+  if(name==='accounts') loadRisk();
+  // 切页回到顶部，避免停在上一页的滚动位置
+  try{ window.scrollTo({top:0, behavior:'auto'}); }catch(e){ window.scrollTo(0,0); }
+}
+function egressTag(mode){
+  const m=mode||'system';
+  if(m==='direct') return '<span class="tag on">直连</span>';
+  if(m==='custom') return '<span class="tag on">自定义代理</span>';
+  return '<span class="tag off">跟随系统</span>';
+}
+async function loadRisk(){
+  const tb=document.querySelector('#riskTable tbody');
+  if(!tb) return;
+  const j=await api('/risk');
+  if(!j||!j.ok){ tb.innerHTML=''; return; }
+  tb.innerHTML='';
+  j.accounts.forEach(x=>{
+    const st=x.stats||{};
+    const rate=Math.round((st.cache_hit_rate||0)*100);
+    const daily=st.daily_limit?`${st.daily_count||0}/${st.daily_limit}`:(st.daily_count||0);
+    const rateCls=rate>=60?'on':(rate>0?'':'err');
+    tb.innerHTML+=`<tr>
+      <td><b>${esc(x.name)}</b><div class="muted" style="font-size:12px">${esc(x.provider)}</div></td>
+      <td class="num-t">${daily}</td>
+      <td class="num-t">${st.sessions_created||0}</td>
+      <td><span class="tag ${rateCls}">${rate}%</span></td>
+      <td class="num-t">${st.active_sessions||0}</td>
+      <td class="num-t">${st.upstream_requests||0}</td>
+      <td>${st.rate_limit_hits?`<span class="tag err">${st.rate_limit_hits}</span>`:'0'}</td>
+      <td>${egressTag(x.egress)}</td>
+    </tr>`;
+  });
+  if(!j.accounts.length) tb.innerHTML=empty('还没有账号');
+}
+function fmt(n){n=Number(n)||0;return n.toLocaleString('zh-CN');}
+
+/* Token 数字：带单位的紧凑写法，最高支持到万亿级。
+   返回 HTML：数值 + 小号单位，保证单位与数字同一字重体系、视觉统一。 */
+function fmtTokHTML(n){
+  n=Number(n)||0;
+  const units=[[1e12,'万亿'],[1e8,'亿'],[1e4,'万']];
+  for(const [base,unit] of units){
+    if(n>=base){
+      let v=n/base;
+      let s = v>=100 ? v.toFixed(0) : v>=10 ? v.toFixed(1) : v.toFixed(2);
+      s = s.replace(/\.0+$/,'').replace(/(\.\d)0$/,'$1');
+      return `${s}<small>${unit}</small>`;
+    }
+  }
+  return n.toLocaleString('zh-CN');
+}
+function fmtTok(n){
+  return fmtTokHTML(n).replace(/<[^>]+>/g,'');
+}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function fmtTime(ts){if(!ts)return '–';const d=new Date(ts*1000);
+  return d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
+
+let RANGE='all', RANGE_START='', RANGE_END='';
+let LAST_STATE=null;
+
+/* ── 自绘日历 ── */
+let DP_TARGET='start', DP_VIEW=null;
+
+function dpInit(){
+  if(DP_VIEW) return;
+  const d=new Date();
+  DP_VIEW={y:d.getFullYear(),m:d.getMonth()};
+}
+function openDatePicker(target, anchor){
+  dpInit();
+  DP_TARGET=target;
+  const cur = target==='start'?RANGE_START:(target==='keyexp'?KEY_EXPIRES:RANGE_END);
+  if(cur){
+    const [y,m]=cur.split('-').map(Number);
+    DP_VIEW={y, m:m-1};
+  }
+  dpRender();
+  const dp=document.getElementById('datePicker');
+  dp.classList.add('show');
+  const r=anchor.getBoundingClientRect();
+  const w=268, h=dp.offsetHeight||330;
+  let left=r.left, top=r.bottom+8;
+  if(left+w>window.innerWidth-12) left=window.innerWidth-w-12;
+  if(top+h>window.innerHeight-12) top=r.top-h-8;
+  dp.style.left=Math.max(12,left)+'px';
+  dp.style.top=Math.max(12,top)+'px';
+}
+function closeDatePicker(){
+  document.getElementById('datePicker').classList.remove('show');
+}
+function dpMove(delta){
+  let m=DP_VIEW.m+delta, y=DP_VIEW.y;
+  if(m<0){m=11;y--;} if(m>11){m=0;y++;}
+  DP_VIEW={y,m}; dpRender();
+}
+function dpRender(){
+  const {y,m}=DP_VIEW;
+  document.getElementById('dpTitle').textContent=`${y}年${m+1}月`;
+  const first=new Date(y,m,1);
+  const startPad=first.getDay();
+  const daysInMonth=new Date(y,m+1,0).getDate();
+  const prevDays=new Date(y,m,0).getDate();
+  const today=new Date(); const todayKey=ymdLocal(today);
+  const sel = DP_TARGET==='start'?RANGE_START:(DP_TARGET==='keyexp'?KEY_EXPIRES:RANGE_END);
+  let cells=[];
+  for(let i=startPad-1;i>=0;i--) cells.push({d:prevDays-i,other:true,date:new Date(y,m-1,prevDays-i)});
+  for(let i=1;i<=daysInMonth;i++) cells.push({d:i,other:false,date:new Date(y,m,i)});
+  while(cells.length%7!==0 || cells.length<42){
+    const n=cells.length-startPad-daysInMonth+1;
+    cells.push({d:n,other:true,date:new Date(y,m+1,n)});
+    if(cells.length>=42) break;
+  }
+  const grid=document.getElementById('dpGrid');
+  grid.innerHTML=cells.map(c=>{
+    const key=ymdLocal(c.date);
+    const cls=['dp-day'];
+    if(c.other)cls.push('other');
+    if(key===todayKey)cls.push('today');
+    if(key===sel)cls.push('sel');
+    return `<button type="button" class="${cls.join(' ')}" onclick="dpPick('${key}')">${c.d}</button>`;
+  }).join('');
+}
+let KEY_EXPIRES='';
+function dpPick(key){
+  if(DP_TARGET==='keyexp'){
+    KEY_EXPIRES=key;
+    document.getElementById('editKeyExpiresText').textContent=key;
+    document.getElementById('editKeyExpiresBtn').classList.remove('empty');
+    closeDatePicker();
+    return;
+  }
+  if(DP_TARGET==='start'){
+    RANGE_START=key;
+    document.getElementById('rangeStartText').textContent=key;
+    document.getElementById('rangeStartBtn').classList.remove('empty');
+    if(RANGE_END && RANGE_END<key){ RANGE_END=''; document.getElementById('rangeEndText').textContent='选择日期';
+      document.getElementById('rangeEndBtn').classList.add('empty'); }
+  }else{
+    RANGE_END=key;
+    document.getElementById('rangeEndText').textContent=key;
+    document.getElementById('rangeEndBtn').classList.remove('empty');
+  }
+  closeDatePicker();
+}
+function dpClear(){
+  if(DP_TARGET==='keyexp'){
+    KEY_EXPIRES='';
+    document.getElementById('editKeyExpiresText').textContent='选择日期';
+    document.getElementById('editKeyExpiresBtn').classList.add('empty');
+    closeDatePicker();
+    return;
+  }
+  if(DP_TARGET==='start'){
+    RANGE_START='';
+    document.getElementById('rangeStartText').textContent='选择日期';
+    document.getElementById('rangeStartBtn').classList.add('empty');
+  }else{
+    RANGE_END='';
+    document.getElementById('rangeEndText').textContent='选择日期';
+    document.getElementById('rangeEndBtn').classList.add('empty');
+  }
+  closeDatePicker();
+}
+function dpToday(){ dpPick(ymdLocal(new Date())); }
+
+document.addEventListener('mousedown', e=>{
+  const dp=document.getElementById('datePicker');
+  if(!dp.classList.contains('show')) return;
+  if(dp.contains(e.target)) return;
+  if(e.target.closest('.date-btn')) return;
+  closeDatePicker();
+});
+
+function setRange(r){
+  RANGE=r;
+  document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range===r));
+  const box=document.getElementById('customRange');
+  box.classList.toggle('show', r==='custom');
+  if(r==='custom'){
+    if(!RANGE_START){
+      const d=new Date(); d.setDate(d.getDate()-30);
+      RANGE_START=ymdLocal(d);
+      document.getElementById('rangeStartText').textContent=RANGE_START;
+      document.getElementById('rangeStartBtn').classList.remove('empty');
+    }
+    return;
+  }
+  RANGE_START=''; RANGE_END='';
+  document.getElementById('rangeStartText').textContent='选择日期';
+  document.getElementById('rangeEndText').textContent='选择日期';
+  document.getElementById('rangeStartBtn').classList.add('empty');
+  document.getElementById('rangeEndBtn').classList.add('empty');
+  refresh();
+}
+function cancelCustomRange(){
+  closeDatePicker();
+  document.getElementById('customRange').classList.remove('show');
+  RANGE='all'; RANGE_START=''; RANGE_END='';
+  document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range==='all'));
+  refresh();
+}
+function applyCustomRange(){
+  if(!RANGE_START){ toast('请选择开始日期'); return; }
+  if(RANGE_END && RANGE_END<RANGE_START){ toast('结束日期不能早于开始日期'); return; }
+  RANGE='custom';
+  closeDatePicker();
+  document.getElementById('customRange').classList.remove('show');
+  document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range==='custom'));
+  refresh();
+}
+
+async function refresh(){
+  let qs='';
+  if(RANGE!=='all'){
+    qs='?range='+encodeURIComponent(RANGE)
+      +'&start='+encodeURIComponent(RANGE_START)
+      +'&end='+encodeURIComponent(RANGE_END);
+  }
+  const sep = qs ? '&' : '?';
+  qs += `${sep}limit=${RECENT_LIMIT}&offset=${RECENT_OFFSET}`;
+  if(RECENT_KEY) qs+='&key_id='+encodeURIComponent(RECENT_KEY);
+  if(RECENT_ACC) qs+='&account_id='+encodeURIComponent(RECENT_ACC);
+  const s=await api('/state'+qs); if(!s||!s.ok)return;
+  LAST_STATE=s;
+  document.getElementById('navAcc').innerHTML =
+    `可用账号 <b>${s.accounts.filter(a=>a.enabled).length}</b>`;
+  document.getElementById('navKey').innerHTML =
+    `Key <b>${s.keys.length}</b>`;
+  renderOverview(s);renderAccounts(s);renderKeys(s);renderUsage(s);renderSettings(s);
+  renderOverview(s);renderAccounts(s);renderKeys(s);renderUsage(s);renderSettings(s);
+
+  if(window.__setLimits) window.__setLimits(s.settings||{});
+  try{
+    const key=(s.keys||[]).find(k=>k.enabled);
+    if(key && window.__setSnippet){
+      const r=await fetch('/v1/models',{headers:{'Authorization':'Bearer '+key.key}});
+      const j=await r.json();
+      if(j&&j.data) window.__setSnippet(j.data.map(m=>m.id));
+    }
+  }catch(e){}
+}
+function empty(msg){return `<tr><td colspan="9" class="empty">${msg}</td></tr>`;}
+
+function RANGE_LABEL(){
+  if(RANGE==='today') return '今天';
+  if(RANGE==='7d') return '近 7 天';
+  if(RANGE==='30d') return '近 30 天';
+  if(RANGE==='month') return '本月';
+  if(RANGE==='custom'){
+    if(RANGE_END) return `${RANGE_START} ~ ${RANGE_END}`;
+    return `${RANGE_START} 至今`;
+  }
+  return '全部时间';
+}
+
+function keyNameHTML(id,name,kids){
+  const del=id&&kids&&!kids.has(id);
+  return `<b>${esc(name||'–')}</b>${del?' <span class="tag err">已删除</span>':''}`;
+}
+
+function renderOverview(s){
+  const alerts=[];
+  const ku=s.key_usage||{};
+  (s.keys||[]).forEach(k=>{
+    const u=ku[k.id]||{today:0,month:0};
+    if(k.quota_daily&&u.today>=k.quota_daily*0.8) alerts.push(`Key「${k.name}」今日额度已用 ${Math.round(u.today/k.quota_daily*100)}%`);
+    if(k.quota_monthly&&u.month>=k.quota_monthly*0.8) alerts.push(`Key「${k.name}」本月额度已用 ${Math.round(u.month/k.quota_monthly*100)}%`);
+  });
+  (s.accounts||[]).forEach(a=>{ if(a.health==='expired') alerts.push(`账号「${a.name}」凭证已失效，请重新登录`); });
+  const net=s.network||{};
+  window.__clashProxy=net.clash_proxy||'';
+  if(net.tun) alerts.push(net.tun_note||`检测到 TUN 网卡「${net.tun}」：规则模式下国内站直连有效，全局模式下会走节点`);
+  const directCount=(s.accounts||[]).filter(a=>(a.egress||'system')==='direct').length;
+  if(net.tun&&directCount&&net.global_mode) alerts.push(`有 ${directCount} 个账号设为「直连」：Clash 处于全局模式时它们也会走节点`);
+  const lic=s.license||{};
+  if(lic.enabled){
+    if(!lic.valid) alerts.push(`授权不可用：${lic.reason||'请到设置里输入授权码'}`);
+    else if(lic.days_left<=7) alerts.push(`授权还剩 ${lic.days_left} 天，到期后接口将停止，请及时续期`);
+  }
+  const ab=document.getElementById('alertBar');
+  if(ab){
+    if(alerts.length){ ab.style.display=''; ab.innerHTML=alerts.slice(0,5).map(x=>`<div class="alert-item">${esc(x)}</div>`).join(''); }
+    else ab.style.display='none';
+  }
+  const t=s.usage.total||{};
+  document.getElementById('ovTotal').innerHTML=fmtTokHTML(t.t);
+  document.getElementById('ovReqs').textContent=fmt(t.n);
+  const ok=Number(t.ok)||0;
+  const rate = t.n ? (ok/t.n*100) : 0;
+  document.getElementById('ovReqsFoot').textContent =
+    `${RANGE_LABEL()} · 成功率 ${t.n?rate.toFixed(1)+'%':'–'}`;
+  document.getElementById('ovTokFoot').textContent =
+    `输入 ${fmtTok(t.p)} · 输出 ${fmtTok(t.c)}`;
+  document.getElementById('ov24').innerHTML=fmtTokHTML((s.usage.last24h||{}).t);
+  document.getElementById('ovAcc').textContent=s.accounts.filter(a=>a.enabled).length;
+  const src=(s.usage.by_model||[]).map(m=>({label:m.model,n:m.n,p:m.p,c:m.c,t:m.t}));
+  const tb=document.querySelector('#modelTable tbody');tb.innerHTML='';
+  const rows=src.slice().sort((a,b)=>{
+    if(MODEL_SORT==='req') return (Number(b.n)||0)-(Number(a.n)||0);
+    return (Number(b.t)||0)-(Number(a.t)||0);
+  });
+  // 颜色按「用量排名」分配，和环形图一致
+  const byToken=src.slice().sort((a,b)=>(Number(b.t)||0)-(Number(a.t)||0));
+  const colorMap=new Map();
+  const MAX_SEG=8;
+  byToken.forEach((m,i)=>{
+    if(i<MAX_SEG) colorMap.set(m.label, DONUT_COLORS[i%DONUT_COLORS.length]);
+    else colorMap.set(m.label, '#d6d9de');
+  });
+  rows.forEach(m=>{
+    const c=colorMap.get(m.label)||'#c9cdd4';
+    tb.innerHTML+=`<tr><td><span class="m-dot" style="background:${c}"></span><b>${esc(m.label)}</b></td>
+      <td class="num-t">${fmt(m.n)}</td>
+      <td class="num-t">${fmtTok(m.p)}</td><td class="num-t">${fmtTok(m.c)}</td>
+      <td class="num-t"><b>${fmtTok(m.t)}</b></td></tr>`;});
+  if(!rows.length)tb.innerHTML='<tr><td colspan="5" class="empty">暂无数据</td></tr>';
+  renderDonut(byToken.map(x=>({model:x.label,t:x.t})));
+  renderHeatmap(s);
+}
+let MODEL_SORT='token';
+function setModelSort(k){
+  MODEL_SORT=k;
+  document.querySelectorAll('#modelSortSeg button').forEach(b=>b.classList.toggle('active',b.dataset.sort===k));
+  if(LAST_STATE) renderOverview(LAST_STATE);
+}
+function setModelSort(k){
+  MODEL_SORT=k;
+  document.querySelectorAll('#modelSortSeg button').forEach(b=>b.classList.toggle('active',b.dataset.sort===k));
+  if(LAST_STATE) renderOverview(LAST_STATE);
+}
+
+const DONUT_COLORS=[
+  '#0a7cff','#34c759','#ff9f0a','#af52de','#ff375f','#5ac8fa',
+  '#ffd60a','#30d158','#64d2ff','#bf5af2','#ff6482','#98989d'
+];
+
+function renderDonut(models){
+  const svg=document.getElementById('donut'); if(!svg)return;
+  const tip=document.getElementById('donutTip');
+  const all=(models||[]).map(m=>({model:m.model,t:Number(m.t)||0})).filter(m=>m.t>0).sort((a,b)=>b.t-a.t);
+  const tot=all.reduce((a,b)=>a+b.t,0);
+  if(tip) tip.classList.remove('show');
+  if(!tot){
+    svg.innerHTML=`<circle cx="70" cy="70" r="54" fill="none" stroke="var(--heat0)" stroke-width="16"/>
+      <text x="70" y="68" text-anchor="middle" class="donut-num">0</text>
+      <text x="70" y="86" text-anchor="middle" class="donut-lbl">Token</text>`;
+    return;
+  }
+
+  // 模型过多时：只显示前 N 个，其余合并为「其他」，避免色块循环、图例爆炸
+  const MAX_SEG = 8;
+  let data = all.slice(0, MAX_SEG);
+  if(all.length > MAX_SEG){
+    const rest = all.slice(MAX_SEG).reduce((a,b)=>a+b.t,0);
+    data = data.concat([{model:`其他 ${all.length-MAX_SEG} 个模型`, t:rest, other:true}]);
+  }
+
+  const R=54,C=2*Math.PI*R; let off=0,segs='';
+  data.forEach((m,i)=>{
+    const len=(m.t/tot)*C;
+    const pct=(m.t/tot*100).toFixed(1);
+    const color = m.other ? '#d6d9de' : DONUT_COLORS[i%DONUT_COLORS.length];
+    segs+=`<circle class="donut-seg" r="${R}" cx="70" cy="70" fill="none"
+      stroke="${color}" stroke-width="16"
+      stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"
+      transform="rotate(-90 70 70)"
+      data-name="${esc(m.model)}" data-val="${fmtTok(m.t)}" data-pct="${pct}"/>`;
+    off+=len;
+  });
+  svg.innerHTML=segs+`<text x="70" y="68" text-anchor="middle" class="donut-num">${fmtTok(tot)}</text>
+    <text x="70" y="86" text-anchor="middle" class="donut-lbl">总 Token</text>`;
+
+  // 悬停提示：显示模型、用量、占比
+  if(!tip) return;
+  svg.querySelectorAll('.donut-seg').forEach(seg=>{
+    seg.addEventListener('mouseenter', ev=>{
+      tip.innerHTML=`<b>${seg.dataset.name}</b><br>用量 ${seg.dataset.val} Token<br>占比 ${seg.dataset.pct}%`;
+      tip.classList.add('show');
+      const box=svg.getBoundingClientRect();
+      const parent=svg.parentElement.getBoundingClientRect();
+      tip.style.left=(box.left-parent.left+box.width/2)+'px';
+      tip.style.top=(box.top-parent.top+18)+'px';
+    });
+    seg.addEventListener('mouseleave', ()=>tip.classList.remove('show'));
+  });
+}
+
+function ymdLocal(dt){
+  const y=dt.getFullYear(),m=String(dt.getMonth()+1).padStart(2,'0'),d=String(dt.getDate()).padStart(2,'0');
+  return y+'-'+m+'-'+d;
+}
+/* ── 每日 Token 柱状图（可按 Key 切换，带滑动条） ── */
+let BAR_DATA=[], BAR_WIN=14, BAR_OFFSET=0, DAILY_KEY='', BAR_SCROLL_SIG='';
+let KEY_DAILY={}, KEY_NAMES={};
+
+function setBarWindow(days){
+  BAR_WIN=days;
+  document.querySelectorAll('#barWinSeg button').forEach(b=>b.classList.toggle('active',Number(b.dataset.win)===days));
+  BAR_OFFSET=0;
+  renderBars();
+}
+function onBarSlide(v){
+  BAR_OFFSET=Number(v)||0;
+  renderBars();
+}
+function renderBars(){
+  const el=document.getElementById('barchart'); if(!el)return;
+  const map={};
+  if(DAILY_KEY){
+    (KEY_DAILY[DAILY_KEY]||[]).forEach(x=>{map[x.d]=(map[x.d]||0)+(Number(x.t)||0);});
+  }else{
+    // 全部 Key：只统计当前仍存在的 Key，已删除的历史 Key 不计入
+    Object.keys(KEY_NAMES).forEach(id=>(KEY_DAILY[id]||[]).forEach(x=>{
+      map[x.d]=(map[x.d]||0)+(Number(x.t)||0);
+    }));
+  }
+  const today=new Date(); today.setHours(0,0,0,0);
+
+  const keys=Object.keys(map).sort();
+  let firstKey=today;
+  if(keys.length){
+    const f=new Date(keys[0]+'T00:00:00');
+    if(!isNaN(f)&&f<firstKey) firstKey=f;
+  }
+  const totalDays=Math.max(1, Math.floor((today-firstKey)/86400000)+1);
+  const win=BAR_WIN;
+  const maxOffset=Math.max(0, totalDays-win);
+  const slider=document.getElementById('barSlider');
+  if(slider){ slider.max=String(maxOffset); slider.value=String(Math.min(BAR_OFFSET,maxOffset)); BAR_OFFSET=Number(slider.value)||0; }
+
+  const end=new Date(today); end.setDate(end.getDate()-BAR_OFFSET);
+  const start=new Date(end); start.setDate(start.getDate()-(win-1));
+  const days=[];
+  for(let d=new Date(start); d<=end; d.setDate(d.getDate()+1)){
+    const k=ymdLocal(d);
+    days.push({key:k, v:map[k]||0});
+  }
+  const max=Math.max(1,...days.map(x=>x.v));
+  const who=DAILY_KEY?(KEY_NAMES[DAILY_KEY]||'已删除的 Key'):'全部 Key';
+  const step=Math.ceil(days.length/14);
+
+  el.innerHTML=days.map((x,i)=>{
+    const h=x.v?Math.max(2, Math.round(x.v/max*100)):0;
+    const label=(i%step===0||i===days.length-1)?x.key.slice(5).replace('-','/'):'';
+    return `<div class="bar-item" title="${esc(who+' · '+x.key+' · '+fmtTok(x.v)+' Token')}">
+      <div class="bar-val">${x.v?fmtTok(x.v):''}</div>
+      <div class="bar-fill${x.v?'':' zero'}" style="height:${h}%"></div>
+      <div class="bar-x">${label}</div>
+    </div>`;
+  }).join('');
+
+  const lab=document.getElementById('barRangeLabel');
+  if(lab){
+    const fmtD=d=>`${d.getMonth()+1}/${d.getDate()}`;
+    lab.textContent=`${fmtD(start)} — ${fmtD(end)}（共 ${days.length} 天）`;
+  }
+  // 天数多、横向溢出时，默认把最新的一天滚到可视区
+  const sig=win+':'+BAR_OFFSET;
+  if(sig!==BAR_SCROLL_SIG){
+    BAR_SCROLL_SIG=sig;
+    if(el.scrollWidth>el.clientWidth) el.scrollLeft=el.scrollWidth;
+  }
+}
+
+function onDailyKeyChange(){
+  const sel=document.getElementById('dailyKey');
+  DAILY_KEY=sel?sel.value:'';
+  BAR_OFFSET=0;
+  renderBars();
+}
+function syncDailyKey(s){
+  const sel=document.getElementById('dailyKey');
+  if(!sel) return;
+  // 只列出仍然存在的 Key（已删除的 Key 不出现在下拉里，也不计入「全部 Key」）
+  const names={};
+  (s.keys||[]).forEach(k=>{names[k.id]=k.name;});
+  KEY_NAMES=names;
+  if(DAILY_KEY && !(DAILY_KEY in names)) DAILY_KEY='';
+  const want=['<option value="">全部 Key</option>']
+    .concat(Object.entries(names).map(([id,n])=>`<option value="${esc(id)}">${esc(n)}</option>`))
+    .join('');
+  const cur=[...sel.options].map(o=>o.value+'|'+o.textContent).join('\n');
+  const next=new DOMParser().parseFromString('<select>'+want+'</select>','text/html')
+    .querySelectorAll('option');
+  const wantStr=[...next].map(o=>o.value+'|'+o.textContent).join('\n');
+  if(cur!==wantStr){ sel.innerHTML=want; selBuild('dailyKey'); }
+  sel.value=DAILY_KEY;
+  selSync('dailyKey');
+}
+function renderHeatmap(s){
+  BAR_DATA=(s.usage&&s.usage.daily)||[];
+  KEY_DAILY={};
+  ((s.usage&&s.usage.daily_by_key)||[]).forEach(r=>{
+    const id=r.api_key_id||'';
+    if(!id) return;
+    (KEY_DAILY[id]=KEY_DAILY[id]||[]).push({d:r.d, t:Number(r.t)||0, n:Number(r.n)||0});
+  });
+  syncDailyKey(s);
+  renderBars();
+}
+
+
+function renderAccounts(s){
+  const tb=document.querySelector('#accTable tbody');tb.innerHTML='';
+  const cd=s.cooldowns||{};
+  s.accounts.forEach(a=>{
+    const cred=[a.has_token&&'token',a.has_device&&'device',a.has_settings&&'settings',a.has_cookie&&'cookie']
+      .filter(Boolean).join(' · ')||'未填写';
+    const pr=a.profile||{};
+    const who=pr.email||pr.phone||pr.nickname||'';
+    let healthBadge='';
+    if(a.health==='ok') healthBadge='<span class="tag on">正常</span>';
+    else if(a.health==='expired') healthBadge='<span class="tag err">凭证失效</span>';
+    else if(a.health==='error') healthBadge='<span class="tag err">检查失败</span>';
+    else healthBadge='<span class="tag off">未检查</span>';
+    const left=Number(cd[a.id])||0;
+    const cdBadge=left>0?`<span class="tag off">冷却 ${left>=60?Math.ceil(left/60)+' 分':left+' 秒'}</span>`:'';
+    const lg = (s.login&&s.login[a.id])||{};
+    let loginBadge='';
+    if(lg.status==='opening') loginBadge='<span class="tag off">正在打开…</span>';
+    else if(lg.status==='waiting') loginBadge='<span class="tag off">等待登录…</span>';
+    else if(lg.status==='success') loginBadge='<span class="tag on">登录成功</span>';
+    else if(lg.status==='error') loginBadge='<span class="tag err">'+esc(lg.message||'失败')+'</span>';
+    tb.innerHTML+=`<tr><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
+      <td class="muted mono">${cred} ${loginBadge} ${healthBadge} ${cdBadge} ${egressTag(a.egress)}</td>
+      <td><span class="tag ${a.enabled?'on':'off'}">${a.enabled?'启用':'停用'}</span></td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn sm" onclick="browserLogin('${a.id}')">浏览器登录</button>
+        <button class="btn gray sm" onclick="checkAcc('${a.id}')">检查</button>
+        <button class="btn gray sm" onclick="toggleAcc('${a.id}',${a.enabled?0:1})">${a.enabled?'停用':'启用'}</button>
+        <button class="btn gray sm" onclick='editAcc(${JSON.stringify(a).replace(/'/g,"&#39;")})'>编辑</button>
+        <button class="btn danger sm" onclick="delAcc('${a.id}')">删除</button></td></tr>`;});
+  if(!s.accounts.length)tb.innerHTML=empty('还没有账号，点右上角添加');
+}
+async function browserLogin(id){
+  const r = await api('/accounts/'+id+'/login','POST');
+  if(r&&r.ok){ toast('已打开浏览器，请在弹出的窗口里登录'); refresh(); }
+  else toast((r&&r.error)||'启动失败');
+}
+function renderKeys(s){
+  const tb=document.querySelector('#keyTable tbody');tb.innerHTML='';
+  s.keys.forEach(k=>{
+    const accN=(k.accounts||[]).length, modN=(k.models||[]).length;
+    const scope=`<div class="muted" style="font-size:12px;margin-top:3px">${
+      k.owner?esc(k.owner)+' · ':''}${accN?('账号 '+accN+' 个'):'全部账号'} · ${modN?('模型 '+modN+' 个'):'全部模型'}${
+      k.expires_at?(' · 到期 '+fmtTime(k.expires_at)):''}</div>`;
+    tb.innerHTML+=`<tr><td><a href="javascript:void(0)" onclick="openKeyDetail('${k.id}')" style="color:inherit;text-decoration:none"><b>${esc(k.name)}</b></a>${scope}</td>
+      <td class="muted">${fmtTime(k.created_at)}</td>
+      <td><span class="tag ${k.enabled?'on':'off'}">${k.enabled?'启用':'停用'}</span></td>
+      <td class="muted">${fmtTime(k.last_used_at)}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn sm" onclick="openKeyView('${k.id}')">查看</button>
+        <button class="btn gray sm" onclick="openKeyEdit('${k.id}')">编辑</button>
+        <button class="btn gray sm" onclick="toggleKey('${k.id}',${k.enabled?0:1})">${k.enabled?'停用':'启用'}</button>
+        <button class="btn sm" onclick="ocConnect('${k.id}')">接入</button>
+        <button class="btn gray sm" onclick="ocDisconnect('${k.id}')">移除</button>
+        <button class="btn danger sm" onclick="delKey('${k.id}')">删除</button></td></tr>`;});
+  if(!s.keys.length)tb.innerHTML=empty('还没有 Key，点右上角生成');
+  if(typeof window.rebuildOcSel==='function') window.rebuildOcSel();
+}
+function renderUsage(s){
+  syncRecentFilters(s);
+  const kids=new Set((s.keys||[]).map(k=>k.id));
+  const keyName=(id,name)=>keyNameHTML(id,name,kids);
+  let tb=document.querySelector('#recentTable tbody');tb.innerHTML='';
+  (s.recent||[]).forEach(r=>{tb.innerHTML+=`<tr><td class="muted">${fmtTime(r.ts)}</td>
+    <td>${keyName(r.api_key_id,r.api_key_name)}</td><td>${esc(r.account_name||'–')}</td>
+    <td class="mono">${esc(r.model)}</td><td class="num-t">${fmtTok(r.prompt_tokens)}</td>
+    <td class="num-t">${fmtTok(r.completion_tokens)}</td><td class="num-t"><b>${fmtTok(r.total_tokens)}</b></td>
+    <td class="num-t">${r.latency_ms?((r.latency_ms/1000).toFixed(1)+'s'):'–'}</td>
+    <td>${r.status==='ok'?'<span class="tag on">成功</span>':'<span class="tag err">'+esc(r.error_code||r.status)+'</span>'}</td></tr>`;});
+  if(!(s.recent||[]).length)tb.innerHTML=empty('暂无记录');
+  const info=document.getElementById('recentInfo');
+  if(info){
+    const total=Number(s.recent_total)||0;
+    const lim=Number(s.recent_limit)||50;
+    const off=Number(s.recent_offset)||0;
+    info.textContent = total
+      ? `${off+1}–${Math.min(off+lim,total)} / 共 ${total} 条`
+      : '';
+  }
+}
+let RECENT_LIMIT=50, RECENT_OFFSET=0;
+let RECENT_KEY='', RECENT_ACC='';
+function onRecentFilter(){
+  RECENT_KEY=document.getElementById('recentKey').value;
+  RECENT_ACC=document.getElementById('recentAcc').value;
+  RECENT_OFFSET=0;
+  refresh();
+}
+function syncRecentFilters(s){
+  const keySel=document.getElementById('recentKey');
+  if(!keySel) return;
+  const kids=new Set((s.keys||[]).map(k=>k.id));
+  const byKey=s.usage.by_key||[];
+  if(RECENT_KEY && !byKey.some(k=>k.api_key_id===RECENT_KEY)) RECENT_KEY='';
+  // 仍存在的排前面，已删除的排后面
+  const keyAlive=[], keyGone=[];
+  byKey.forEach(k=>{
+    if(!k.api_key_id) return;
+    const del=kids.size && !kids.has(k.api_key_id);
+    (del?keyGone:keyAlive).push({...k, _del:del});
+  });
+  let opts='<option value="">全部 Key</option>';
+  [...keyAlive, ...keyGone].forEach(k=>{
+    opts+=`<option value="${esc(k.api_key_id)}">${esc(k.api_key_name||'–')}${k._del?'（已删除）':''}</option>`;
+  });
+  const keyHost=document.getElementById('sel-recentKey');
+  if(!keyHost.classList.contains('open')){
+    const cur=[...keySel.options].map(x=>x.value+'|'+x.textContent).join('\n');
+    const want=[...new DOMParser().parseFromString('<select>'+opts+'</select>','text/html').querySelectorAll('option')]
+      .map(x=>x.value+'|'+x.textContent).join('\n');
+    if(cur!==want){keySel.innerHTML=opts;keySel.value=RECENT_KEY;selBuild('recentKey');}
+    else keySel.value=RECENT_KEY;
+  }
+
+  const accSel=document.getElementById('recentAcc');
+  const byAcc=s.usage.by_account||[];
+  if(RECENT_ACC && !byAcc.some(a=>a.account_id===RECENT_ACC)) RECENT_ACC='';
+  const accIds=new Set((s.accounts||[]).map(a=>a.id));
+  const nameCount={};
+  byAcc.forEach(a=>{const n=a.account_name||'–';nameCount[n]=(nameCount[n]||0)+1;});
+  let aopts='<option value="">全部账号</option>';
+  // 仍存在的排前面，已删除的排后面
+  const accAlive=[], accGone=[];
+  byAcc.forEach(a=>{
+    if(!a.account_id) return;
+    const n=a.account_name||'–';
+    const del=!accIds.has(a.account_id);
+    const dup=nameCount[n]>1?' · '+a.account_id.slice(-4):'';
+    (del?accGone:accAlive).push({...a, _n:n, _del:del, _dup:dup});
+  });
+  [...accAlive, ...accGone].forEach(a=>{
+    aopts+=`<option value="${esc(a.account_id)}">${esc(a._n)}${a._del?'（已删除）':''}${esc(a._dup)}</option>`;
+  });
+  const accHost=document.getElementById('sel-recentAcc');
+  if(!accHost.classList.contains('open')){
+    const cur=[...accSel.options].map(x=>x.value+'|'+x.textContent).join('\n');
+    const want=[...new DOMParser().parseFromString('<select>'+aopts+'</select>','text/html').querySelectorAll('option')]
+      .map(x=>x.value+'|'+x.textContent).join('\n');
+    if(cur!==want){accSel.innerHTML=aopts;accSel.value=RECENT_ACC;selBuild('recentAcc');}
+    else accSel.value=RECENT_ACC;
+  }
+}
+function recentPage(dir){
+  RECENT_OFFSET=Math.max(0, RECENT_OFFSET + dir*RECENT_LIMIT);
+  refresh();
+}
+function renderSettings(s){
+  const av=document.getElementById('aboutVer');
+  if(av) av.textContent=s.version?('v'+s.version):'—';
+  const gb=document.getElementById('guideBase');
+  if(gb) gb.textContent=location.origin+'/v1';
+  const tr=document.getElementById('setTray');
+  if(tr) tr.checked=(s.settings.tray_enabled||'true')!=='false';
+  const rt=document.getElementById('setRetain'); if(rt) rt.value=s.settings.usage_retain_days||'0';
+  renderLicense(s.license);
+}
+function renderLicense(lic){
+  const card=document.getElementById('licenseCard');
+  const ic=document.getElementById('issuerCard');
+  if(ic) ic.hidden = !(lic && lic.issuer);
+  if(!lic || !lic.enabled){
+    if(card) card.hidden = true;
+    return;
+  }
+  if(card) card.hidden = false;
+
+  const set=(id,v)=>{const el=document.getElementById(id); if(el) el.textContent=v;};
+  const chip=document.getElementById('licChip');
+  const fill=document.getElementById('licBarFill');
+  const reason=document.getElementById('licReason');
+  if(lic.machine) set('licMachine', lic.machine);
+
+  if(lic.valid){
+    renderLicenseCountdown(lic);
+  }else{
+    LIC_TS=0;
+    set('licDays','—');
+    const hu=document.getElementById('licHeroUnit'); if(hu) hu.textContent='剩余';
+    set('licState', lic.code==='other_device'?'已锁定':(lic.code==='expired'?'已到期':'未激活'));
+    set('licActivated', lic.activated||'—');
+    set('licExpires', lic.expires||'—');
+    set('licId', lic.code_id||'—');
+    if(chip){chip.textContent='不可用'; chip.className='lic-chip bad';}
+    if(fill){fill.style.width='0%'; fill.className='';}
+    if(reason){
+      reason.textContent = lic.reason || '未授权，请在下方输入授权码';
+      reason.className='lic-note bad';
+      reason.hidden=false;
+    }
+  }
+}
+/* ── 授权精确倒计时：一律用后端 expires_ts 前端自己算（seconds_left 受缓存影响会冻结） ── */
+let LIC_TS=0, LIC_DAYS=0, LIC_EXPIRES_TEXT='', LIC_TIMER=null;
+function licPad(n){ return String(n).padStart(2,'0'); }
+function licTick(){
+  const ts=LIC_TS; if(!ts) return;
+  const now=Date.now()/1000;
+  const left=Math.max(0, Math.floor(ts-now));
+  const d=Math.floor(left/86400), h=Math.floor(left%86400/3600), m=Math.floor(left%3600/60);
+  const hero=document.getElementById('licDays');
+  if(hero) hero.textContent = left>0 ? `${d}天 ${h}小时 ${m}分` : '已到期';
+  const hu=document.getElementById('licHeroUnit'); if(hu) hu.textContent=left>0?'剩余':'';
+  const fillEl=document.getElementById('licBarFill');
+  if(fillEl){
+    const total=LIC_DAYS>0?(LIC_DAYS*86400):0;
+    const pct=total>0?Math.max(0,Math.min(100,(ts-now)/total*100)):0;
+    fillEl.style.width=pct.toFixed(2)+'%';
+    fillEl.className = pct<=15?'warn':(pct<=35?'mid':'');
+  }
+  const reason=document.getElementById('licReason');
+  if(reason){
+    if(left<=0){
+      reason.textContent = `授权已于 ${LIC_EXPIRES_TEXT||'—'} 到期，接口已停止，请联系作者续期`;
+      reason.className='lic-note bad'; reason.hidden=false;
+    }else if(left<=7*86400){
+      reason.textContent = `授权将于 ${LIC_EXPIRES_TEXT||'—'} 到期，还剩 ${d}天${licPad(h)}小时，请及时联系作者续期`;
+      reason.className='lic-note warn'; reason.hidden=false;
+    }else{
+      reason.textContent=''; reason.className='lic-note'; reason.hidden=true;
+    }
+  }
+}
+function renderLicenseCountdown(lic){
+  const set=(id,v)=>{const el=document.getElementById(id); if(el) el.textContent=v;};
+  const chip=document.getElementById('licChip');
+  LIC_TS=Number(lic.expires_ts)||0;
+  LIC_DAYS=Number(lic.days)||0;
+  LIC_EXPIRES_TEXT=lic.expires||'';
+  set('licState','有效');
+  set('licActivated', lic.activated||'—');
+  set('licExpires', lic.expires||'—');
+  set('licId', lic.code_id||'—');
+  if(chip){chip.textContent='有效'; chip.className='lic-chip ok';}
+  licTick();
+  if(!LIC_TIMER) LIC_TIMER=setInterval(licTick, 60000);
+}
+async function installLicense(){
+  const t=document.getElementById('licInput');
+  const hint=document.getElementById('licHint');
+  const content=(t&&t.value||'').trim();
+  if(!content){ toast('请粘贴授权码'); return; }
+  if(hint) hint.textContent='正在校验…';
+  const j=await api('/license/install','POST',{content});
+  if(j&&j.ok){
+    if(hint) hint.textContent='';
+    if(t) t.value='';
+    toast(j.renewed?'授权已更新':'激活成功');
+    refresh();
+  }else{
+    if(hint) hint.textContent=(j&&j.error)||'授权码无效';
+    toast((j&&j.error)||'授权码无效');
+  }
+}
+async function issueCodes(){
+  const days=Number(document.getElementById('issueDays').value||7);
+  const count=Number(document.getElementById('issueCount').value||1);
+  const note=document.getElementById('issueNote').value.trim();
+  const machineEl=document.getElementById('issueMachine');
+  const machine=(machineEl?machineEl.value:'').trim();
+  const j=await api('/license/issue','POST',{days,count,note,machine});
+  const box=document.getElementById('issueResult');
+  if(!j||!j.ok){ toast((j&&j.error)||'签发失败'); return; }
+  box.innerHTML=j.items.map(it=>`<div class="issue-row">
+    <code>${esc(it.code)}</code>
+    <button class="btn gray sm" onclick="copyText('${esc(it.code)}')">复制</button>
+    <span class="muted">${it.days} 天 · ${esc(it.id)}${it.note?' · '+esc(it.note):''}</span>
+  </div>`).join('');
+  toast(`已生成 ${j.items.length} 个授权码`);
+}
+async function exportIssued(){
+  const j=await api('/license/issued');
+  if(!j||!j.ok||!j.items.length){ toast('暂无签发记录'); return; }
+  const rows=[['授权码','码ID','天数','签发日','备注','生成时间']];
+  j.items.forEach(it=>rows.push([it.code,it.id,it.days,it.issued,it.note||'',it.created||'']));
+  const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');
+  const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='webai2api-issued-codes.csv';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+}
+function openAccModal(acc){
+  document.getElementById('accModalTitle').textContent=acc?'编辑账号':'添加账号';
+  document.getElementById('accId').value=acc?acc.id:'';
+  document.getElementById('accName').value=acc?acc.name:'';
+  document.getElementById('accProvider').value=acc?acc.provider:'deepseek';
+  const provSel=document.getElementById('accProvider');
+  const provHost=document.getElementById('sel-accProvider');
+  provSel.disabled=!!acc;
+  provHost.classList.toggle('disabled',!!acc);
+  const provLabel=document.getElementById('accProviderLabel');
+  if(provLabel) provLabel.textContent=acc?'平台（创建后不可修改）':'平台';
+  selOpen('accProvider',false);
+  selSync('accProvider');
+  ['accToken','accDevice','accSettings','accCookie'].forEach(i=>document.getElementById(i).value='');
+  const pxEl=document.getElementById('accProxy');
+  if(pxEl) pxEl.value=acc?(acc.proxy||''):'';
+  const eg=acc?(acc.egress||'system'):'system';
+  document.getElementById('accEgress').value=eg;
+  selSync('accEgress');
+  onEgressChange();
+  const adv=document.getElementById('accAdv'); if(adv) adv.open=false;
+  onProviderChange();
+  openModal('accModal');
+  setTimeout(()=>document.getElementById('accName').focus(),30);
+}
+function editAcc(a){openAccModal(a);}
+async function testProxy(){
+  const el=document.getElementById('accProxy');
+  const out=document.getElementById('proxyTestResult');
+  const px=(el&&el.value||'').trim();
+  if(!px){ out.textContent='请先填写代理地址'; return; }
+  out.textContent='测试中…';
+  const j=await api('/proxy/test','POST',{proxy:px});
+  if(!j){ out.textContent='测试失败'; return; }
+  if(j.ok){
+    out.innerHTML=`<span class="tag on">可用</span> 出口 IP <b>${esc(j.exit_ip||'')}</b>（${j.elapsed_ms||0}ms）`+
+      (j.warning?` <span class="tag off">${esc(j.warning)}</span>`:'');
+  }else{
+    out.innerHTML=`<span class="tag err">不可用</span> ${esc(j.error||'')}`;
+  }
+}
+function onEgressChange(){
+  const mode=document.getElementById('accEgress').value;
+  const wrap=document.getElementById('accProxyWrap');
+  if(wrap) wrap.style.display = mode==='custom' ? 'block' : 'none';
+  const cp=document.getElementById('clashPreset');
+  if(cp) cp.style.display = (mode==='custom' && window.__clashProxy) ? '' : 'none';
+  const hint=document.getElementById('accEgressHint');
+  if(hint){
+    if(mode==='direct') hint.textContent='直连：强制忽略系统代理。若 Clash 是 TUN+规则模式，国内站（DeepSeek/Kimi/千问）出口仍是家宽 IP；仅当 Clash 切「全局模式」时直连才会走节点。';
+    else if(mode==='custom') hint.textContent='自定义代理：登录、健康检查、聊天请求都走这个代理，出口保持一致。本机开着 Clash 时可点「交给 Clash 分流」按它的规则走。';
+    else hint.textContent='跟随系统代理：Clash 开系统代理时走代理，关闭时直连。';
+  }
+}
+function useClash(){
+  const px=window.__clashProxy||'http://127.0.0.1:7897';
+  const el=document.getElementById('accProxy');
+  if(el) el.value=px;
+  const out=document.getElementById('proxyTestResult');
+  if(out) out.textContent='已填入 '+px+'（点击「测试代理」验证出口）';
+}
+function onProviderChange(){
+  const p=document.getElementById('accProvider').value;
+  const t=document.getElementById('accCredHint');
+  const hints={
+    chatglm:'智谱清言：浏览器登录后会自动抓取 refresh_token（也可在下面手动粘贴）。',
+    kimi:'Kimi：浏览器登录后会自动抓取 accessToken（Authorization Bearer；也可手动粘贴）。',
+    qwen:'通义千问：浏览器登录后会自动抓取 access_token（OpenWebUI；也可手动粘贴）。'
+  };
+  if(t) t.textContent = hints[p] || 'DeepSeek：浏览器登录后会自动抓取，下面的凭证可以留空。';
+}
+function closeModal(id){
+  document.getElementById(id).classList.remove('show');
+  if(!document.querySelector('.modal-bg.show')){
+    document.body.classList.remove('modal-open');
+    document.documentElement.classList.remove('modal-open');
+  }
+}
+function openModal(id){
+  document.body.classList.add('modal-open');
+  document.documentElement.classList.add('modal-open');
+  document.getElementById(id).classList.add('show');
+}
+
+/* ── 苹果风下拉：包装原生 select，保留原有取值/onchange 逻辑 ── */
+function selEl(id){ return document.getElementById('sel-'+id); }
+function selBuild(id){
+  const host=selEl(id); if(!host) return;
+  const native=document.getElementById(id);
+  const menu=document.getElementById('menu-'+id);
+  if(!native||!menu) return;
+  menu.innerHTML='';
+  Array.from(native.options).forEach((opt,i)=>{
+    const b=document.createElement('button');
+    b.type='button';
+    b.className='sel-opt';
+    b.setAttribute('aria-selected', String(i===native.selectedIndex));
+    b.innerHTML='<svg class="tick" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg><span></span>';
+    b.querySelector('span').textContent=opt.textContent;
+    b.onclick=()=>selPick(id,i);
+    menu.appendChild(b);
+  });
+  selSync(id);
+}
+function selSync(id){
+  const native=document.getElementById(id);
+  const lbl=document.getElementById('lbl-'+id);
+  const menu=document.getElementById('menu-'+id);
+  if(!native) return;
+  if(lbl) lbl.textContent=native.selectedIndex>=0?native.options[native.selectedIndex].textContent:'';
+  if(menu) Array.from(menu.children).forEach((b,i)=>b.setAttribute('aria-selected',String(i===native.selectedIndex)));
+}
+function selPick(id,i){
+  const native=document.getElementById(id);
+  if(!native) return;
+  native.selectedIndex=i;
+  selSync(id);
+  selOpen(id,false);
+  native.dispatchEvent(new Event('change',{bubbles:true}));
+}
+function selOpen(id,open){
+  const host=selEl(id); if(!host) return;
+  document.querySelectorAll('.sel.open').forEach(other=>{ if(other!==host) other.classList.remove('open'); });
+  host.classList.toggle('open',open);
+  if(open) selSync(id);
+}
+function selToggle(id){
+  const host=selEl(id); if(!host) return;
+  selOpen(id,!host.classList.contains('open'));
+}
+document.addEventListener('mousedown',e=>{
+  document.querySelectorAll('.sel.open').forEach(host=>{
+    if(!host.contains(e.target)) host.classList.remove('open');
+  });
+});
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  const open=document.querySelectorAll('.sel.open');
+  if(open.length){ open.forEach(host=>host.classList.remove('open')); return; }
+  ['accModal','keyModal'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el && el.classList.contains('show')) closeModal(id);
+  });
+});
+async function saveAccount(){
+  const id=document.getElementById('accId').value;
+  const body={name:document.getElementById('accName').value.trim()||'未命名账号',
+    provider:document.getElementById('accProvider').value,note:''};
+  const t=document.getElementById('accToken').value.trim();
+  const d=document.getElementById('accDevice').value.trim();
+  const st=document.getElementById('accSettings').value.trim();
+  const c=document.getElementById('accCookie').value.trim();
+  const px=document.getElementById('accProxy').value.trim();
+  const eg=document.getElementById('accEgress').value;
+  if(t)body.auth_token=t;if(d)body.device_id=d;if(st)body.settings_token=st;if(c)body.cookie=c;
+  body.egress=eg;
+  if(eg==='custom'&&px)body.proxy=px;
+  if(eg!=='custom')body.proxy='';
+  if(id)await api('/accounts/'+id,'PUT',body);else await api('/accounts','POST',body);
+  closeModal('accModal');refresh();toast('已保存');
+}
+async function toggleAcc(id,en){await api('/accounts/'+id,'PUT',{enabled:en});refresh();}
+async function checkAcc(id){
+  toast('正在检查账号…');
+  const j=await api('/accounts/'+id+'/check','POST',{});
+  if(j&&j.ok){toast('账号正常');refresh();}
+  else toast((j&&j.error)||'凭证已失效，请重新登录');
+}
+async function delAcc(id){if(confirm('确定删除该账号？')){await api('/accounts/'+id,'DELETE');refresh();toast('已删除');}}
+function openKeyModal(){document.getElementById('keyName').value='';
+  document.getElementById('keyResult').style.display='none';
+  const btn=document.getElementById('keyGenBtn');if(btn){btn.disabled=false;btn.textContent='生成';}
+  openModal('keyModal');
+  setTimeout(()=>document.getElementById('keyName').focus(),30);}
+let KEY_CREATING=false;
+async function createKey(){
+  if(KEY_CREATING)return;
+  const name=document.getElementById('keyName').value.trim()||'未命名 Key';
+  const btn=document.getElementById('keyGenBtn');
+  KEY_CREATING=true;
+  if(btn){btn.disabled=true;btn.textContent='生成中…';}
+  let j;
+  try{j=await api('/keys','POST',{name});}
+  catch(e){j={ok:false,error:(e&&e.message)||'生成失败'};}
+  finally{KEY_CREATING=false;}
+  if(j&&j.ok){document.getElementById('keyResult').style.display='block';
+    document.getElementById('keyValue').textContent=j.key.key;refresh();
+    if(btn)btn.textContent='已生成';
+  }else{
+    if(btn){btn.disabled=false;btn.textContent='生成';}
+    toast((j&&j.error)||'生成失败');
+  }
+}
+async function toggleKey(id,en){await api('/keys/'+id,'PUT',{enabled:en});refresh();}
+let EDIT_KEY_ID='';
+let EDIT_KEY_MODELS=[];
+function openKeyView(id){
+  const s=LAST_STATE; if(!s) return;
+  const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
+  const exp=k.expires_at?(' · 到期 '+fmtTime(k.expires_at)):'';
+  document.getElementById('keyViewMeta').textContent =
+    `${k.name}${k.owner?(' · '+k.owner):''} · 创建于 ${fmtTime(k.created_at)}${exp}${k.note?(' · '+k.note):''}`;
+  document.getElementById('keyViewValue').textContent = k.key;
+  openModal('keyViewModal');
+}
+function openKeyEdit(id){
+  const s=LAST_STATE; if(!s) return;
+  const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
+  EDIT_KEY_ID=id; EDIT_KEY_MODELS=(k.models||[]).slice();
+  document.getElementById('editKeyName').value=k.name||'';
+  document.getElementById('editKeyOwner').value=k.owner||'';
+  document.getElementById('editKeyNote').value=k.note||'';
+  document.getElementById('editKeyQuotaDay').value=k.quota_daily||'';
+  document.getElementById('editKeyQuotaMonth').value=k.quota_monthly||'';
+  KEY_EXPIRES=k.expires_at?(new Date(k.expires_at*1000).toISOString().slice(0,10)):'';
+  document.getElementById('editKeyExpiresText').textContent=KEY_EXPIRES||'选择日期';
+  document.getElementById('editKeyExpiresBtn').classList.toggle('empty',!KEY_EXPIRES);
+  const accSel=new Set(k.accounts||[]);
+  document.getElementById('editKeyAcc').innerHTML=(s.accounts||[]).map(a=>
+    `<label class="pick-item" data-provider="${esc(a.provider)}"><input type="checkbox" value="${esc(a.id)}" ${accSel.has(a.id)?'checked':''} onchange="renderKeyModelPicker()"><span>${esc(a.name)}</span><em>${esc(a.provider)}</em></label>`
+  ).join('')||'<div class="muted" style="padding:8px">还没有账号</div>';
+  renderKeyModelPicker();
+  openModal('keyEditModal');
+}
+function renderKeyModelPicker(){
+  const s=LAST_STATE||{};
+  const box=document.getElementById('editKeyModel');
+  if(box.querySelector('input')){
+    EDIT_KEY_MODELS=[...box.querySelectorAll('input:checked')].map(x=>x.value);
+  }
+  const provs=new Set([...document.querySelectorAll('#editKeyAcc input:checked')]
+    .map(x=>x.closest('.pick-item').dataset.provider));
+  const provMap=s.model_providers||{};
+  const provOf=m=>provMap[m]||(String(m).toLowerCase().startsWith('glm')?'chatglm':'deepseek');
+  const visible=(s.models||[]).filter(m=>provs.size===0||provs.has(provOf(m)));
+  const sel=new Set(EDIT_KEY_MODELS);
+  box.innerHTML=visible.map(m=>
+    `<label class="pick-item"><input type="checkbox" value="${esc(m)}" ${sel.has(m)?'checked':''}><span>${esc(m)}</span></label>`
+  ).join('')||'<div class="muted" style="padding:8px">所选账号没有可用模型</div>';
+}
+async function saveKeyEdit(){
+  const name=document.getElementById('editKeyName').value.trim()||'未命名 Key';
+  const accounts=[...document.querySelectorAll('#editKeyAcc input:checked')].map(x=>x.value);
+  const models=[...document.querySelectorAll('#editKeyModel input:checked')].map(x=>x.value);
+  const owner=document.getElementById('editKeyOwner').value.trim();
+  const note=document.getElementById('editKeyNote').value.trim();
+  const expv=KEY_EXPIRES;
+  const expires_at=expv?(new Date(expv+'T23:59:59').getTime()/1000):0;
+  const quota_daily=Number(document.getElementById('editKeyQuotaDay').value)||0;
+  const quota_monthly=Number(document.getElementById('editKeyQuotaMonth').value)||0;
+  const j=await api('/keys/'+EDIT_KEY_ID,'PUT',{name,accounts,models,owner,note,expires_at,quota_daily,quota_monthly});
+  if(j.ok){closeModal('keyEditModal');toast('已保存');refresh();}
+  else toast(j.error||'保存失败');
+}
+async function openKeyDetail(id){
+  const s=LAST_STATE; if(!s) return;
+  const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
+  document.getElementById('kdTitle').textContent='Key 详情 · '+k.name;
+  const qs=RANGE==='all'?'':('?range='+encodeURIComponent(RANGE));
+  const j=await api('/keys/'+id+'/detail'+qs);
+  const t=(j&&j.total)||{n:0,t:0,ok:0};
+  document.getElementById('kdTotals').innerHTML=`
+    <div class="today-item"><span>请求数</span><b>${fmt(t.n)}</b></div>
+    <div class="today-item"><span>Token</span><b>${fmtTok(t.t)}</b></div>
+    <div class="today-item"><span>成功率</span><b>${t.n?((t.ok/t.n*100).toFixed(1)+'%'):'–'}</b></div>`;
+  const daily=(j&&j.daily)||[];
+  const models=(j&&j.by_model)||[];
+  document.getElementById('kdModels').innerHTML=models.length?models.map(m=>
+    `<div class="err-row"><span>${esc(m.model||'–')}</span><b>${fmt(m.n)} 次 · ${fmtTok(m.t)}</b></div>`).join(''):'<div class="muted">暂无数据</div>';
+  const more=document.getElementById('kdMore');
+  if(more) more.innerHTML=`<button class="btn gray sm" onclick="showKeyDaily('${id}')">在图表中查看每日消耗</button>`;
+  openModal('keyDetailModal');
+}
+function showKeyDaily(id){
+  closeModal('keyDetailModal');
+  switchTab('overview');
+  DAILY_KEY=id;
+  BAR_OFFSET=0;
+  if(LAST_STATE) syncDailyKey(LAST_STATE);
+  renderBars();
+}
+async function delKey(id){if(confirm('确定删除该 Key？')){await api('/keys/'+id,'DELETE');refresh();toast('已删除');}}
+async function saveTray(){
+  const on=document.getElementById('setTray').checked;
+  await api('/settings','POST',{tray_enabled:on?'true':'false'});
+  toast(on?'已开启托盘（重启后生效）':'已关闭托盘（重启后生效）');
+}
+async function loadSystem(){
+  try{
+    const j=await api('/system');
+    if(!j||!j.ok) return;
+    const a=document.getElementById('setAutostart'); if(a) a.checked=!!j.autostart;
+    const tr=document.getElementById('setTray');
+    if(tr && LAST_STATE) tr.checked=(LAST_STATE.settings.tray_enabled||'true')!=='false';
+    const h=document.getElementById('sysHint');
+    if(h) h.textContent='数据目录：'+j.data_dir+(j.backups&&j.backups.length?(' · 最近备份：'+j.backups[0].name):'');
+    const u=j.usage_db;
+    const uh=document.getElementById('usageDbHint');
+    if(uh && u){
+      const mb=(Number(u.bytes)||0)/1048576;
+      const size=mb>=1?(mb.toFixed(1)+' MB'):(Math.max(1,Math.round((Number(u.bytes)||0)/1024))+' KB');
+      let span='';
+      if(u.oldest){
+        const d0=new Date(Number(u.oldest)*1000), d1=new Date(Number(u.newest||u.oldest)*1000);
+        const fmt=d=>`${d.getMonth()+1}/${d.getDate()}`;
+        span=` · 数据范围 ${fmt(d0)}–${fmt(d1)}`;
+      }
+      uh.textContent=`当前 ${fmt(u.rows)} 条${span} · 数据库 ${size}`;
+    }
+  }catch(e){}
+}
+async function cleanUsageNow(){
+  const days=Number((document.getElementById('setRetain').value||'0').trim())||0;
+  if(days<=0){ toast('请先把保留天数设为大于 0 的值'); return; }
+  if(!confirm(`将删除 ${days} 天前的历史用量记录，确定继续？`)) return;
+  const j=await api('/system/usage/clean','POST',{days});
+  if(j&&j.ok){
+    toast(j.removed?`已清理 ${j.removed} 条`:'没有需要清理的记录');
+    loadSystem();
+  }else toast((j&&j.error)||'清理失败');
+}
+async function saveAutostart(){
+  const on=document.getElementById('setAutostart').checked;
+  const j=await api('/system/autostart','POST',{enabled:on});
+  toast(j&&j.autostart?'已设置开机启动':'已取消开机启动');
+}
+async function doBackup(){
+  const j=await api('/system/backup','POST',{});
+  toast(j&&j.ok?('已备份：'+j.file):'备份失败');
+  loadSystem();
+}
+async function showLogs(){
+  const j=await api('/system/logs?lines=300');
+  const el=document.getElementById('logText');
+  el.textContent=(j&&j.lines&&j.lines.length)?j.lines.join('\n'):'暂无日志';
+  openModal('logModal');
+}
+async function doShutdown(){
+  if(!confirm('确定退出 webai2api？退出后接口将不可用。')) return;
+  await api('/system/shutdown','POST',{});
+  toast('已退出');
+}
+let SETTINGS_PROV='deepseek';
+async function saveGeneralSettings(){
+  const body={tray_enabled:document.getElementById('setTray').checked,
+    usage_retain_days:(document.getElementById('setRetain').value||'0').trim()};
+  const pw=document.getElementById('setPw').value.trim();
+  if(pw)body.admin_password=pw;
+  await api('/settings','POST',body);toast('已保存');refresh();
+}
+function _wapi(){ try{ return window.pywebview && window.pywebview.api; }catch(e){ return null; } }
+function winMinimize(){ const a=_wapi(); if(a&&a.minimize) a.minimize(); }
+function winMaximize(){ const a=_wapi(); if(a&&a.toggle_max) a.toggle_max(); }
+function winClose(){ const a=_wapi(); if(a&&a.close) a.close(); else window.close(); }
+function copyText(t){navigator.clipboard.writeText(t).then(()=>toast('已复制'));}
+
+/* ── 深浅色主题 ── */
+function currentTheme(){
+  return document.documentElement.getAttribute('data-theme')==='dark'?'dark':'light';
+}
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  try{ localStorage.setItem('wapi_theme',t); }catch(e){}
+}
+function toggleTheme(){
+  const next = currentTheme()==='dark'?'light':'dark';
+  applyTheme(next);
+  tuneGlass(next==='dark');
+  toast(next==='dark'?'已切换到深色':'已切换到浅色');
+}
+/* ── 液玻璃（hyalite）：悬浮表面的边缘折射 ── */
+function glassOpts(dark){
+  return {
+    bevel:22, thickness:30, slope:1.25, shape:'squircle',
+    blur:9, dispersion:.8,
+    shade: dark?.6:.30, rim: dark?1.9:1.35,
+    edgeW:6, sat:.92, edge: dark?.42:.26,
+    light:-140, settle:160
+  };
+}
+function tuneGlass(dark){
+  try{
+    if(!window.Hyalite || !Hyalite.supported()) return;
+    Hyalite.setOpts(glassOpts(dark));
+  }catch(e){}
+}
+(function initGlass(){
+  try{
+    if(!window.Hyalite || !Hyalite.supported()) return;
+    Hyalite.watch(document.body,'.hyalite',glassOpts(currentTheme()==='dark'));
+  }catch(e){}
+})();
+
+(async function init(){
+  const loc=location.origin;
+  document.getElementById('baseHint').textContent=loc+'/v1';
+  document.getElementById('baseHint2').textContent=loc+'/v1';
+  let OC_SNIP='';
+  let LIMITS={deepseek:{context:1000000,output:384000},chatglm:{context:1000000,output:128000},kimi:{context:262144,output:32768},qwen:{context:262144,output:65536}};
+  const provOf=m=>{const s=String(m||'').toLowerCase();
+    if(s.startsWith('glm'))return'chatglm'; if(s.startsWith('kimi')||s.startsWith('moonshot'))return'kimi';
+    if(s.startsWith('qwen'))return'qwen'; return'deepseek';};
+  function buildSnippet(models,keyVal){
+    const lines=[];
+    for(const m of models){
+      const low=m.toLowerCase();
+      const prov=provOf(m);
+      const lim=LIMITS[prov]||LIMITS.deepseek;
+      const reason=!(low==='deepseek-chat'||low==='deepseek-v4-flash');
+      let variants='';
+      if(prov==='chatglm'){
+        variants=`,\n      "variants": { "快速": { "reasoningEffort": "low" }, "深度": { "reasoningEffort": "medium" }, "极致": { "reasoningEffort": "max" } }`;
+      }else if(prov==='kimi'){
+        variants=low.includes('k2.6')
+          ? `,\n      "variants": { "标准": { "reasoningEffort": "low" }, "进阶": { "reasoningEffort": "high" } }`
+          : `,\n      "variants": { "标准": { "reasoningEffort": "low" }, "进阶": { "reasoningEffort": "high" }, "极致": { "reasoningEffort": "max" } }`;
+      }else if(prov==='qwen'){
+        variants = low.includes('flash')
+          ? `,\n      "variants": { "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`
+          : `,\n      "variants": { "自动": { "reasoningEffort": "medium" }, "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`;
+      }
+      lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)}, "attachment": true, "reasoning": ${reason},\n`
+        +`      "modalities": { "input": ["image","text"], "output": ["text"] },\n`
+        +`      "limit": { "context": ${lim.context}, "output": ${lim.output} }${variants} }`);
+    }
+    return `"webai2api": {
+  "npm": "@ai-sdk/openai-compatible",
+  "name": "webai2api 多账号网关",
+  "options": {
+    "baseURL": "${loc}/v1",
+    "apiKey": ${JSON.stringify(keyVal||'')},
+    "maxRetries": 0
+  },
+  "models": {
+${lines.join(',\n')}
+  }
+}`;
+  }
+  window.__setLimits=function(settings){
+    const n=(v,d)=>{const x=Number(v);return Number.isFinite(x)&&x>0?x:d;};
+    LIMITS={deepseek:{context:n(settings.deepseek_context_limit,1000000),output:n(settings.deepseek_output_limit,384000)},
+            chatglm:{context:n(settings.glm_context_limit,1000000),output:n(settings.glm_output_limit,128000)},
+            kimi:{context:n(settings.kimi_context_limit,262144),output:n(settings.kimi_output_limit,32768)},
+            qwen:{context:n(settings.qwen_context_limit,262144),output:n(settings.qwen_output_limit,65536)}};
+    if(window.__lastModels) window.__setSnippet(window.__lastModels);
+  };
+  const DEFAULT_MODELS=['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash','kimi-k3','kimi-k2.8','kimi-k2.6','qwen3.7-plus','qwen3.8-max','qwen3.8-omni-flash'];
+  // sel.value 始终是 Key 的 id；明文 key 仅通过 LAST_STATE.keys 按 id 查找
+  function getOcKeys(){ return ((LAST_STATE&&LAST_STATE.keys)||[]).filter(k=>k.enabled); }
+  function maskKey(k){ const v=String((k&&k.key)||''); if(v.length<=12) return v; return v.slice(0,8)+'…'+v.slice(-4); }
+  function selectedKeyObj(){
+    const sel=document.getElementById('ocKeySel');
+    const id=sel?sel.value:'';
+    return getOcKeys().find(k=>k.id===id)||null;
+  }
+  function rebuildOcSel(){
+    const sel=document.getElementById('ocKeySel'); if(!sel) return;
+    const opts=getOcKeys();
+    const prev=sel.value;
+    sel.innerHTML=opts.length?opts.map((k,i)=>`<option value="${esc(k.id)}" ${(prev?k.id===prev:i===0)?'selected':''}>${esc(k.name)} ${esc(maskKey(k))}</option>`).join(''):'<option value="">无可用 Key</option>';
+    if(typeof selBuild==='function') selBuild('ocKeySel');
+    const gh=document.getElementById('guideKeyHint');
+    if(gh){ const ok=sel.value?(opts.find(k=>k.id===sel.value)||opts[0]):opts[0]; gh.textContent=ok?maskKey(ok):'在上方列表中选择或生成'; }
+    const cb=document.getElementById('ocConnectBtn');
+    if(cb){ cb.disabled=!opts.length; cb.title=opts.length?'':'请先在「API Key」卡中创建并启用一个 Key'; }
+    const db=document.getElementById('ocDisconnectBtn');
+    if(db) db.disabled=!opts.length;
+    rebuildSnippet();
+  }
+  function rebuildSnippet(){
+    const models=window.__lastModels||DEFAULT_MODELS;
+    const k=selectedKeyObj();
+    OC_SNIP=buildSnippet(models, k?k.key:'');
+    const el=document.getElementById('ocSnippet'); if(el) el.textContent=OC_SNIP;
+  }
+  window.rebuildOcSel=rebuildOcSel;
+  window.rebuildSnippet=rebuildSnippet;
+  window.onOcKeyChange=function(){
+    const gh=document.getElementById('guideKeyHint');
+    if(gh){ const ok=selectedKeyObj(); gh.textContent=ok?maskKey(ok):'在上方列表中选择或生成'; }
+    rebuildSnippet();
+  };
+  function openOcResultModal(title,snippet){
+    let m=document.getElementById('ocResultModal');
+    if(!m){
+      m=document.createElement('div'); m.id='ocResultModal'; m.className='modal-bg';
+      m.innerHTML=`<div class="modal"><div class="modal-head"><h3 id="ocResultTitle"></h3><div class="sp"></div><button class="modal-x" onclick="closeModal('ocResultModal')" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><pre id="ocResultPre" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace;max-height:60vh"></pre><div class="modal-foot"><button class="btn" onclick="copyText(document.getElementById('ocResultPre').textContent)">复制</button><button class="btn gray" onclick="closeModal('ocResultModal')">关闭</button></div></div>`;
+      document.body.appendChild(m);
+    }
+    document.getElementById('ocResultTitle').textContent=title||'结果';
+    document.getElementById('ocResultPre').textContent=snippet||'';
+    openModal('ocResultModal');
+  }
+  async function ocConnect(id){
+    if(!id){ toast('请先创建并启用一个 Key'); return; }
+    if(!confirm('确定将该 Key 写入 opencode 配置？')) return;
+    try{
+      const r=await api('/keys/'+id+'/opencode/connect','POST');
+      if(r&&r.ok){ toast('已写入 opencode 配置，重启 opencode 生效'); rebuildSnippet(); }
+      else if(r&&r.snippet){ openOcResultModal(r.error||'写入失败，可手动复制配置', r.snippet); }
+      else { toast((r&&r.error)||'接入失败'); }
+    }catch(e){ toast('接入失败：'+((e&&e.message)||e)); }
+  }
+  async function ocDisconnect(id){
+    if(!id){ toast('请先创建并启用一个 Key'); return; }
+    try{
+      const r=await api('/keys/'+id+'/opencode/disconnect','POST');
+      if(r&&r.ok){ toast('已移除 opencode 配置'); }
+      else { toast((r&&r.error)||'移除失败'); }
+    }catch(e){ toast('移除失败：'+((e&&e.message)||e)); }
+  }
+  function ocConnectCurrent(){
+    const sel=document.getElementById('ocKeySel');
+    if(!sel||!sel.value){ toast('请先选择或创建一个启用中的 Key'); return; }
+    ocConnect(sel.value);
+  }
+  function ocDisconnectCurrent(){
+    const sel=document.getElementById('ocKeySel');
+    if(!sel||!sel.value){ toast('请先选择 Key'); return; }
+    ocDisconnect(sel.value);
+  }
+  // 供 renderKeys / inline onclick 使用（本文件在 IIFE 内定义函数，必须显式挂 window）
+  window.ocConnect=ocConnect;
+  window.ocDisconnect=ocDisconnect;
+  window.ocConnectCurrent=ocConnectCurrent;
+  window.ocDisconnectCurrent=ocDisconnectCurrent;
+
+  OC_SNIP=buildSnippet(DEFAULT_MODELS,'');
+  const el = document.getElementById('ocSnippet');
+  if(el) el.textContent = OC_SNIP;
+  window.__setSnippet=function(models){
+    if(!models||!models.length) return;
+    window.__lastModels=models;
+    rebuildSnippet();
+    const mh=document.getElementById('modelHint');
+    if(mh) mh.textContent=models.join(' / ');
+  };
+  rebuildOcSel();
+  ['accProvider','accEgress'].forEach(selBuild);
+  if(TOKEN){try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
+  setInterval(()=>{
+    if(document.getElementById('mainView').style.display==='none') return;
+    if(document.body.classList.contains('modal-open')) return;
+    refresh();
+  },5000);
+})();
+</script>
+</body>
+</html>
+
+
+
