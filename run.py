@@ -177,11 +177,11 @@ def main() -> None:
         run_webview_login(sys.argv[2])
         return
 
-    # 千问浏览器会话中继：<exe> --relay-qwen <account_id>
+    # 千问浏览器会话中继：<exe> --relay-qwen <account_id> [--quiet]
     if len(sys.argv) >= 3 and sys.argv[1] == "--relay-qwen":
         from webai2api.qwen_relay import run_qwen_relay
 
-        run_qwen_relay(sys.argv[2])
+        run_qwen_relay(sys.argv[2], quiet="--quiet" in sys.argv[3:])
         return
 
     logger = logging.getLogger("webai2api")
@@ -226,6 +226,38 @@ def main() -> None:
         _st.auto_backup()
     except Exception as exc:  # noqa: BLE001
         logger.warning("启动备份失败: %s", exc)
+
+    # 千问中继预热：启动即拉起已登录账号的隐藏中继，消掉首次请求约 15 秒冷启动。
+    # 只预热「启用且已有凭证」的账号；quiet 模式下登录态失效也不会弹窗，
+    # 用户在面板里重新登录后下次启动自然恢复预热。
+    try:
+        import threading as _threading
+
+        from webai2api.paths import user_data_dir
+        from webai2api.qwen_relay import RelayManager
+        from webai2api.store import Store
+
+        def _prewarm_qwen_relays() -> None:
+            try:
+                st = Store(user_data_dir() / "webai2api.db")
+                for acc in st.list_accounts("qwen"):
+                    if not (acc.get("enabled")
+                            and (acc.get("auth_token") or "").strip()):
+                        continue
+                    try:
+                        RelayManager(str(acc["id"]), logger).ensure(
+                            timeout=90, quiet=True)
+                        logger.info("千问中继预热完成: %s", acc.get("name") or acc["id"])
+                    except Exception as exc:  # noqa: BLE001
+                        logger.info("千问中继预热失败(%s): %s",
+                                    acc.get("name") or acc.get("id"), exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.info("千问中继预热跳过: %s", exc)
+
+        _threading.Thread(target=_prewarm_qwen_relays,
+                          name="qwen-prewarm", daemon=True).start()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("千问中继预热初始化失败: %s", exc)
 
     base_url = f"http://{HOST}:{port}/v1"
     admin_url = f"http://{HOST}:{port}/admin"

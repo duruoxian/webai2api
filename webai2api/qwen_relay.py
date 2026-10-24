@@ -612,7 +612,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.runtime.queues.pop(req_id, None)
 
 
-def _run_webview(acc_id: str) -> None:
+def _run_webview(acc_id: str, quiet: bool = False) -> None:
     global _RUNTIME
     import webview
 
@@ -734,13 +734,10 @@ def _run_webview(acc_id: str) -> None:
                             last_token = tok
                         except Exception:
                             pass
-                elif not shown:
+                elif not shown and not quiet:
+                    # quiet（预热）模式：登录态失效时保持隐藏，不弹窗打扰用户；
+                    # 真正发请求走的是非 quiet 路径，届时仍会弹窗提示登录。
                     shown = True
-                    try:
-                        window.show()
-                        window.set_title("请登录通义千问（中继窗口）")
-                    except Exception:
-                        pass
         finally:
             try:
                 server.shutdown()
@@ -751,8 +748,8 @@ def _run_webview(acc_id: str) -> None:
     webview.start(worker, storage_path=str(storage), private_mode=False)
 
 
-def run_qwen_relay(acc_id: str) -> None:
-    _run_webview(acc_id)
+def run_qwen_relay(acc_id: str, quiet: bool = False) -> None:
+    _run_webview(acc_id, quiet=quiet)
 
 
 # ── 主程序侧：启动 / 复用 ──────────────────────────────────
@@ -811,11 +808,15 @@ class RelayManager:
         self._lock = _account_lock(acc_id)
 
     @staticmethod
-    def _helper_cmd(acc_id: str) -> list[str]:
+    def _helper_cmd(acc_id: str, quiet: bool = False) -> list[str]:
         if getattr(sys, "frozen", False):
-            return [sys.executable, "--relay-qwen", acc_id]
-        from .paths import resource_path
-        return [sys.executable, str(resource_path("run.py")), "--relay-qwen", acc_id]
+            cmd = [sys.executable, "--relay-qwen", acc_id]
+        else:
+            from .paths import resource_path
+            cmd = [sys.executable, str(resource_path("run.py")), "--relay-qwen", acc_id]
+        if quiet:
+            cmd.append("--quiet")
+        return cmd
 
     @staticmethod
     def _health(port: int, timeout: float = 2.0) -> dict:
@@ -827,7 +828,7 @@ class RelayManager:
         except Exception:
             return {}
 
-    def ensure(self, timeout: float = 45.0) -> int:
+    def ensure(self, timeout: float = 45.0, quiet: bool = False) -> int:
         with self._lock:
             st = read_state(self.acc_id)
             port = int(st.get("port") or 0)
@@ -842,7 +843,7 @@ class RelayManager:
                 flags = 0x08000000 if os.name == "nt" else 0
                 try:
                     subprocess.Popen(
-                        self._helper_cmd(self.acc_id),
+                        self._helper_cmd(self.acc_id, quiet=quiet),
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         creationflags=flags,
