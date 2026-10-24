@@ -487,7 +487,7 @@ def run_webview_login(acc_id: str) -> None:
             # 千问要把整个 profile 搬给常驻中继，必须先让 WebView2 把
             # localStorage/cookie 刷盘（IndexedDB/LevelDB 有延迟写），
             # 否则搬过去的是空壳，中继会一直认为未登录。
-            if acc_id and str(acc.get("provider") or "") == "qwen":
+            if provider == "qwen":
                 try:
                     # 主动触发一次存储落盘，再多等几秒
                     window.evaluate_js(
