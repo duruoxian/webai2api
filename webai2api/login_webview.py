@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from .paths import user_data_dir
@@ -248,22 +250,30 @@ def _kill_webview_processes_for(storage: Path) -> None:
 
 
 def _purge_login_state(storage: Path) -> None:
-    """rmtree 整体失败时的兜底：只删保留登录态的子文件/目录。"""
-    import shutil
+    """rmtree 整体失败时的兜底：只删保留登录态的子文件/目录。
+
+    注意 WebView2 的 cookie 实际落在 EBWebView/Default/Network/Cookies，
+    老版本 pywebview/Chrome 才在 Default/Cookies，两处都要清。
+    """
     default = storage / "EBWebView" / "Default"
     if not default.exists():
+        default = storage / "Default"
+    if not default.exists():
         return
-    for name in ("Cookies", "Login Data", "Web Data"):
+    for rel in ("Network/Cookies", "Network/Cookies-journal", "Cookies", "Cookies-journal",
+                "Login Data", "Login Data-journal", "Web Data", "Web Data-journal",
+                "History", "History-journal"):
         try:
-            f = default / name
+            f = default / rel
             if f.exists():
                 f.unlink()
         except Exception:
             pass
-    for name in ("Local Storage", "Session Storage"):
+    for rel in ("Local Storage", "Session Storage", "IndexedDB", "Service Worker",
+                "Cache", "Code Cache", "GPUCache"):
         try:
-            d = default / name
-            if d.exists():
+            d = default / rel
+            if d.is_dir():
                 shutil.rmtree(d, ignore_errors=True)
         except Exception:
             pass
@@ -310,25 +320,23 @@ def run_webview_login(acc_id: str) -> None:
 
     write_state(acc_id, "opening", "正在打开内置浏览器…")
 
-    # 每个账号一套独立 storage，互不干扰，也不碰系统浏览器
-    storage = data_dir / "browser_profiles" / acc_id
-    # 关键：每次登录都用全新的 profile，避免复用上一次的 cookie/会话，
-    # 否则新账号会直接显示成上一个账号已登录的状态。
-    if storage.exists():
+    # 每次登录都用**全新的一次性 profile 目录**。
+    # 这是干净页面的根本保证：即使旧目录因进程锁/权限问题删不掉，
+    # 新目录里也不存在任何旧 cookie、localStorage、IndexedDB、缓存，
+    # 页面永远是未登录态，绝不会带出上一个人（或本机浏览器）的账号信息。
+    legacy = data_dir / "browser_profiles" / acc_id
+    if legacy.exists():
         import shutil
-        # 上次窗口的 WebView2 进程可能还锁着 cookie，先精确杀掉本账号的残留
-        _kill_webview_processes_for(storage)
-        cleared = False
-        for _ in range(12):
-            try:
-                shutil.rmtree(storage, ignore_errors=False)
-                cleared = True
+        _kill_webview_processes_for(legacy)
+        for _ in range(8):
+            shutil.rmtree(legacy, ignore_errors=True)
+            if not legacy.exists():
                 break
-            except Exception:
-                time.sleep(0.4)
-        if not cleared:
-            # 整目录删不掉（极端情况）：兜底只清登录态相关文件
-            _purge_login_state(storage)
+            time.sleep(0.3)
+        if legacy.exists():
+            # 删不掉也不影响本次登录，仅清理登录态文件，避免磁盘膨胀
+            _purge_login_state(legacy)
+    storage = data_dir / "browser_profiles" / "_session" / f"{acc_id}-{uuid.uuid4().hex[:12]}"
     storage.mkdir(parents=True, exist_ok=True)
     from .egress import normalize_egress
     egress_mode = normalize_egress(str(acc.get("egress") or "system"))
@@ -356,16 +364,23 @@ def run_webview_login(acc_id: str) -> None:
         deadline = time.time() + 600
         announced = False
         guest_noted = False
+        badge_injected = 0.0
         while time.time() < deadline and not done["v"]:
             time.sleep(1.5)
-            # 右下角只读角标：当前账号的出口模式（页面刷新后也重新确保存在）
-            try:
-                window.evaluate_js(_egress_badge_js(egress_mode))
-            except Exception:
-                pass
+            # 右下角只读角标：只在需要时注入（页面导航后重新补），
+            # 不再每秒反复操作 DOM——Kimi 这类重页面会被持续重排拖到卡死。
+            now = time.time()
+            if now - badge_injected > 5.0:
+                badge_injected = now
+                try:
+                    window.evaluate_js(_egress_badge_js(egress_mode))
+                except Exception:
+                    pass
             try:
                 val = window.evaluate_js(extract_js)
             except Exception:
+                # 页面正在加载/重绘时 evaluate_js 会抛错；不要紧贴着重试
+                time.sleep(0.5)
                 continue
             if not announced:
                 announced = True
@@ -480,6 +495,9 @@ def run_webview_login(acc_id: str) -> None:
                 os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
                     (prev_args + " " + extra).strip())
             try:
+                # private_mode=False 让站点把 cookie/localStorage 正常写进这个
+                # 一次性目录（InPrivate 下部分站点会拒绝登录），目录本身每次
+                # 都是新建的，用完即删，所以同样保证绝对干净。
                 webview.start(private_mode=False, storage_path=str(storage))
             except Exception as exc:  # noqa: BLE001
                 write_state(acc_id, "error", f"内置浏览器启动失败: {exc}")
@@ -489,6 +507,14 @@ def run_webview_login(acc_id: str) -> None:
                     os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = prev_args
                 else:
                     os.environ.pop("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", None)
+            # 一次性 profile：窗口关闭后整目录丢弃，不留在磁盘上
+            _kill_webview_processes_for(storage)
+            for _ in range(10):
+                if not storage.exists():
+                    break
+                shutil.rmtree(storage, ignore_errors=True)
+                if storage.exists():
+                    time.sleep(0.3)
 
 
 def _webview_proxy_args(acc: dict) -> str:
