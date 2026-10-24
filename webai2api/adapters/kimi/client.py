@@ -143,6 +143,111 @@ def _usage(payload: dict, text: str) -> dict:
     return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
 
 
+# ── 工具调用（OpenAI tools 协议）─────────────────────────
+# 网页版 Kimi 没有 function calling 接口，只能把工具清单写进 system prompt，
+# 让模型输出一行约定标记，再由本模块解析成标准 tool_calls。
+# 这样 opencode 之类的客户端才能真正读写本地文件，而不是「假装」写到沙箱路径。
+TOOL_MARKER = "<<<TOOL_CALL>>>"
+
+TOOL_INSTRUCTION = """你可以调用以下工具来完成任务：
+
+{tools}
+
+规则：
+1. 如果用户的问题需要调用工具，只输出一行，格式严格为：
+{marker}{{"name":"工具名","arguments":{{"参数名":值}}}}
+2. 一次只调用一个工具。不要输出任何解释文字。
+3. 如果不需要工具，直接用自然语言回答，不要输出 {marker}。
+4. 你运行在用户的本地电脑上，工具就是你唯一能操作本地文件的方式；
+   不要说「我不能访问你的系统盘」，需要写文件时直接调用对应工具。
+"""
+
+
+def _tools_prompt(tools: list) -> str:
+    lines = []
+    for t in tools or []:
+        if not isinstance(t, dict):
+            continue
+        fn = t.get("function") or t
+        name = fn.get("name") or ""
+        if not name:
+            continue
+        desc = fn.get("description") or ""
+        params = fn.get("parameters") or {}
+        lines.append(f"- {name}: {desc}")
+        props = (params.get("properties") or {}) if isinstance(params, dict) else {}
+        if props:
+            req = set(params.get("required") or [])
+            for k, v in props.items():
+                typ = (v or {}).get("type", "string")
+                mark = "（必填）" if k in req else ""
+                lines.append(f"    参数 {k} ({typ}){mark}: {(v or {}).get('description','')}")
+    return "\n".join(lines)
+
+
+def _inject_tools(messages: list, tools: list) -> list:
+    spec = _tools_prompt(tools)
+    if not spec:
+        return messages
+    instruction = TOOL_INSTRUCTION.format(tools=spec, marker=TOOL_MARKER)
+    msgs = list(messages or [])
+    for i, m in enumerate(msgs):
+        if isinstance(m, dict) and m.get("role") == "system":
+            merged = dict(m)
+            merged["content"] = (m.get("content") or "") + "\n\n" + instruction
+            msgs[i] = merged
+            return msgs
+    msgs.insert(0, {"role": "system", "content": instruction})
+    return msgs
+
+
+def _strip_tool_block(text: str) -> str:
+    if not text or TOOL_MARKER not in text:
+        return text
+    kept = [ln for ln in text.splitlines() if TOOL_MARKER not in ln]
+    return "\n".join(kept).strip()
+
+
+def _parse_tool_calls(text: str, tools: list) -> list:
+    if not text or not tools:
+        return []
+    names = set()
+    for t in tools:
+        if isinstance(t, dict):
+            fn = t.get("function") or t
+            if fn.get("name"):
+                names.add(fn["name"])
+    for line in text.splitlines():
+        idx = line.find(TOOL_MARKER)
+        if idx < 0:
+            continue
+        raw = line[idx + len(TOOL_MARKER):].strip()
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            try:
+                s, e = raw.find("{"), raw.rfind("}")
+                if s < 0 or e <= s:
+                    continue
+                obj = json.loads(raw[s:e + 1])
+            except Exception:
+                continue
+        if not isinstance(obj, dict):
+            continue
+        name = obj.get("name") or obj.get("tool") or ""
+        if not name or (names and name not in names):
+            continue
+        args = obj.get("arguments", obj.get("args", {}))
+        if not isinstance(args, str):
+            args = json.dumps(args, ensure_ascii=False)
+        return [{
+            "id": f"call_{uuid.uuid4().hex[:16]}",
+            "type": "function",
+            "function": {"name": name, "arguments": args},
+        }]
+    return []
+
+
 def _tier_for(effort: str, model: str) -> str:
     """客户端 reasoning_effort → Kimi 三档思考：标准 / 进阶 / 极致。
 
@@ -637,6 +742,8 @@ class KimiWebClient:
         scenario: str = _SCENARIO_CHAT,
     ) -> dict:
         messages = payload.get("messages") or []
+        if payload.get("tools"):
+            messages = _inject_tools(messages, payload["tools"])
         user_text = ""
         system_text = ""
         for m in messages:
@@ -846,6 +953,24 @@ class KimiWebClient:
         for ev in self._stream_events(payload):
             text, reasoning = ev["text"], ev["reasoning"]
 
+        tools = payload.get("tools") or []
+        calls = _parse_tool_calls(text, tools) if tools else []
+        if calls:
+            return {
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": None,
+                                "reasoning_content": reasoning or None,
+                                "tool_calls": calls},
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": _usage(payload, text),
+            }
+
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -853,7 +978,7 @@ class KimiWebClient:
             "model": model,
             "choices": [{
                 "index": 0,
-                "message": {"role": "assistant", "content": text,
+                "message": {"role": "assistant", "content": _strip_tool_block(text),
                             "reasoning_content": reasoning or None},
                 "finish_reason": "stop",
             }],
@@ -893,6 +1018,22 @@ class KimiWebClient:
             self.logger.warning("Kimi 流式请求失败: %s", exc)
             err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
             yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        # 工具调用：网页版没有原生 function calling，改成解析约定标记后按
+        # OpenAI 流式 tool_calls 分片下发，客户端才能真的执行本地工具。
+        tools = payload.get("tools") or []
+        calls = _parse_tool_calls(sent_text, tools) if tools else []
+        if calls:
+            yield chunk({"tool_calls": [{
+                "index": 0,
+                "id": calls[0]["id"],
+                "type": "function",
+                "function": calls[0]["function"],
+            }]})
+            yield chunk({}, usage=_usage(payload, sent_text))
+            yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
             return
 
