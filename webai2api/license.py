@@ -21,7 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import issuer
+from . import ed25519, issuer
 from .paths import resource_path
 
 # 内置公钥（base64），与作者私钥配对。
