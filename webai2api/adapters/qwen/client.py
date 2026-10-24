@@ -20,6 +20,7 @@ import uuid
 from logging import Logger
 from urllib.parse import quote, urlsplit
 
+from .. import tool_bridge
 from .config import QwenConfig
 
 USER_AGENTS = [
@@ -81,6 +82,74 @@ def _text_of(msg: dict) -> str:
                 out += item.get("text") or ""
         return out
     return ""
+
+
+# ── 工具调用（OpenAI tools 协议）─────────────────────────
+# 千问网页版没有 function calling 接口。Qwen 系列在训练时就见过
+# Hermes 风格的 <tool_call> 标签（Qwen-Agent 官方模板同款格式），
+# 提示词对齐训练格式，模型输出的工具调用比自造标记稳一个量级。
+QWEN_TOOL_TAG = "tool_call"
+QWEN_RESULT_TAG = "tool_response"
+QWEN_TOOL_MARKER = "<<<TOOL_CALL>>>"  # 兜底标记：模型偶尔不按标签输出时仍可解析
+
+QWEN_TOOL_INSTRUCTION = """# Tools
+
+你运行在用户的本地电脑上，可以使用以下工具读写本地文件、执行任务：
+
+{tools}
+
+## 调用规则
+
+- 需要调用工具时，只输出（不要有任何多余文字）：
+<tool_call>
+{{"name": "工具名", "arguments": {{"参数名": "值"}}}}
+</tool_call>
+- 一次只调用一个工具。
+- 收到 <tool_response> 包裹的工具执行结果后，基于真实结果继续：
+  需要更多信息就再调用工具，信息够了就给出最终回答。
+- 不需要工具时，直接用自然语言回答，不要输出 <tool_call>。
+- 工具就是你操作本地文件的方式，不要说「我不能访问你的系统盘」。
+"""
+
+
+def _tools_prompt(tools: list) -> str:
+    """把 OpenAI tools 定义渲染成千问熟悉的 JSON schema 清单，
+    每个函数一行原始 JSON——与 Qwen-Agent 官方模板的 <tools> 段一致。"""
+    lines = []
+    for t in tools or []:
+        if isinstance(t, dict):
+            fn = t.get("function") or t
+            if fn.get("name"):
+                lines.append(json.dumps(fn, ensure_ascii=False))
+    return "\n".join(lines)
+
+
+def _inject_tools_system(system_text: str, tools: list) -> str:
+    """把工具说明并入 system prompt。"""
+    instruction = QWEN_TOOL_INSTRUCTION.format(tools=_tools_prompt(tools))
+    return (system_text + "\n\n" + instruction) if system_text else instruction
+
+
+def _inject_tools_messages(messages: list, tools: list) -> list:
+    """直连路径：把工具说明合并进消息数组的第一条 system（或新建）。"""
+    msgs = list(messages or [])
+    instruction = QWEN_TOOL_INSTRUCTION.format(tools=_tools_prompt(tools))
+    for i, m in enumerate(msgs):
+        if isinstance(m, dict) and m.get("role") == "system":
+            merged = dict(m)
+            merged["content"] = (m.get("content") or "") + "\n\n" + instruction
+            msgs[i] = merged
+            return msgs
+    msgs.insert(0, {"role": "system", "content": instruction})
+    return msgs
+
+
+def _active_tools(payload: dict) -> list:
+    """本请求生效的工具清单；tool_choice="none" 等价于没有工具。"""
+    tools = payload.get("tools") or []
+    if payload.get("tool_choice") == "none":
+        return []
+    return tools
 
 
 def _estimate_tokens(text: str) -> int:
@@ -455,9 +524,13 @@ class QwenWebClient:
     # ── 请求体 ─────────────────────────────────────────
     def _body(self, payload: dict, chat_id: str = "") -> dict:
         model = str(payload.get("model") or self.config.default_model)
+        messages = payload.get("messages") or []
+        tools = _active_tools(payload)
+        if tools:
+            messages = _inject_tools_messages(messages, tools)
         body: dict = {
             "model": model,
-            "messages": payload.get("messages") or [],
+            "messages": messages,
             "stream": True,
             "chat_id": chat_id,
             "incremental_output": True,
@@ -610,17 +683,20 @@ class QwenWebClient:
             self._bump("miss")
 
         messages = payload.get("messages") or []
-        user_text = ""
+        tools = _active_tools(payload)
         system_text = ""
         for m in messages:
             if not isinstance(m, dict):
                 continue
             role = m.get("role")
-            text = _text_of(m)
             if role == "system" and not system_text:
-                system_text = text
-            elif role == "user":
-                user_text = text
+                system_text = _text_of(m)
+        if tools:
+            system_text = _inject_tools_system(system_text, tools)
+        # 多轮关键：最后一条 assistant 之后、上游还没见过的增量。
+        # role=tool 的执行结果在这里渲染成 <tool_response> 发给网页会话，
+        # 否则工具结果永远到不了模型眼里，多轮工具链是断的。
+        user_text = tool_bridge.increment_text(messages, result_tag=QWEN_RESULT_TAG)
 
         model = str(payload.get("model") or self.config.default_model)
         effort = str(payload.get("reasoning_effort") or self.config.default_effort)
@@ -788,10 +864,32 @@ class QwenWebClient:
     def chat_completion(self, payload: dict) -> dict:
         model = payload.get("model") or self.config.default_model
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        tools = _active_tools(payload)
         text = reasoning = ""
         for ev in self._stream_events(payload):
             text, reasoning = ev["text"], ev["reasoning"]
 
+        calls = tool_bridge.parse_tool_calls(
+            text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER) if tools else []
+        if calls:
+            return {
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": None,
+                                "reasoning_content": reasoning or None,
+                                "tool_calls": calls},
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": _usage(payload, text),
+            }
+
+        # 带工具但没解析出调用：剥掉可能残留的标记再下发
+        content = tool_bridge.strip_tool_markup(
+            text, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER) if tools else text
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -799,7 +897,7 @@ class QwenWebClient:
             "model": model,
             "choices": [{
                 "index": 0,
-                "message": {"role": "assistant", "content": text,
+                "message": {"role": "assistant", "content": content,
                             "reasoning_content": reasoning or None},
                 "finish_reason": "stop",
             }],
@@ -823,6 +921,11 @@ class QwenWebClient:
 
         yield chunk({"role": "assistant", "content": ""})
 
+        tools = _active_tools(payload)
+        # 有工具时扣住标记文本：<tool_call> 出现前照常流式，出现后扣留等解析，
+        # 标记 JSON 不会漏进 content
+        buf = tool_bridge.ToolStreamBuffer(
+            [f"<{QWEN_TOOL_TAG}>", QWEN_TOOL_MARKER]) if tools else None
         sent_text = ""
         sent_reasoning = ""
         try:
@@ -831,9 +934,15 @@ class QwenWebClient:
                 if dr:
                     sent_reasoning = ev["reasoning"]
                     yield chunk({"reasoning_content": dr})
-                dt = ev["text"][len(sent_text):]
+                if buf is not None:
+                    released = buf.feed(ev["text"])
+                    dt = released[len(sent_text):]
+                    sent_text = released
+                else:
+                    dt = ev["text"][len(sent_text):]
+                    if dt:
+                        sent_text = ev["text"]
                 if dt:
-                    sent_text = ev["text"]
                     yield chunk({"content": dt})
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("Qwen 流式请求失败: %s", exc)
@@ -842,6 +951,26 @@ class QwenWebClient:
             yield "data: [DONE]\n\n"
             return
 
-        yield chunk({}, usage=_usage(payload, sent_text))
+        full_text = buf.text if buf is not None else sent_text
+        calls = tool_bridge.parse_tool_calls(
+            full_text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER) if tools else []
+        if calls:
+            yield chunk({"tool_calls": [{
+                "index": 0,
+                "id": calls[0]["id"],
+                "type": "function",
+                "function": calls[0]["function"],
+            }]})
+            yield chunk({}, usage=_usage(payload, full_text))
+            yield chunk({}, finish="tool_calls")
+            yield "data: [DONE]\n\n"
+            return
+
+        if buf is not None:
+            # 没解析出工具调用：把扣住的尾巴放出去（通常为空）
+            tail = buf.flush()
+            if tail:
+                yield chunk({"content": tail})
+        yield chunk({}, usage=_usage(payload, full_text))
         yield chunk({}, finish="stop")
         yield "data: [DONE]\n\n"

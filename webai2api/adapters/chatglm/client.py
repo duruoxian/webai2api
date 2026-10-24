@@ -18,6 +18,7 @@ import uuid
 from logging import Logger
 from urllib.parse import urlsplit
 
+from .. import tool_bridge
 from .config import GlmConfig
 
 USER_AGENTS = [
@@ -126,14 +127,25 @@ def _text_of(msg: dict) -> str:
 
 
 def _prepare_content(messages: list[dict]) -> str:
-    """把 OpenAI 多轮消息合并成智谱要的单条 user 内容。"""
+    """把 OpenAI 多轮消息合并成智谱要的单条 user 内容。
+
+    智谱走「全量压平」策略：整段对话带角色标记重发一遍。role=tool
+    的执行结果在这里渲染成 <tool_result> 块并归入 user 轮，模型才能
+    看懂「这是工具跑出来的结果」，而不是一段来历不明的裸文本。
+    """
     if len(messages) < 2:
         return "".join(_text_of(m) + "\n" for m in messages)
-    role_map = {"system": "<|sytstem|>", "assistant": "<|assistant|>", "user": "<|user|>"}
+    role_map = {"system": "<|system|>", "assistant": "<|assistant|>", "user": "<|user|>"}
+    id2name = tool_bridge.tool_name_by_id(messages)
     parts = []
     for m in messages:
-        role = role_map.get(m.get("role", "user"), m.get("role", "user"))
-        parts.append(f"{role}\n{_text_of(m)}\n")
+        role = m.get("role", "user")
+        if role == "tool":
+            name = id2name.get(m.get("tool_call_id") or "", m.get("name") or "tool")
+            body = tool_bridge.render_tool_result(name, _text_of(m), tag="tool_result")
+            parts.append(f"<|user|>\n{body}\n")
+            continue
+        parts.append(f"{role_map.get(role, role)}\n{_text_of(m)}\n")
     return "".join(parts) + "<|assistant|>\n"
 
 
@@ -148,6 +160,10 @@ TOOL_INSTRUCTION = """你可以调用以下工具来完成任务：
 {marker}{{"name":"工具名","arguments":{{"参数名":值}}}}
 2. 一次只调用一个工具。不要输出任何解释文字。
 3. 如果不需要工具，直接用自然语言回答，不要输出 {marker}。
+4. 你运行在用户的本地电脑上，工具就是你唯一能操作本地文件的方式；
+   不要说「我不能访问你的系统盘」，需要写文件时直接调用对应工具。
+5. 收到 <tool_result> 包裹的工具执行结果后，基于真实结果继续：
+   需要更多信息就再调用工具，信息够了就给出最终回答（不要再输出标记）。
 """
 
 
@@ -726,7 +742,7 @@ class ChatGlmWebClient:
         """
         model = payload.get("model") or self.config.default_model
         messages = payload.get("messages") or []
-        if payload.get("tools"):
+        if payload.get("tools") and payload.get("tool_choice") != "none":
             messages = _inject_tools(messages, payload["tools"])
         content = _prepare_content(messages)
         is_silent = "silent" in model
@@ -839,7 +855,7 @@ class ChatGlmWebClient:
         model = payload.get("model") or self.config.default_model
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
-        has_tools = bool(payload.get("tools"))
+        has_tools = bool(payload.get("tools")) and payload.get("tool_choice") != "none"
 
         def chunk(delta: dict, finish=None, usage=None) -> str:
             obj = {
@@ -853,6 +869,9 @@ class ChatGlmWebClient:
 
         yield chunk({"role": "assistant", "content": ""})
 
+        # 有工具时扣住标记文本：标记出现前照常流式，出现后扣留等解析，
+        # 既不漏 JSON 给客户端，也保住普通回答的流式体验
+        buf = tool_bridge.ToolStreamBuffer([TOOL_MARKER]) if has_tools else None
         sent_text = ""
         sent_reasoning = ""
         try:
@@ -861,12 +880,16 @@ class ChatGlmWebClient:
                 if dr:
                     sent_reasoning = ev["reasoning"]
                     yield chunk({"reasoning_content": dr})
-                dt = ev["text"][len(sent_text):]
+                if buf is not None:
+                    released = buf.feed(ev["text"])
+                    dt = released[len(sent_text):]
+                    sent_text = released
+                else:
+                    dt = ev["text"][len(sent_text):]
+                    if dt:
+                        sent_text = ev["text"]
                 if dt:
-                    sent_text = ev["text"]
-                    # 带工具时先不吐，等流结束统一解析，避免把 JSON 片段漏给客户端
-                    if not has_tools:
-                        yield chunk({"content": dt})
+                    yield chunk({"content": dt})
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("智谱流式请求失败: %s", exc)
             err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
@@ -875,7 +898,8 @@ class ChatGlmWebClient:
             return
 
         if has_tools:
-            calls = _parse_tool_calls(sent_text, payload.get("tools"))
+            calls = _parse_tool_calls(buf.text if buf is not None else sent_text,
+                                      payload.get("tools"))
             if calls:
                 for i, c in enumerate(calls):
                     yield chunk({
@@ -889,8 +913,8 @@ class ChatGlmWebClient:
                 yield chunk({}, finish="tool_calls")
                 yield "data: [DONE]\n\n"
                 return
-            # 没解析出工具调用，按普通文本发出
-            plain = _strip_tool_block(sent_text)
+            # 没解析出工具调用，按普通文本发出（缓冲器里还有扣住的尾巴）
+            plain = _strip_tool_block(buf.text if buf is not None else sent_text)
             if plain:
                 yield chunk({"content": plain})
 

@@ -23,6 +23,7 @@ from collections import OrderedDict
 from logging import Logger
 from urllib.parse import urlsplit
 
+from .. import tool_bridge
 from .config import KimiConfig
 
 USER_AGENTS = [
@@ -160,6 +161,8 @@ TOOL_INSTRUCTION = """你可以调用以下工具来完成任务：
 3. 如果不需要工具，直接用自然语言回答，不要输出 {marker}。
 4. 你运行在用户的本地电脑上，工具就是你唯一能操作本地文件的方式；
    不要说「我不能访问你的系统盘」，需要写文件时直接调用对应工具。
+5. 收到 <tool_result> 包裹的工具执行结果后，基于真实结果继续：
+   需要更多信息就再调用工具，信息够了就给出最终回答（不要再输出标记）。
 """
 
 
@@ -202,50 +205,11 @@ def _inject_tools(messages: list, tools: list) -> list:
 
 
 def _strip_tool_block(text: str) -> str:
-    if not text or TOOL_MARKER not in text:
-        return text
-    kept = [ln for ln in text.splitlines() if TOOL_MARKER not in ln]
-    return "\n".join(kept).strip()
+    return tool_bridge.strip_tool_markup(text, marker=TOOL_MARKER)
 
 
 def _parse_tool_calls(text: str, tools: list) -> list:
-    if not text or not tools:
-        return []
-    names = set()
-    for t in tools:
-        if isinstance(t, dict):
-            fn = t.get("function") or t
-            if fn.get("name"):
-                names.add(fn["name"])
-    for line in text.splitlines():
-        idx = line.find(TOOL_MARKER)
-        if idx < 0:
-            continue
-        raw = line[idx + len(TOOL_MARKER):].strip()
-        try:
-            obj = json.loads(raw)
-        except Exception:
-            try:
-                s, e = raw.find("{"), raw.rfind("}")
-                if s < 0 or e <= s:
-                    continue
-                obj = json.loads(raw[s:e + 1])
-            except Exception:
-                continue
-        if not isinstance(obj, dict):
-            continue
-        name = obj.get("name") or obj.get("tool") or ""
-        if not name or (names and name not in names):
-            continue
-        args = obj.get("arguments", obj.get("args", {}))
-        if not isinstance(args, str):
-            args = json.dumps(args, ensure_ascii=False)
-        return [{
-            "id": f"call_{uuid.uuid4().hex[:16]}",
-            "type": "function",
-            "function": {"name": name, "arguments": args},
-        }]
-    return []
+    return tool_bridge.parse_tool_calls(text, tools, marker=TOOL_MARKER)
 
 
 def _tier_for(effort: str, model: str) -> str:
@@ -742,19 +706,22 @@ class KimiWebClient:
         scenario: str = _SCENARIO_CHAT,
     ) -> dict:
         messages = payload.get("messages") or []
-        if payload.get("tools"):
-            messages = _inject_tools(messages, payload["tools"])
-        user_text = ""
+        # tool_choice="none" 时不注入也不解析，等价于没有工具
+        tools = payload.get("tools") or []
+        if payload.get("tool_choice") == "none":
+            tools = []
+        if tools:
+            messages = _inject_tools(messages, tools)
         system_text = ""
         for m in messages:
             if not isinstance(m, dict):
                 continue
-            role = m.get("role")
-            text = _text_of(m)
-            if role == "system" and not system_text:
-                system_text = text
-            elif role == "user":
-                user_text = text
+            if m.get("role") == "system" and not system_text:
+                system_text = _text_of(m)
+        # 多轮关键：最后一条 assistant 之后、上游还没见过的增量。
+        # role=tool 的执行结果在这里被渲染成 <tool_result> 发给网页会话，
+        # 否则工具结果永远到不了模型眼里，多轮工具链是断的。
+        user_text = tool_bridge.increment_text(messages)
         model = str(payload.get("model") or self.config.default_model)
         opts = _effort_to_payload(
             str(payload.get("reasoning_effort") or self.config.default_effort), model)
@@ -1002,6 +969,11 @@ class KimiWebClient:
 
         yield chunk({"role": "assistant", "content": ""})
 
+        tools = payload.get("tools") or []
+        if payload.get("tool_choice") == "none":
+            tools = []
+        # 有工具时扣住标记文本，不让 <<<TOOL_CALL>>> 漏进 content
+        buf = tool_bridge.ToolStreamBuffer([TOOL_MARKER]) if tools else None
         sent_text = ""
         sent_reasoning = ""
         try:
@@ -1010,9 +982,15 @@ class KimiWebClient:
                 if dr:
                     sent_reasoning = ev["reasoning"]
                     yield chunk({"reasoning_content": dr})
-                dt = ev["text"][len(sent_text):]
+                if buf is not None:
+                    released = buf.feed(ev["text"])
+                    dt = released[len(sent_text):]
+                    sent_text = released
+                else:
+                    dt = ev["text"][len(sent_text):]
+                    if dt:
+                        sent_text = ev["text"]
                 if dt:
-                    sent_text = ev["text"]
                     yield chunk({"content": dt})
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("Kimi 流式请求失败: %s", exc)
@@ -1023,8 +1001,8 @@ class KimiWebClient:
 
         # 工具调用：网页版没有原生 function calling，改成解析约定标记后按
         # OpenAI 流式 tool_calls 分片下发，客户端才能真的执行本地工具。
-        tools = payload.get("tools") or []
-        calls = _parse_tool_calls(sent_text, tools) if tools else []
+        calls = _parse_tool_calls(buf.text if buf is not None else sent_text,
+                                  tools) if tools else []
         if calls:
             yield chunk({"tool_calls": [{
                 "index": 0,
