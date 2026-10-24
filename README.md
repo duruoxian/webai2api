@@ -24,8 +24,8 @@
 | 中文面板 | 浏览器打开 `/admin` 可视化操作（单文件面板 `webai2api/web/index.html`） |
 | OpenAI 兼容 | `POST /v1/chat/completions`、`GET /v1/models`，支持流式 |
 
-> 两条产品线：`main` = **开发端 Pro**（`127.0.0.1:8800`，带授权签发卡）；`lite` = **客户版**（`127.0.0.1:8802`，Inno Setup 安装包）。
-> 分支、构建与授权签发流程见下方「双分支发布」。
+> 两个版本出自**同一份代码**（v0.1.26 起单代码库）：专业版 **Pro**（`127.0.0.1:8800`，带授权签发卡）、客户版 **Lite**（`127.0.0.1:8802`，授权卡激活制，Inno Setup 安装包）。
+> 构建与发布流程见下方「双版本构建」。
 
 ## 快速开始
 
@@ -166,63 +166,50 @@ build-exe.cmd
 > 只有"登录拿凭证"那一下需要浏览器，这里用**系统已装的 WebView2**（pywebview 内嵌窗口），
 > 不打包上百 MB 的 Chromium，**也不调用你日常浏览器的 profile**（零冲突）。
 
-## 双分支发布
+## 双版本构建（单代码库）
 
-两套产物来自同一仓库的两个分支，面板同源（都是 `webai2api/web/index.html`），差别在**端口、授权入口、安装方式**。
+v0.1.26 起，专业版与客户版出自**同一份代码、同一个分支**，版本差异由构建时的 `edition.txt` 决定，
+运行期 `webai2api.edition.is_lite()` 自动分派端口（8802/8800）、面板（`lite_panel.html`/`index.html`）、
+授权卡/签发卡、托盘图标与数据目录（lite 装在 Program Files 时数据自动回退到
+`%LOCALAPPDATA%\webai2api-lite\data`）。
 
-| 分支 | 角色 | 默认端口 | 面板 | 安装/部署位置 | 产物 |
-|---|---|---|---|---|---|
-| `main` | 开发端 **Pro**（作者自用，带「授权签发」卡） | `127.0.0.1:8800` | 全部功能 + 签发卡 | `%LOCALAPPDATA%\Programs\webai2api`（pyinstaller onedir） | `dist/webai2api/webai2api.exe` |
-| `lite` | **客户版**（无签发入口、无用量页，授权卡激活制） | `127.0.0.1:8802` | 删减版 + 授权卡 | `{localappdata}\Programs\webai2api-lite`（Inno Setup 安装） | `dist-lite/webai2api/webai2api.exe` → `dist-installer/webai2api-lite-setup-X.Y.Z.exe` |
+| 版本 | 默认端口 | 面板 | 安装/部署位置 | 产物 |
+|---|---|---|---|---|
+| **Pro**（spec：`webai2api.spec`） | `127.0.0.1:8800` | `index.html`（全部功能 + 签发卡） | `%LOCALAPPDATA%\Programs\webai2api`（pyinstaller onedir） | `dist/webai2api/webai2api.exe` |
+| **Lite**（spec：`webai2api-lite.spec`） | `127.0.0.1:8802` | `lite_panel.html`（授权卡激活制） | `{localappdata}\Programs\webai2api-lite`（Inno Setup 安装） | `dist-lite/webai2api/webai2api.exe` → `dist-installer/webai2api-lite-setup-X.Y.Z.exe` |
 
-端口来源：`run.py` 的 `_default_port()`（lite → 8802 / Pro → 8800，环境变量 `WEBAI2API_PORT` 可覆盖）；
-`python -m webai2api` 的 `--port` 默认 `8800`。lite 打包时由 `webai2api-lite.spec` 生成 `edition.txt` 打进包，
-运行时 `webai2api.edition.is_lite()` 据此决定端口 / 窗口标题 / 图标 / 签发入口。
-
-### 版本 bump 点（两分支各自改，缺一不可）
+### 版本 bump 点
 
 | 位置 | 内容 |
 |---|---|
 | `webai2api/__init__.py` | `__version__ = "x.y.z"` |
 | `pyproject.toml` | `version = "x.y.z"` |
-| `webai2api/web/index.html` | 静态资源版本串 `?v=x.y.z`（`app.css` / `hyalite.js`） |
-| `installer/webai2api-lite.iss` | `#define MyAppVersion "x.y.z"`（仅 lite，决定安装包文件名） |
+| `webai2api/web/index.html` | 静态资源版本串 `?v=x.y.z` |
+| `installer/webai2api-lite.iss` | `#define MyAppVersion "x.y.z"`（决定安装包文件名） |
 
-> 改完两个分支各自构建，启动后看 `/admin/api/state` 的 `version` 与安装包文件名是否一致。
-
-### 构建命令
-
-**开发端（`main`）**
+### 构建与发布
 
 ```powershell
+# 专业版
 .venv\Scripts\pyinstaller.exe webai2api.spec --noconfirm --distpath dist --workpath build
-# 部署到本机（保留 data，跳过运行时文件；作者自用）
 robocopy "dist\webai2api" "$env:LOCALAPPDATA\Programs\webai2api" /E /XD data /XF webai2api.log current_port.txt
+
+# 客户版（同一棵源码树）
+.venv\Scripts\pyinstaller.exe webai2api-lite.spec --noconfirm --distpath dist-lite --workpath build-lite
+& "C:\Users\<你>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer\webai2api-lite.iss
 ```
 
 `/XD data` 是关键：否则新包里的空 `data` 会盖掉账号库与授权记录。
+CI 按 tag 后缀自动选版本：推 `vX.Y.Z` → 构建专业版并发 Release；推 `vX.Y.Z-lite` → 客户版。
 
-**客户版（`lite`）**
+### 发版前冒烟测试（必跑）
 
 ```powershell
-# 方式一：直接切分支（产物未被跟踪，必须 -f）
-git checkout -f lite
-# 方式二：不动主工作区，用 worktree
-git worktree add ..\webai2api-lite-wt lite
-
-.venv\Scripts\pyinstaller.exe webai2api-lite.spec --noconfirm --distpath dist-lite --workpath build-lite
-& "C:\Users\<你>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer\webai2api-lite.iss
-# 产物：dist-installer\webai2api-lite-setup-x.y.z.exe
+.venv\Scripts\python.exe scripts\smoke_test.py
 ```
 
-交付包放 `dist-delivery\webai2api-客户版-交付包\`：安装包 + `使用说明.txt`，整体打 zip 发客户。
-
-### 切分支的坑
-
-- `build-lite\`、`dist-lite\`、`dist-installer\`、`dist-delivery\`、`edition.txt`、`tools\` 等未跟踪产物会让普通 `git checkout` 失败 → 一律 `git checkout -f <branch>`。
-- **禁止 `git stash` 跨分支 pop**（两分支同名文件必冲突，解不干净）。
-- **禁止 `git clean -fdx webai2api`**（会把源码一起删掉）。
-- 两分支 `.gitignore` 不同（lite 额外忽略 `tools/private_key.txt`、`tools/public_key.txt`、`edition.txt`、`dist-lite/`、`build-lite/`、`dist-installer/`）；在 main 上看到这些文件要手工确认**不入库**。
+对本地实例逐个验证四家平台：最小对话 + 完整工具链（真实执行文件写入、回填结果、继续对话）。
+任一平台失败退出码为 1。Key 自动从本机开发端数据库读取，也可用 `--key` 指定。
 
 ### 授权体系简表
 
