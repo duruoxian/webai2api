@@ -343,7 +343,10 @@ class _ReplyState:
                 if op == "append" and mask.endswith(".content"):
                     store[bid] = store.get(bid, "") + content
                 elif op == "set":
-                    store[bid] = content
+                    # 块快照整段重写（可能变短）：冻结只增不减——回退会让
+                    # 流式 prefix-diff 错位咬字（同 GLM parts 重写病）
+                    old = store.get(bid, "")
+                    store[bid] = content if len(content) >= len(old) else old
                 elif content:
                     store[bid] = store.get(bid, "") + content
         if "done" in obj:

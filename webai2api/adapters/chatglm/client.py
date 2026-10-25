@@ -297,36 +297,100 @@ def _usage(payload: dict, text: str) -> dict:
     return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
 
 
+def _render_part(part: dict, is_silent: bool = False) -> tuple[str, str]:
+    """渲染单个 part 的 (text, reasoning)。item 语义与旧 _extract_parts 一致。"""
+    text = ""
+    reasoning = ""
+    content = part.get("content")
+    if not isinstance(content, list):
+        return text, reasoning
+    status = part.get("status")
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        t = item.get("type")
+        if t == "text":
+            text += item.get("text") or ""
+        elif t == "think" and not is_silent:
+            reasoning += item.get("think") or ""
+        elif t == "code":
+            code = item.get("code") or ""
+            text += "```python\n" + code + ("\n```\n" if status == "finish" else "")
+        elif t == "execution_output" and isinstance(item.get("content"), str) and status == "finish":
+            text += item["content"] + "\n"
+        elif t == "image" and isinstance(item.get("image"), list) and status == "finish":
+            for img in item["image"]:
+                u = img.get("image_url") if isinstance(img, dict) else None
+                if isinstance(u, str) and (u.startswith("http://") or u.startswith("https://")):
+                    text += f"![图像]({u})"
+            text += "\n"
+    return text, reasoning
+
+
 def _extract_parts(parts: list, is_silent: bool = False) -> tuple[str, str]:
+    """（保留兼容）按到达序一次性渲染 parts 快照。流式路径请用 _GlmParts。"""
     text = ""
     reasoning = ""
     for part in parts:
         if not isinstance(part, dict):
             continue
-        content = part.get("content")
-        if not isinstance(content, list):
-            continue
-        status = part.get("status")
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            t = item.get("type")
-            if t == "text":
-                text += item.get("text") or ""
-            elif t == "think" and not is_silent:
-                reasoning += item.get("think") or ""
-            elif t == "code":
-                code = item.get("code") or ""
-                text += "```python\n" + code + ("\n```\n" if status == "finish" else "")
-            elif t == "execution_output" and isinstance(item.get("content"), str) and status == "finish":
-                text += item["content"] + "\n"
-            elif t == "image" and isinstance(item.get("image"), list) and status == "finish":
-                for img in item["image"]:
-                    u = img.get("image_url") if isinstance(img, dict) else None
-                    if isinstance(u, str) and (u.startswith("http://") or u.startswith("https://")):
-                        text += f"![图像]({u})"
-                text += "\n"
+        t, r = _render_part(part, is_silent)
+        text += t
+        reasoning += r
     return text, reasoning
+
+
+class _GlmParts:
+    """智谱 parts 累积器（机制移植自 glm2api 的 GLMEventAccumulator）。
+
+    上游 SSE 每帧带 parts 数组：同一 part（logic_id 相同）重复出现时携带
+    **全量快照**（内容增长、甚至整段重写），且多 part 会交错/乱序到达。
+    按到达序盲拼快照 = 输出咬字交错（实测「上—你是里的编写你本。后到do早
+    之前楼or」）。这里按 logic_id 逐 part 累积：
+
+    - 每 part 只保留「历史最长版本」——快照整段重写/缩短时不回退，宁旧勿错；
+    - 产出**单调增长的全量文本**：part 按首见顺序用空行拼接，与流式
+      prefix-diff 链（ToolStreamBuffer / RepeatGuard / sent_text）完全兼容。
+    """
+
+    def __init__(self, is_silent: bool = False) -> None:
+        self._is_silent = is_silent
+        self._snapshots: dict[str, dict] = {}   # logic_id -> 最新快照
+        self._order: list[str] = []             # part 首见顺序
+        self._frozen_text: dict[str, str] = {}  # logic_id -> 冻结正文
+        self._frozen_think: dict[str, str] = {} # logic_id -> 冻结思考
+        self.text = ""                          # 全量正文（单调增长）
+        self.reasoning = ""                     # 全量思考（单调增长）
+
+    def consume(self, parts) -> None:
+        """喂入一帧的 parts 数组，更新累积快照与全量文本。"""
+        if not isinstance(parts, list):
+            return
+        changed = False
+        for idx, part in enumerate(parts):
+            if not isinstance(part, dict):
+                continue
+            # 无 logic_id 的 part 按出现位置给稳定假 id
+            lid = str(part.get("logic_id") or f"\x00anon:{len(self._order)}:{idx}")
+            if lid not in self._snapshots:
+                self._order.append(lid)
+                self._frozen_text[lid] = ""
+                self._frozen_think[lid] = ""
+            self._snapshots[lid] = part
+
+            text, reasoning = _render_part(part, self._is_silent)
+            ft, fr = self._frozen_text[lid], self._frozen_think[lid]
+            if len(text) >= len(ft) and text != ft:
+                self._frozen_text[lid] = text
+                changed = True
+            if len(reasoning) >= len(fr) and reasoning != fr:
+                self._frozen_think[lid] = reasoning
+                changed = True
+        if changed:
+            self.text = "\n\n".join(
+                self._frozen_text[lid] for lid in self._order if self._frozen_text[lid])
+            self.reasoning = "\n\n".join(
+                self._frozen_think[lid] for lid in self._order if self._frozen_think[lid])
 
 
 class ChatGlmWebClient:
@@ -788,7 +852,7 @@ class ChatGlmWebClient:
             self.config.request_timeout,
         )
         conv_id = ""
-        parts_cache: list = []
+        acc = _GlmParts(is_silent)
         try:
             for event in self._iter_events(resp):
                 if not isinstance(event, dict):
@@ -797,11 +861,10 @@ class ChatGlmWebClient:
                     conv_id = event["conversation_id"]
                 status = event.get("status")
                 if isinstance(event.get("parts"), list):
-                    parts_cache = event["parts"]
+                    acc.consume(event["parts"])
                 if status == "finish":
                     break
-                text, reasoning = _extract_parts(parts_cache, is_silent)
-                yield {"text": text, "reasoning": reasoning, "conv_id": conv_id}
+                yield {"text": acc.text, "reasoning": acc.reasoning, "conv_id": conv_id}
         finally:
             try:
                 resp.read()
@@ -812,7 +875,7 @@ class ChatGlmWebClient:
             except Exception:
                 pass
 
-        text, reasoning = _extract_parts(parts_cache, is_silent)
+        text, reasoning = acc.text, acc.reasoning
         if conv_id:
             if self.config.session_cache_enabled:
                 self._store_conv(conv_key, conv_id)
