@@ -146,6 +146,16 @@ def anthropic_to_openai(body: dict) -> dict:
     return out
 
 
+def _fake_signature() -> str:
+    """thinking 块的合成签名（不透明占位符）。
+
+    Anthropic 官方 thinking 块必带 signature 字段，Claude 系客户端依赖
+    它存在。我们的思考来自网页模型，没有真实签名——生成无意义占位符
+    （做法与 Qwen2API 一致），保证客户端兼容性。
+    """
+    return f"webai2api_{uuid.uuid4().hex}"
+
+
 def openai_to_anthropic(resp: dict, model: str = "") -> dict:
     """OpenAI 非流式响应 → Anthropic message 对象。"""
     choices = resp.get("choices") or []
@@ -154,7 +164,8 @@ def openai_to_anthropic(resp: dict, model: str = "") -> dict:
     content_blocks: list = []
     reasoning = msg.get("reasoning_content")
     if reasoning:
-        content_blocks.append({"type": "thinking", "thinking": reasoning})
+        content_blocks.append({"type": "thinking", "thinking": reasoning,
+                               "signature": _fake_signature()})
     text = msg.get("content")
     if text:
         content_blocks.append({"type": "text", "text": text})
@@ -249,6 +260,10 @@ class AnthropicStreamTranslator:
         if self._type == want:
             return out
         if self._type is not None:
+            if self._type == "thinking":
+                # thinking 块闭合前必须发 signature_delta（Claude 系客户端依赖）
+                out.append(self._delta({
+                    "type": "signature_delta", "signature": _fake_signature()}))
             out.append(_sse("content_block_stop", {
                 "type": "content_block_stop", "index": self._index}))
         self._index += 1
@@ -324,6 +339,9 @@ class AnthropicStreamTranslator:
             return []
         events = self._start_events()
         if self._type is not None:
+            if self._type == "thinking":
+                events.append(self._delta({
+                    "type": "signature_delta", "signature": _fake_signature()}))
             events.append(_sse("content_block_stop", {
                 "type": "content_block_stop", "index": self._index}))
             self._type = None

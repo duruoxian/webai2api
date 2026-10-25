@@ -9,7 +9,7 @@ OpenAI 兼容 API**，自带中文管理面板 😃
 |---|---|
 | 🌳 **四平台一家亲** | DeepSeek 🐋 / 智谱清言 ✨ / Kimi 🌙 / 通义千问 🦚 —— 十个模型随便挑 |
 | 👀 **看得见的管理** | 中文面板：账号、Key、用量、授权，一切尽在眼底 |
-| 🐒 **真的会干活** | 四平台全部支持工具调用——opencode 接进来能读写文件、跑命令、写文档 |
+| 🐒 **真的会干活** | 四平台全部支持工具调用——opencode / Claude Code / ZCode 接进来能读写文件、跑命令、写文档 |
 | 🛡️ **自己的数据自己守** | 全程本机运行，账号凭证不上传任何第三方 ♥️ |
 | 🌕 **开箱即用** | Windows 免装 Python，解压双击就跑；客户版带离线授权 |
 
@@ -41,6 +41,7 @@ OpenAI 兼容 API**，自带中文管理面板 😃
 | 用量统计 | 每个模型、每个账号、每个 Key 的输入/输出 token 明细 |
 | 中文面板 | 浏览器打开 `/admin` 可视化操作（单文件面板 `webai2api/web/index.html`） |
 | OpenAI 兼容 | `POST /v1/chat/completions`、`GET /v1/models`，支持流式 |
+| Anthropic 兼容 🆕 | `POST /v1/messages`（含工具调用与流式事件）——Claude Code / ZCode 等原生客户端直接接入 |
 
 > 两个版本出自**同一份代码**（v0.1.26 起单代码库）：专业版 **Pro**（`127.0.0.1:8800`，带授权签发卡）、客户版 **Lite**（`127.0.0.1:8802`，授权卡激活制，Inno Setup 安装包）。
 > 构建与发布流程见下方「双版本构建」。
@@ -113,6 +114,15 @@ copy(JSON.stringify({
 
 - **Base URL**：`http://127.0.0.1:8800/v1`
 - **API Key**：你生成的 `sk-...`
+
+**Anthropic 原生客户端（Claude Code / ZCode 等）** 也能直接接——
+webai2api 提供 `/v1/messages` 端点（含工具调用与流式）：
+
+- **ANTHROPIC_BASE_URL**：`http://127.0.0.1:8800`
+- **ANTHROPIC_AUTH_TOKEN**（或 ANTHROPIC_API_KEY）：你生成的 `sk-...`
+- **模型**：与上表相同；以 Claude Code 为例：
+  `claude -p "你好" --model webai2api/GLM-5.3-Flash`
+  （或在 `~/.claude/settings.json` 里配置 env 后正常启动）
 - **模型**：`deepseek-chat` / `deepseek-reasoner` / `GLM-5.3` / `GLM-5.3-Flash` / `kimi-k3` / `kimi-k2.8` / `kimi-k2.6` / `qwen3.7-plus` / `qwen3.8-max` / `qwen3.8-omni-flash`
 
 > ⚠️ `qwen3.8-max` 目前为**实验性**：网页反代下稳定性差（偶发语序混乱、逻辑不连贯，属模型自身问题，适配层无法修复）。对输出质量有要求时建议用 `qwen3.7-plus`。

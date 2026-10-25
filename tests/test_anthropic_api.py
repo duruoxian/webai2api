@@ -122,7 +122,9 @@ def test_response_translation_text_and_thinking():
     out = openai_to_anthropic(oai, "GLM-5.3-Flash")
     assert out["type"] == "message" and out["role"] == "assistant"
     assert out["stop_reason"] == "end_turn"
-    assert out["content"][0] == {"type": "thinking", "thinking": "想了一下"}
+    assert out["content"][0]["type"] == "thinking"
+    assert out["content"][0]["thinking"] == "想了一下"
+    assert out["content"][0]["signature"].startswith("webai2api_")
     assert out["content"][1] == {"type": "text", "text": "你好"}
     assert out["usage"] == {"input_tokens": 10, "output_tokens": 5}
 
@@ -162,7 +164,8 @@ def test_stream_event_sequence_text_only():
     assert typed[0][0] == "message_start"
     deltas = [d["delta"]["type"] for _, d in typed
               if d.get("type") == "content_block_delta"]
-    assert deltas == ["thinking_delta", "text_delta"]
+    # thinking 闭合前必须带 signature_delta（Claude 系客户端依赖）
+    assert deltas == ["thinking_delta", "signature_delta", "text_delta"]
     md = [d for _, d in typed if d.get("type") == "message_delta"][0]
     assert md["delta"]["stop_reason"] == "end_turn"
     assert md["usage"] == {"input_tokens": 3, "output_tokens": 4}
