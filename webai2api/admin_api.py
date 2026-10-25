@@ -850,18 +850,27 @@ def _issuer_available() -> bool:
 
 
 def _license_info() -> dict:
-    """授权信息。客户版会校验；专业版只决定是否显示签发卡。"""
+    """授权信息。客户版会校验；专业版只决定是否显示签发卡。
+
+    异常兜底也尽量带上 machine：面板授权卡永不隐藏（前端兜底），
+    机器码是用户找作者签码的凭据，任何情况下都不该缺席。
+    """
     issuer_ok = _issuer_available()
+    try:
+        from .license import machine_code as _mc
+        machine = _mc()
+    except Exception:
+        machine = ""
     try:
         from .edition import is_lite
         if not is_lite():
-            return {"enabled": False, "issuer": issuer_ok}
+            return {"enabled": False, "issuer": issuer_ok, "machine": machine}
         from .license import status
         from .paths import user_data_dir
         st = status(user_data_dir(), store=None)
         return {"enabled": True, "issuer": issuer_ok, **st}
     except Exception:
-        return {"enabled": False, "issuer": issuer_ok}
+        return {"enabled": False, "issuer": issuer_ok, "machine": machine}
 
 
 def _issuer_read_log() -> list[dict]:
