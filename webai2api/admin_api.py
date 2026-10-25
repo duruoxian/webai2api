@@ -112,6 +112,9 @@ def _range_window(range_key: str, start: str = "", end: str = "") -> tuple[float
 
 
 def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, logger: Logger) -> APIRouter:
+    # 函数内创建 router（遮蔽模块级单例）：模块级 router 在多个 app 实例
+    # 共存时（测试/热重载）闭包捕获旧 store，先注册先匹配 → 泄漏
+    router = APIRouter(prefix="/admin/api")
     toks = _TOKENS
 
     def _guard(request: Request):

@@ -31,6 +31,13 @@ from .store import Store
 router = APIRouter()
 
 
+def _fresh_router() -> "APIRouter":
+    """每次 build_app 都用全新 router：模块级单例在多个 app 实例共存时
+    （测试/热重载）会让旧路由的闭包捕获旧 registry，先注册先匹配，
+    新 app 的请求全部落到旧闭包上（测试实测的 pick 泄漏）。"""
+    return APIRouter()
+
+
 def _clean_key(raw: str) -> str:
     """容忍客户端常见的多余格式：引号、重复 Bearer、首尾空白。"""
     v = (raw or "").strip()
@@ -335,6 +342,7 @@ MAX_ACCOUNT_TRIES = 5
 
 
 def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logger) -> APIRouter:
+    router = _fresh_router()
     @router.get("/v1/models")
     async def list_models(request: Request):
         key = _extract_api_key(request)
@@ -632,6 +640,96 @@ def create_gateway_router(store: Store, registry: ProviderRegistry, logger: Logg
                         pass
 
         return StreamingResponse(gen(), media_type="text/event-stream")
+
+    # ── Anthropic Messages 协议（Claude Code / ZCode 等客户端）────
+    @router.post("/v1/messages")
+    async def anthropic_messages(request: Request):
+        """Anthropic /v1/messages 端点：入口翻译成内部 OpenAI 形状后
+        复用 /v1/chat/completions 的完整链路（鉴权/额度/选号/重试/用量），
+        响应与非流式/流式输出再翻译回 Anthropic 格式。"""
+        from .anthropic_adapter import (
+            AnthropicStreamTranslator,
+            anthropic_error,
+            anthropic_to_openai,
+            openai_error_to_anthropic,
+            openai_to_anthropic,
+        )
+
+        # Anthropic 用 x-api-key 鉴权（_extract_api_key 已兼容），同时
+        # 接受 Authorization Bearer——两种客户端习惯都照顾。
+        if not _extract_api_key(request):
+            status, content = anthropic_error(
+                401, "authentication_error", "缺少或无效的 API Key")
+            return JSONResponse(status_code=status, content=content)
+
+        try:
+            abody = await request.json()
+        except Exception:
+            status, content = anthropic_error(400, "invalid_request_error",
+                                              "请求体不是合法 JSON")
+            return JSONResponse(status_code=status, content=content)
+        if not isinstance(abody, dict) or not abody.get("messages"):
+            status, content = anthropic_error(400, "invalid_request_error",
+                                              "缺少 messages 字段")
+            return JSONResponse(status_code=status, content=content)
+
+        payload = anthropic_to_openai(abody)
+        payload["_wapi_key_id"] = ""  # 占位：chat_completions 会写入真实值
+        model = payload.get("model") or DEFAULT_MODEL
+        want_stream = bool(payload.get("stream"))
+
+        # 复用 OpenAI 端点的全部链路：把转换后的 payload 塞回 request，
+        # chat_completions 内部 request.json() 读到的即是内部形状。
+        request._body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        resp = await chat_completions(request)
+
+        # 错误（鉴权/额度/选号/上游）统一转 Anthropic 错误格式
+        if resp.status_code != 200:
+            try:
+                data = json.loads(resp.body)
+            except Exception:
+                data = {}
+            oai = data.get("error") or {}
+            err_type = str(oai.get("type") or "api_error")
+            if resp.status_code == 401:
+                err_type = "authentication_error"
+            elif resp.status_code == 429:
+                err_type = "rate_limit_error"
+            elif resp.status_code == 403:
+                err_type = "permission_error"
+            elif err_type == "upstream_error":
+                err_type = "api_error"
+            aerr = anthropic_error(
+                resp.status_code, err_type,
+                str(oai.get("message") or "上游错误"))
+            return JSONResponse(status_code=aerr[0], content=aerr[1])
+
+        if not want_stream:
+            data = json.loads(resp.body)
+            return JSONResponse(openai_to_anthropic(data, model))
+
+        # 流式：把 OpenAI SSE 块流翻译成 Anthropic 事件流
+        async def agen():
+            tr = AnthropicStreamTranslator(model)
+            async for chunk in resp.body_iterator:
+                line = chunk if isinstance(chunk, str) else chunk.decode(
+                    "utf-8", "replace")
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                body_txt = line[5:].strip()
+                if not body_txt or body_txt == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(body_txt)
+                except Exception:
+                    continue
+                for ev in tr.feed(obj):
+                    yield ev
+            for ev in tr.finish():
+                yield ev
+
+        return StreamingResponse(agen(), media_type="text/event-stream")
 
     return router
 

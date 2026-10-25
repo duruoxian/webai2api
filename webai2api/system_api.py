@@ -78,6 +78,9 @@ def create_system_router(store: Store, logger: Logger) -> APIRouter:
     # 复用管理端 token：延迟导入避免循环依赖
     from .admin_api import _TOKENS
 
+    # 函数内创建 router（遮蔽模块级单例），理由同 admin_api
+    router = APIRouter(prefix="/admin/api")
+
     def _guard(request: Request):
         from fastapi.responses import JSONResponse
 
