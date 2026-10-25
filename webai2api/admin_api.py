@@ -250,9 +250,9 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                 "kimi_session_cache": await run_in_threadpool(
                     store.get_setting, "kimi_session_cache", "true"),
                 "kimi_context_limit": await run_in_threadpool(
-                    store.get_setting, "kimi_context_limit", "1000000"),
+                    store.get_setting, "kimi_context_limit", "262144"),
                 "kimi_output_limit": await run_in_threadpool(
-                    store.get_setting, "kimi_output_limit", "65536"),
+                    store.get_setting, "kimi_output_limit", "32768"),
                 "qwen_base_url": await run_in_threadpool(
                     store.get_setting, "qwen_base_url", "https://chat.qwen.ai"),
                 "qwen_default_model": await run_in_threadpool(
@@ -268,7 +268,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                 "qwen_session_cache": await run_in_threadpool(
                     store.get_setting, "qwen_session_cache", "true"),
                 "qwen_context_limit": await run_in_threadpool(
-                    store.get_setting, "qwen_context_limit", "1000000"),
+                    store.get_setting, "qwen_context_limit", "262144"),
                 "qwen_output_limit": await run_in_threadpool(
                     store.get_setting, "qwen_output_limit", "65536"),
                 "admin_password": "******",
