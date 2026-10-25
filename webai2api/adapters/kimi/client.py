@@ -471,22 +471,12 @@ class KimiWebClient:
                 self._persist_conv(force=True)
 
     def _conv_key(self, payload: dict) -> str:
-        """稳定会话指纹：system + 首条 user + model + key_id。带 key_id 做租户隔离。"""
-        msgs = payload.get("messages") or []
-        first = ""
-        system = ""
-        for m in msgs:
-            if not isinstance(m, dict):
-                continue
-            role = m.get("role")
-            text = _text_of(m)
-            if role == "system" and not system:
-                system = text
-            elif role == "user" and not first:
-                first = text
-        raw = (f"{system[:200]}\x00{first[:500]}\x00"
-               f"{payload.get('model') or ''}\x00{payload.get('_wapi_key_id') or ''}")
-        return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
+        """会话指纹（tool_bridge.conv_fingerprint）：system + 首条 user +
+        首条 assistant 指纹 + model + key_id。首条 assistant 防跨会话串台
+        （不同会话 system/开场白可能相同，模型回复几乎必然不同）。"""
+        return tool_bridge.conv_fingerprint(
+            payload.get("messages") or [], payload.get("model") or "",
+            payload.get("_wapi_key_id") or "")
 
     def _cached_conv(self, key: str) -> str:
         if not self.config.session_cache_enabled:
@@ -935,8 +925,19 @@ class KimiWebClient:
             self._resolved_models[model] = (internal, scenario)
             chat_id = state.chat_id or cached
             if chat_id and self.config.session_cache_enabled:
+                # store key 必须与客户端多轮回传时的查询 key 一致：
+                # 把本轮 assistant（解析后的调用或文本）追加进历史再算指纹
+                reply = state.text_value()
+                calls = _parse_tool_calls(reply, payload.get("tools") or [])
+                asst = {"role": "assistant",
+                        "content": None if calls else reply,
+                        "tool_calls": calls or None}
+                store_key = tool_bridge.conv_fingerprint(
+                    (payload.get("messages") or []) + [asst],
+                    payload.get("model") or "",
+                    payload.get("_wapi_key_id") or "")
                 self._store_conv(
-                    conv_key, chat_id,
+                    store_key, chat_id,
                     state.assistant_message_id or state.last_message_id)
             yield {
                 "__done__": True,
@@ -1135,7 +1136,7 @@ class KimiWebClient:
         # 普通回答：放出缓冲器扣住的尾巴（标记被拆包也没关系），
         # 再做空正文兜底——思考里就是答案时补发 content
         if buf is not None:
-            tail = buf.flush()
+            tail = _strip_tool_block(buf.flush())
             if tail:
                 out_r, out_c = rs.feed("", tail)
                 if out_r:

@@ -259,7 +259,7 @@ def test_qwen_end_to_end(mock_server):
     # 首轮（无 assistant）必须新建会话——首轮指纹常与旧会话相同，复用会串上下文
     p_multi = _payload(); p_multi["model"] = "qwen3.7-plus"
     p_multi["messages"] = p_multi["messages"] + [
-        {"role": "assistant", "content": "我是千问。"},
+        {"role": "assistant", "content": "你好，我是千问。"},
         {"role": "user", "content": "继续"},
     ]
     c.chat_completion(p_multi)
@@ -310,7 +310,7 @@ def test_qwen_relay_client(mock_server, tmp_path, monkeypatch):
     p2 = _payload(); p2["model"] = "qwen3.7-plus"
     p2["messages"] = [
         {"role": "user", "content": "你好"},
-        {"role": "assistant", "content": "我是千问。"},
+        {"role": "assistant", "content": "你好，我是千问。"},
         {"role": "user", "content": "继续"},
     ]
     c.chat_completion(p2)

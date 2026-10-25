@@ -470,23 +470,10 @@ class ChatGlmWebClient:
                 self._persist_conv(force=True)
 
     def _conv_key(self, payload: dict) -> str:
-        """稳定会话指纹：system + 首条 user + model + key_id。
-
-        不随轮次/工具轮变化，避免每轮新建上游会话；带 key_id 做租户隔离。
-        """
-        msgs = payload.get("messages") or []
-        first = ""
-        system = ""
-        for m in msgs:
-            role = m.get("role")
-            text = _text_of(m)
-            if role == "system" and not system:
-                system = text
-            elif role == "user" and not first:
-                first = text
-        raw = (f"{system[:200]}\x00{first[:500]}\x00"
-               f"{payload.get('model') or ''}\x00{payload.get('_wapi_key_id') or ''}")
-        return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
+        """会话指纹（tool_bridge.conv_fingerprint），首条 assistant 防串台。"""
+        return tool_bridge.conv_fingerprint(
+            payload.get("messages") or [], payload.get("model") or "",
+            payload.get("_wapi_key_id") or "")
 
     def _cached_conv(self, key: str) -> str:
         if not self.config.session_cache_enabled:
@@ -858,7 +845,16 @@ class ChatGlmWebClient:
         text, reasoning = acc.text, acc.reasoning
         if conv_id:
             if self.config.session_cache_enabled:
-                self._store_conv(conv_key, conv_id)
+                # store key 与客户端多轮回传的查询 key 一致（含本轮 assistant 指纹）
+                calls = _parse_tool_calls(text, payload.get("tools") or [])
+                asst = {"role": "assistant",
+                        "content": None if calls else text,
+                        "tool_calls": calls or None}
+                store_key = tool_bridge.conv_fingerprint(
+                    (payload.get("messages") or []) + [asst],
+                    payload.get("model") or "",
+                    payload.get("_wapi_key_id") or "")
+                self._store_conv(store_key, conv_id)
             elif self.config.delete_conversation:
                 self._delete_conversation(conv_id, token)
         yield {"__done__": True, "text": text, "reasoning": reasoning, "conv_id": conv_id}

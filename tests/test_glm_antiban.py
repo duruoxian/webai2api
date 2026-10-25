@@ -70,16 +70,22 @@ def test_conv_key_stable_across_turns_and_isolated() -> None:
     t2 = [system, u1, {"role": "assistant", "content": "好"},
           {"role": "user", "content": "继续"}]
 
+    twin2 = [system, u1, {"role": "assistant", "content": "不同的回复"},
+             {"role": "user", "content": "继续"}]
     k1 = c._conv_key({"model": "GLM-5.3", "messages": [system, u1],
                       "_wapi_key_id": "key-A"})
     k2 = c._conv_key({"model": "GLM-5.3", "messages": t2, "_wapi_key_id": "key-A"})
     k3 = c._conv_key({"model": "GLM-5.3", "messages": t2, "_wapi_key_id": "key-B"})
     k4 = c._conv_key({"model": "GLM-5.3-Flash", "messages": t2,
                       "_wapi_key_id": "key-A"})
+    k5 = c._conv_key({"model": "GLM-5.3", "messages": twin2,
+                      "_wapi_key_id": "key-A"})
 
-    assert k1 == k2            # 多轮复用同一会话
-    assert k3 != k1            # 不同 Key 隔离
-    assert k4 != k1            # 不同模型隔离
+    assert k2 == c._conv_key({"model": "GLM-5.3", "messages": t2,
+                              "_wapi_key_id": "key-A"})   # 同对话多轮稳定
+    assert k3 != k2            # 不同 Key 隔离
+    assert k4 != k2            # 不同模型隔离
+    assert k5 != k2            # 关键防线：同开场白不同首轮回复 → 不同会话（防串台）
 
 
 def test_conv_cache_turn_limit_and_ttl() -> None:

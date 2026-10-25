@@ -60,17 +60,28 @@ def _qwen(cfg):
 
 
 def test_conv_key_stable_and_isolated() -> None:
+    """会话指纹：多轮复用靠「首条 assistant 指纹」锚定；不同对话即使
+    system 与开场白完全相同也必须不同（防跨会话串台，实测教训）。"""
     for mk, cfgcls in ((_kimi, KimiConfig), (_qwen, QwenConfig)):
         c = mk(cfgcls(auth_token="t"))
         sys = {"role": "system", "content": "s" * 300}
         u1 = {"role": "user", "content": "第一条"}
-        base = {"model": "m", "messages": [sys, u1], "_wapi_key_id": "kA"}
+        asst1 = {"role": "assistant", "content": "好"}
         turn2 = {"model": "m", "messages": [
-            sys, u1, {"role": "assistant", "content": "好"},
+            sys, u1, asst1, {"role": "user", "content": "继续"}],
+            "_wapi_key_id": "kA"}
+        turn3 = {"model": "m", "messages": [
+            sys, u1, asst1, {"role": "user", "content": "继续"},
+            {"role": "assistant", "content": "好的"},
+            {"role": "user", "content": "再继续"}], "_wapi_key_id": "kA"}
+        assert c._conv_key(turn2) == c._conv_key(turn3)     # 同对话多轮稳定
+        # 关键防线：另一个会话同 system/开场白、但首轮回复不同 → 必须不同 key
+        twin = {"model": "m", "messages": [
+            sys, u1, {"role": "assistant", "content": "别的回复"},
             {"role": "user", "content": "继续"}], "_wapi_key_id": "kA"}
-        assert c._conv_key(base) == c._conv_key(turn2)     # 多轮复用
+        assert c._conv_key(twin) != c._conv_key(turn2)
         other = dict(turn2, _wapi_key_id="kB")
-        assert c._conv_key(other) != c._conv_key(base)      # Key 隔离
+        assert c._conv_key(other) != c._conv_key(turn2)      # Key 隔离
 
 
 def test_conv_cache_persist_and_ttl() -> None:

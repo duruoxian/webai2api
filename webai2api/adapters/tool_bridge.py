@@ -38,12 +38,96 @@ __all__ = [
     "increment_text",
     "parse_tool_calls",
     "strip_tool_markup",
+    "strip_call_json",
     "is_first_turn",
     "is_forced_tool_choice",
     "required_nudge",
+    "assistant_fingerprint",
+    "conv_fingerprint",
     "ToolStreamBuffer",
     "DeltaToolBuffer",
 ]
+
+
+def assistant_fingerprint(msg: dict) -> str:
+    """单条 assistant 消息的规范化指纹（会话 key 的防串台锚点）。
+
+    tool_calls 做 JSON 规范化（解析后重排 key），保证「我们发出的调用」
+    与「客户端历史回传的调用」指纹一致；纯文本回复取正文。
+    """
+    if not isinstance(msg, dict):
+        return ""
+    tc = msg.get("tool_calls")
+    if tc:
+        try:
+            norm = []
+            for c in tc:
+                if isinstance(c, dict):
+                    fn = c.get("function") or {}
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except Exception:
+                        args = fn.get("arguments") or ""
+                    norm.append({"name": fn.get("name") or "",
+                                 "arguments": args})
+            return json.dumps(norm, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            pass
+    return text_of(msg)
+
+
+def conv_fingerprint(messages: list, model: str = "", key_id: str = "") -> str:
+    """客户端会话指纹（会话缓存 key，三家共用）。
+
+    组成：system 前 200 字 + 首条 user 前 500 字 + **首条 assistant 指纹**
+    + model + key_id。首条 assistant 是跨会话串台的关键防线：不同客户端
+    会话的 system 与开场白可能完全相同（实测 opencode 新会话撞了几天前
+    旧会话的上游上下文，模型生成出旧会话的内容），而模型对相同输入的
+    回复几乎必然不同。首轮请求还没有 assistant（指纹不含它 → 必然查不到
+    旧会话 → 新建）；多轮请求带首轮回复原文（客户端历史回传），以此锚定。
+    """
+    import hashlib
+
+    system = first = asst = ""
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role == "system" and not system:
+            system = text_of(m)
+        elif role == "user" and not first:
+            first = text_of(m)
+        elif role == "assistant" and not asst:
+            asst = assistant_fingerprint(m)
+    raw = (f"{system[:200]}\x00{first[:500]}\x00{asst[:200]}\x00"
+           f"{model or ''}\x00{key_id or ''}")
+    return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
+
+
+def strip_call_json(text: str) -> str:
+    """剥掉正文中「调用形态」的裸 JSON（{"name":..,"arguments":..}）。
+
+    网页模型有时输出平台内置工具（如千问的 browser）的调用 JSON——
+    不带协议标记、名字也不在工具清单里，无法转成 tool_calls，原样
+    下发就是用户看到的「正文里一坨 JSON」。调用形态判据：顶层对象
+    同时含 name 与 arguments 键。
+    """
+    if not text or "{" not in text:
+        return text
+    out = text
+    while True:
+        i = out.find('{"name"')
+        if i < 0:
+            break
+        blob = _scan_json_blob(out, i)
+        if not blob:
+            break
+        obj = _loads_loose(blob)
+        if isinstance(obj, dict) and "name" in obj and "arguments" in obj:
+            out = out[:i] + out[i + len(blob):]
+        else:
+            break
+    return out
 
 
 def is_first_turn(messages: list) -> bool:

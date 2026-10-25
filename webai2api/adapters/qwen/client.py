@@ -366,22 +366,10 @@ class QwenWebClient:
                 self._persist_conv(force=True)
 
     def _conv_key(self, payload: dict) -> str:
-        """稳定会话指纹：system + 首条 user + model + key_id。带 key_id 做租户隔离。"""
-        msgs = payload.get("messages") or []
-        first = ""
-        system = ""
-        for m in msgs:
-            if not isinstance(m, dict):
-                continue
-            role = m.get("role")
-            text = _text_of(m)
-            if role == "system" and not system:
-                system = text
-            elif role == "user" and not first:
-                first = text
-        raw = (f"{system[:200]}\x00{first[:500]}\x00"
-               f"{payload.get('model') or ''}\x00{payload.get('_wapi_key_id') or ''}")
-        return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
+        """会话指纹（tool_bridge.conv_fingerprint），首条 assistant 防串台。"""
+        return tool_bridge.conv_fingerprint(
+            payload.get("messages") or [], payload.get("model") or "",
+            payload.get("_wapi_key_id") or "")
 
     def _cached_conv(self, key: str) -> str:
         if not self.config.session_cache_enabled:
@@ -867,7 +855,12 @@ class QwenWebClient:
                 pass
 
         if chat_id and self.config.session_cache_enabled:
-            self._store_conv(conv_key, chat_id, response_id)
+            store_key = tool_bridge.conv_fingerprint(
+                (payload.get("messages") or []) + [
+                    {"role": "assistant", "content": text}],
+                payload.get("model") or "",
+                payload.get("_wapi_key_id") or "")
+            self._store_conv(store_key, chat_id, response_id)
         yield {"__done__": True, "text": text, "reasoning": reasoning,
                "chat_id": chat_id or response_id}
 
@@ -926,7 +919,12 @@ class QwenWebClient:
                 pass
 
         if chat_id and self.config.session_cache_enabled:
-            self._store_conv(conv_key, chat_id)
+            store_key = tool_bridge.conv_fingerprint(
+                (payload.get("messages") or []) + [
+                    {"role": "assistant", "content": text}],
+                payload.get("model") or "",
+                payload.get("_wapi_key_id") or "")
+            self._store_conv(store_key, chat_id)
         yield {"__done__": True, "text": text, "reasoning": reasoning, "chat_id": chat_id}
 
     # ── 对外接口 ───────────────────────────────────────
@@ -1112,8 +1110,11 @@ class QwenWebClient:
             return
 
         if buf is not None:
-            # 没解析出工具调用：把扣住的尾巴放出去（通常为空）
-            tail = buf.flush()
+            # 没解析出工具调用：扣住的尾巴剥掉标记与调用形态 JSON 再放
+            # （白名单外的调用如网页内置 browser，剥掉好过漏给用户）
+            tail = tool_bridge.strip_call_json(
+                tool_bridge.strip_tool_markup(
+                    buf.flush(), tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER))
             if tail:
                 out_r, out_c = rs.feed("", tail)
                 if out_r:
