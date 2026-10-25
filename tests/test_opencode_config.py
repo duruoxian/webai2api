@@ -261,7 +261,27 @@ def test_snippet_glm_variants_and_limits():
     m = block["models"]["GLM-5.3"]
     assert m["capabilities"]["reasoning"] == {"supported": True}
     assert m["limit"] == {"context": 1000000, "output": 128000}
-    assert set(m["variants"]) == {"快速", "深度", "极致"}
+    # opencode V2 schema：variants 是数组，每项 {"id": 档位, "settings": {...}}；
+    # 旧的对象 map 形式 decode 失败，整个 provider 会被静默丢弃
+    assert m["variants"] == [
+        {"id": "快速", "settings": {"reasoningEffort": "low"}},
+        {"id": "深度", "settings": {"reasoningEffort": "medium"}},
+        {"id": "极致", "settings": {"reasoningEffort": "max"}},
+    ]
+
+
+def test_snippet_variants_never_object_form():
+    """防回归：任何模型的 variants 都必须是数组（对象 map 是 0.1.27 迁移事故的根因）。"""
+    snip = api._build_opencode_snippet(
+        "http://127.0.0.1:8802", "k",
+        ["deepseek-chat", "GLM-5.3", "GLM-5.3-Flash", "kimi-k3", "kimi-k2.6",
+         "qwen3.7-plus", "qwen3.8-omni-flash"])
+    block = json.loads("{" + snip + "}")["webai2api"]
+    for mid, m in block["models"].items():
+        if "variants" in m:
+            assert isinstance(m["variants"], list), f"{mid} 的 variants 不是数组"
+            for v in m["variants"]:
+                assert set(v) >= {"id"}, f"{mid} 的 variant 缺 id"
 
 
 def test_snippet_model_id_with_quotes_is_safe():

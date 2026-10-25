@@ -2158,18 +2158,20 @@ function tuneGlass(dark){
       const prov=provOf(m);
       const lim=LIMITS[prov]||LIMITS.deepseek;
       const reason=!(low==='deepseek-chat'||low==='deepseek-v4-flash');
-      let variants='';
-      if(prov==='chatglm'){
-        variants=`,\n      "variants": { "快速": { "reasoningEffort": "low" }, "深度": { "reasoningEffort": "medium" }, "极致": { "reasoningEffort": "max" } }`;
-      }else if(prov==='kimi'){
-        variants=low.includes('k2.6')
-          ? `,\n      "variants": { "标准": { "reasoningEffort": "low" }, "进阶": { "reasoningEffort": "high" } }`
-          : `,\n      "variants": { "标准": { "reasoningEffort": "low" }, "进阶": { "reasoningEffort": "high" }, "极致": { "reasoningEffort": "max" } }`;
-      }else if(prov==='qwen'){
-        variants = low.includes('flash')
-          ? `,\n      "variants": { "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`
-          : `,\n      "variants": { "自动": { "reasoningEffort": "medium" }, "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`;
-      }
+      // V2 variants 是数组（每项 {id, settings}），对象 map 过不了 schema，
+      // 整个 provider 会被 opencode 静默丢弃
+      const tiers = prov==='chatglm' ? [["快速","low"],["深度","medium"],["极致","max"]]
+        : prov==='kimi' ? (low.includes('k2.6')
+          ? [["标准","low"],["进阶","high"]]
+          : [["标准","low"],["进阶","high"],["极致","max"]])
+        : prov==='qwen' ? (low.includes('flash')
+          ? [["思考","high"],["快速","low"]]
+          : [["自动","medium"],["思考","high"],["快速","low"]])
+        : null;
+      const variants = tiers
+        ? `,
+      "variants": [${tiers.map(([id,eff])=>`{ "id": ${JSON.stringify(id)}, "settings": { "reasoningEffort": "${eff}" } }`).join(", ")}]`
+        : '';
       lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)},\n`
         +`      "capabilities": { "input": ["image","text"], "output": ["text"],\n`
         +`        "reasoning": { "supported": ${reason} } },\n`

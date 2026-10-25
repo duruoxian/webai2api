@@ -1209,7 +1209,9 @@ def _build_opencode_snippet(host: str, key: str, models: list[str]) -> str:
 
     V2（opencode ≥2.x）与 V1 的差异：顶层键 providers；供应商用
     package（@opencode/ai/providers/openai-compatible）与 settings；
-    模型能力用 capabilities（reasoning 是对象）；variants 推理档位沿用。
+    模型能力用 capabilities（reasoning 是对象）；variants 是**数组**
+    （每项 {"id": 档位名, "settings": {...}}）——对象 map 形式过不了
+    V2 schema，整个 provider 会被静默丢弃（0.1.27 迁移时踩过）。
     """
     lines = []
     for m in models:
@@ -1221,29 +1223,24 @@ def _build_opencode_snippet(host: str, key: str, models: list[str]) -> str:
         reasoning = "false" if low in ("deepseek-chat", "deepseek-v4-flash") else "true"
         lim = DEFAULT_LIMITS.get(prov, DEFAULT_LIMITS["deepseek"])
         ctx, out = lim["context"], lim["output"]
-        variants = ""
+        tiers: list[tuple[str, str]] = []
         if prov == "chatglm":
-            variants = (',\n      "variants": { "快速": { "reasoningEffort": "low" }, '
-                        '"深度": { "reasoningEffort": "medium" }, '
-                        '"极致": { "reasoningEffort": "max" } }')
+            tiers = [("快速", "low"), ("深度", "medium"), ("极致", "max")]
         elif prov == "kimi":
             # Kimi 三档：标准 / 进阶 / 极致；K2.6（快速模型）无极致档
-            if "k2.6" in low:
-                variants = (',\n      "variants": { "标准": { "reasoningEffort": "low" }, '
-                            '"进阶": { "reasoningEffort": "high" } }')
-            else:
-                variants = (',\n      "variants": { "标准": { "reasoningEffort": "low" }, '
-                            '"进阶": { "reasoningEffort": "high" }, '
-                            '"极致": { "reasoningEffort": "max" } }')
+            tiers = ([("标准", "low"), ("进阶", "high")] if "k2.6" in low
+                     else [("标准", "low"), ("进阶", "high"), ("极致", "max")])
         elif prov == "qwen":
             # Plus / Max：自动 / 思考 / 快速；Omni-Flash：只有 思考 / 快速
-            if "flash" in low:
-                variants = (',\n      "variants": { "思考": { "reasoningEffort": "high" }, '
-                            '"快速": { "reasoningEffort": "low" } }')
-            else:
-                variants = (',\n      "variants": { "自动": { "reasoningEffort": "medium" }, '
-                            '"思考": { "reasoningEffort": "high" }, '
-                            '"快速": { "reasoningEffort": "low" } }')
+            tiers = ([("思考", "high"), ("快速", "low")] if "flash" in low
+                     else [("自动", "medium"), ("思考", "high"), ("快速", "low")])
+        variants = ""
+        if tiers:
+            items = ", ".join(
+                f'{{ "id": {json.dumps(t, ensure_ascii=False)}, '
+                f'"settings": {{ "reasoningEffort": "{effort}" }} }}'
+                for t, effort in tiers)
+            variants = f',\n      "variants": [{items}]'
         lines.append(
             f'    {jmid}: {{ "name": {jmid},\n'
             f'      "capabilities": {{ "input": ["image","text"], "output": ["text"],\n'

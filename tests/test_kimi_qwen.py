@@ -177,7 +177,8 @@ def test_snippet_variants_by_provider() -> None:
         ["GLM-5.3", "kimi-k3", "kimi-k2.6", "qwen3.7-plus", "qwen3.8-max", "deepseek-chat"])
     assert '"快速"' in snip and '"极致"' in snip               # glm
     assert '"标准"' in snip and '"进阶"' in snip                # kimi 三档命名
-    assert '"极致": { "reasoningEffort": "max" }' in snip      # kimi 非 k2.6 有极致
+    assert '{ "id": "极致", "settings": { "reasoningEffort": "max" } }' in snip  # V2 数组形式
+    assert '"variants": {' not in snip                           # 对象 map 会被 opencode 丢弃
     assert '"思考研究"' not in snip                              # 旧档名已废弃
     assert '"自动"' in snip and '"思考"' in snip and '"快速"' in snip
     assert '"reasoning": { "supported": false }' in snip       # deepseek-chat 非思考
