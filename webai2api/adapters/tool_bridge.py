@@ -38,6 +38,8 @@ __all__ = [
     "increment_text",
     "parse_tool_calls",
     "strip_tool_markup",
+    "is_forced_tool_choice",
+    "required_nudge",
     "ToolStreamBuffer",
 ]
 
@@ -166,28 +168,88 @@ def _loads_loose(raw: str):
     return None
 
 
-def parse_tool_calls(text: str, tools: list, *, tag: str | None = None,
-                     marker: str | None = None, limit: int = 1) -> list:
-    """从模型输出解析工具调用，返回标准 OpenAI tool_calls 结构。
+def _scan_json_blob(text: str, start: int) -> str:
+    """从 start 起找第一个 '{'，做大括号配平扫描，返回完整 {...} 片段。
 
-    - tag:    标签形式 ``<tag>{json}</tag>``（DOTALL，模型最常输出）
-    - marker: 行内标记 ``<marker>{json}``（取该行剩余部分）
-    两者都提供时标签优先、标记兜底。只放行 tools 里声明过的名字；
-    一轮最多返回 limit 个调用（默认 1，网页模型并行调用不可靠）。
+    字符串字面量里的花括号不计入配平；流被截断（没等到配对的 '}'）
+    时返回已见部分，交给 _loads_loose 兜底修复。
     """
-    allowed = tool_names(tools)
-    if not text or not allowed:
-        return []
+    s = text.find("{", start)
+    if s < 0:
+        return ""
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(s, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[s:i + 1]
+    return text[s:]
 
-    blobs: list = []
-    if tag:
-        blobs += re.findall(rf"<{tag}>(.*?)</{tag}>", text, re.S)
-    if marker:
-        for line in text.splitlines():
-            idx = line.find(marker)
-            if idx >= 0:
-                blobs.append(line[idx + len(marker):])
 
+def _marker_blobs(text: str, marker: str) -> list:
+    """收集行内标记后的 JSON 片段：配平扫描，跨行 JSON 也能取全。
+
+    旧实现按行截取，模型把 JSON 写成多行时只能拿到第一个 '{'，
+    整个调用被丢弃后 JSON 又漏进正文——这是 qwen/kimi 实测
+    「工具 JSON 当正文输出」的直接原因。
+    """
+    out: list = []
+    idx = text.find(marker)
+    while idx >= 0:
+        blob = _scan_json_blob(text, idx + len(marker))
+        if blob:
+            out.append(blob)
+        idx = text.find(marker, idx + len(marker))
+    return out
+
+
+def _bare_blobs(text: str, allowed: set) -> list:
+    """裸 JSON 兜底：扫描全文的花括号块，只留长得像调用的。
+
+    判据（两条都要，避免误伤）：
+    - name / tool 键命中 tools 白名单（幻觉名字不放行）；
+    - 必须带 arguments / args 键——模型回显工具定义时内层也有
+      {"name": ...}，但没有 arguments，不算调用。
+    """
+    out: list = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        blob = _scan_json_blob(text, i)
+        if not blob:
+            break
+        obj = _loads_loose(blob)
+        if isinstance(obj, dict):
+            name = obj.get("name") or obj.get("tool") or ""
+            if (name and name in allowed
+                    and ("arguments" in obj or "args" in obj)):
+                out.append(blob)
+                i += len(blob)
+                continue
+        i += 1
+    return out
+
+
+def _build_calls(blobs: list, allowed: set, limit: int) -> list:
+    """把 JSON 片段列表规整成标准 OpenAI tool_calls（白名单放行）。"""
     calls = []
     for raw in blobs:
         obj = _loads_loose(raw)
@@ -209,9 +271,40 @@ def parse_tool_calls(text: str, tools: list, *, tag: str | None = None,
     return calls
 
 
+def parse_tool_calls(text: str, tools: list, *, tag: str | None = None,
+                     marker: str | None = None, limit: int = 1) -> list:
+    """从模型输出解析工具调用，返回标准 OpenAI tool_calls 结构。
+
+    - tag:    标签形式 ``<tag>{json}</tag>``（DOTALL，模型最常输出）
+    - marker: 行内标记 ``<marker>{json}``（配平扫描，支持跨行 JSON）
+    两者都提供时标签优先、标记兜底；都解析不出时再做**裸 JSON 兜底**
+    （模型不带任何标记直接把调用 JSON 写进正文的情形，qwen 全系
+    实测高发）。只放行 tools 里声明过的名字；一轮最多返回 limit 个
+    调用（默认 1，网页模型并行调用不可靠）。
+    """
+    allowed = tool_names(tools)
+    if not text or not allowed:
+        return []
+
+    blobs: list = []
+    if tag:
+        blobs += re.findall(rf"<{tag}>(.*?)</{tag}>", text, re.S)
+    if marker:
+        blobs += _marker_blobs(text, marker)
+
+    calls = _build_calls(blobs, allowed, limit)
+    if calls:
+        return calls
+    return _build_calls(_bare_blobs(text, allowed), allowed, limit)
+
+
 def strip_tool_markup(text: str, *, tag: str | None = None,
                       marker: str | None = None) -> str:
-    """从文本里剥掉工具标记（标签块 / 标记行），用于纯文本回退。"""
+    """从文本里剥掉工具标记（标签块 / 标记 + 其 JSON），用于纯文本回退。
+
+    marker 模式旧实现按行删，多行 JSON 的续行会残留在正文里；
+    现在标记 + 配平出的整个 JSON 片段一起删。
+    """
     if not text:
         return text or ""
     out = text
@@ -219,8 +312,43 @@ def strip_tool_markup(text: str, *, tag: str | None = None,
         # 连同行尾换行一起移除，避免剥完留下一串空行
         out = re.sub(rf"<{tag}>.*?</{tag}>\n?", "", out, flags=re.S)
     if marker:
+        while True:
+            idx = out.find(marker)
+            if idx < 0:
+                break
+            blob = _scan_json_blob(out, idx + len(marker))
+            end = idx + len(marker) + (len(blob) if blob else 0)
+            # 连同紧随的换行一起删，避免剥完留下空行（与 tag 模式一致）
+            if end < len(out) and out[end] == "\n":
+                end += 1
+            out = out[:idx] + out[end:]
         out = "\n".join(ln for ln in out.splitlines() if marker not in ln)
     return out.strip()
+
+
+def is_forced_tool_choice(payload: dict) -> bool:
+    """tool_choice 是否强制调用工具："required" 或指定函数对象。"""
+    tc = payload.get("tool_choice")
+    if tc == "required":
+        return True
+    return isinstance(tc, dict) and (
+        tc.get("type") == "function" or "function" in tc)
+
+
+REQUIRED_NUDGE = (
+    "上一次回复没有调用任何工具，这不符合要求。"
+    "这次必须调用一个工具，不要直接用文字回答，也不要解释。"
+    "只输出一次工具调用，格式严格为：\n{example}")
+
+
+def required_nudge(*, tag: str | None = None, marker: str | None = None) -> str:
+    """tool_choice=required 重试时追加的加强指令（含平台各自的调用示例）。"""
+    if tag:
+        example = f'<{tag}>{{"name":"工具名","arguments":{{"参数名":值}}}}</{tag}>'
+    else:
+        example = (f'{marker or "<<<TOOL_CALL>>>"}'
+                   f'{{"name":"工具名","arguments":{{"参数名":值}}}}')
+    return REQUIRED_NUDGE.format(example=example)
 
 
 class ToolStreamBuffer:

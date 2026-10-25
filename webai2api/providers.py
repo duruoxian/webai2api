@@ -27,6 +27,8 @@ MAX_LIMITS: dict[str, dict[str, int]] = {
 }
 
 # 每个 provider 的默认模型清单（账号侧没配置时的兜底）
+# 注意：qwen3.8-max 在网页反代下稳定性差（实测语序混乱/逻辑不连贯，
+# 模型自身问题，适配层无法修复），标记为实验性；生产用途建议 qwen3.7-plus。
 PROVIDER_MODELS: dict[str, list[str]] = {
     "deepseek": ["deepseek-chat", "deepseek-reasoner"],
     "chatglm": ["GLM-5.3", "GLM-5.3-Flash"],

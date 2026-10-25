@@ -18,7 +18,7 @@ import uuid
 from logging import Logger
 from urllib.parse import urlsplit
 
-from .. import tool_bridge
+from .. import reasoning_bridge, tool_bridge
 from .config import GlmConfig
 
 USER_AGENTS = [
@@ -208,54 +208,74 @@ def _inject_tools(messages: list, tools: list) -> list:
 
 
 def _strip_tool_block(text: str) -> str:
-    """去掉文本里的工具调用标记行。"""
-    if TOOL_MARKER not in text:
-        return text
-    kept = [ln for ln in text.splitlines() if TOOL_MARKER not in ln]
-    return "\n".join(kept).strip()
+    """去掉文本里的工具调用标记（标记 + 其 JSON，跨行也一并删）。"""
+    return tool_bridge.strip_tool_markup(text, marker=TOOL_MARKER)
 
 
 def _parse_tool_calls(text: str, tools: list) -> list:
-    """从模型回复里解析工具调用，返回 OpenAI tool_calls 结构。"""
-    if not text or not tools:
-        return []
-    names = set()
-    for t in tools:
-        if isinstance(t, dict):
-            fn = t.get("function") or t
-            if fn.get("name"):
-                names.add(fn["name"])
-    out = []
-    for line in text.splitlines():
-        idx = line.find(TOOL_MARKER)
-        if idx < 0:
-            continue
-        raw = line[idx + len(TOOL_MARKER):].strip()
-        try:
-            obj = json.loads(raw)
-        except Exception:
-            try:
-                s, e = raw.find("{"), raw.rfind("}")
-                if s < 0 or e <= s:
-                    continue
-                obj = json.loads(raw[s:e + 1])
-            except Exception:
-                continue
-        if not isinstance(obj, dict):
-            continue
-        name = obj.get("name") or obj.get("tool") or ""
-        if not name or (names and name not in names):
-            continue
-        args = obj.get("arguments", obj.get("args", {}))
-        if not isinstance(args, str):
-            args = json.dumps(args, ensure_ascii=False)
-        out.append({
-            "id": f"call_{uuid.uuid4().hex[:16]}",
-            "type": "function",
-            "function": {"name": name, "arguments": args},
-        })
-        break
-    return out
+    """从模型回复里解析工具调用（复用 tool_bridge：配平扫描 + 裸 JSON 兜底）。"""
+    return tool_bridge.parse_tool_calls(text, tools, marker=TOOL_MARKER)
+
+
+# ── 重复输出去重（问题 3：GLM 回复重复两遍）────────────────
+# 智谱上游偶发把整段回答原样输出两遍（第二遍紧跟第一遍）。无论源头是
+# 上游 parts 累积还是模型本身，输出层都能兜住：
+# - 流式 RepeatGuard：新增量若逐字复述已发全文的开头 → 先扣住；
+#   复述完整确认重复就丢弃，中途发散则原样放行（不丢内容）。
+# - 非流式 _dedup_repeated：全文恰好 P+P（P 足够长）时折叠回 P。
+_DUP_MIN_BLOCK = 80
+
+
+def _dedup_repeated(text: str) -> str:
+    """整段「输出两遍」折叠回一遍：去尾空白后恰好 P+P（|P|≥80 字）取 P。"""
+    if not text:
+        return text
+    core = text.rstrip()
+    n = len(core) // 2
+    if n >= _DUP_MIN_BLOCK and core[:n] == core[n:]:
+        return core[:n]
+    return text
+
+
+class RepeatGuard:
+    """流式输出去重守卫：喂入「已放行内容的全文快照」，返回安全前缀。
+
+    只在已放行部分 ≥ _DUP_MIN_BLOCK 时启用扣留；短文本零行为差异。
+    finish() 按保守策略放行扣留残余（截断的复述不算数，不丢内容）。
+    """
+
+    def __init__(self) -> None:
+        self._text = ""      # 已见全文（含扣住部分）
+        self._sent = 0       # 已放行长度
+        self._pending = ""   # 扣住的疑似重复
+        self._armed = True
+
+    def feed(self, text: str) -> str:
+        if not self._armed:
+            return text
+        if self._text and not text.startswith(self._text):
+            # 上游回撤/改写快照（不该发生）：放弃守卫直通
+            self._armed = False
+            self._text, self._sent, self._pending = text, len(text), ""
+            return text
+        self._pending += text[len(self._text):]
+        self._text = text
+        if self._sent < _DUP_MIN_BLOCK:
+            self._sent, self._pending = len(text), ""
+            return text
+        if self._pending and self._pending == text[:len(self._pending)]:
+            # 复述长度追上已放行长度 → 完整重复确认，整段丢弃
+            if len(self._pending) >= self._sent:
+                self._pending = ""
+            return text[:self._sent]
+        # 不再匹配全文开头 → 不是重复，全部放行
+        self._sent, self._pending = len(text), ""
+        return text
+
+    def finish(self) -> str:
+        out, self._pending = self._pending, ""
+        self._sent = len(self._text)
+        return out
 
 
 def _estimate_tokens(text: str) -> int:
@@ -810,6 +830,24 @@ class ChatGlmWebClient:
             self.logger.debug("删除智谱会话失败: %s", exc)
 
     # ── 对外接口 ───────────────────────────────────────
+    def _forced_retry(self, payload: dict, tools: list) -> tuple[str, str, list]:
+        """tool_choice=required 强校验重试：加强指令再问一次（上限 1 次）。"""
+        self.logger.info("GLM tool_choice=required 首轮未调用工具，加强指令重试一次")
+        retry = dict(payload)
+        retry["messages"] = list(payload.get("messages") or []) + [{
+            "role": "user",
+            "content": tool_bridge.required_nudge(marker=TOOL_MARKER),
+        }]
+        text = reasoning = ""
+        for ev in self._stream_events(retry):
+            text, reasoning = ev["text"], ev["reasoning"]
+        calls = _parse_tool_calls(text, tools)
+        if not calls:
+            raise GlmError(
+                "工具调用强校验失败：重试一次后模型仍未按要求调用工具"
+                "（tool_choice=required）")
+        return text, reasoning, calls
+
     def chat_completion(self, payload: dict) -> dict:
         model = payload.get("model") or self.config.default_model
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -818,7 +856,10 @@ class ChatGlmWebClient:
             text, reasoning = ev["text"], ev["reasoning"]
 
         # 若请求带了 tools，尝试从回复里解析工具调用
-        calls = _parse_tool_calls(text, payload.get("tools")) if payload.get("tools") else []
+        tools = payload.get("tools") or []
+        calls = _parse_tool_calls(text, tools) if tools else []
+        if not calls and tools and tool_bridge.is_forced_tool_choice(payload):
+            text, reasoning, calls = self._forced_retry(payload, tools)
         if calls:
             return {
                 "id": completion_id,
@@ -837,6 +878,10 @@ class ChatGlmWebClient:
                 "usage": _usage(payload, text),
             }
 
+        # 整段重复折叠 + 空正文兜底（思考里就是答案时顶上来）
+        content, reasoning = reasoning_bridge.finalize_reasoning(
+            _strip_tool_block(_dedup_repeated(text)), reasoning,
+            legacy=self.config.legacy_reasoning_in_content)
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -844,7 +889,7 @@ class ChatGlmWebClient:
             "model": model,
             "choices": [{
                 "index": 0,
-                "message": {"role": "assistant", "content": text,
+                "message": {"role": "assistant", "content": content,
                             "reasoning_content": reasoning or None},
                 "finish_reason": "stop",
             }],
@@ -869,27 +914,82 @@ class ChatGlmWebClient:
 
         yield chunk({"role": "assistant", "content": ""})
 
+        has_tools = bool(payload.get("tools")) and payload.get("tool_choice") != "none"
+        forced = has_tools and tool_bridge.is_forced_tool_choice(payload)
+
+        # tool_choice=required 强校验模式：不直播，解析失败先重试一次，
+        # 再失败按明确错误返回（直播一段注定作废的正文没有意义）
+        if forced:
+            text = reasoning = ""
+            try:
+                for ev in self._stream_events(payload):
+                    text, reasoning = ev["text"], ev["reasoning"]
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("智谱流式请求失败: %s", exc)
+                err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
+                yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            calls = _parse_tool_calls(text, payload.get("tools"))
+            if not calls:
+                try:
+                    text, reasoning, calls = self._forced_retry(
+                        payload, payload.get("tools") or [])
+                except GlmError as exc:
+                    err = {"error": {"message": str(exc), "type": "tool_required_error"}}
+                    yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+            rs = reasoning_bridge.ReasoningStream(
+                legacy=self.config.legacy_reasoning_in_content)
+            out_r, out_c = rs.feed(reasoning, "")
+            if out_r:
+                yield chunk({"reasoning_content": out_r})
+            if out_c:
+                yield chunk({"content": out_c})
+            tail = rs.close_think()
+            if tail:
+                yield chunk({"content": tail})
+            for i, c in enumerate(calls):
+                yield chunk({
+                    "tool_calls": [{
+                        "index": i,
+                        "id": c["id"],
+                        "type": "function",
+                        "function": c["function"],
+                    }]
+                })
+            yield chunk({}, usage=_usage(payload, text))
+            yield chunk({}, finish="tool_calls")
+            yield "data: [DONE]\n\n"
+            return
+
         # 有工具时扣住标记文本：标记出现前照常流式，出现后扣留等解析，
         # 既不漏 JSON 给客户端，也保住普通回答的流式体验
         buf = tool_bridge.ToolStreamBuffer([TOOL_MARKER]) if has_tools else None
+        guard = RepeatGuard()
         sent_text = ""
         sent_reasoning = ""
+        rel_total = ""   # 已进入守卫的全文快照（缓冲器放行口径）
+        rs = reasoning_bridge.ReasoningStream(
+            legacy=self.config.legacy_reasoning_in_content)
         try:
             for ev in self._stream_events(payload):
-                dr = ev["reasoning"][len(sent_reasoning):]
-                if dr:
+                d_reason = ev["reasoning"][len(sent_reasoning):]
+                if d_reason:
                     sent_reasoning = ev["reasoning"]
-                    yield chunk({"reasoning_content": dr})
                 if buf is not None:
-                    released = buf.feed(ev["text"])
-                    dt = released[len(sent_text):]
-                    sent_text = released
+                    rel_total = buf.feed(ev["text"])
                 else:
-                    dt = ev["text"][len(sent_text):]
-                    if dt:
-                        sent_text = ev["text"]
-                if dt:
-                    yield chunk({"content": dt})
+                    rel_total = ev["text"]
+                safe = guard.feed(rel_total)
+                d_text = safe[len(sent_text):]
+                sent_text = safe
+                out_r, out_c = rs.feed(d_reason, d_text)
+                if out_r:
+                    yield chunk({"reasoning_content": out_r})
+                if out_c:
+                    yield chunk({"content": out_c})
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("智谱流式请求失败: %s", exc)
             err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
@@ -898,9 +998,11 @@ class ChatGlmWebClient:
             return
 
         if has_tools:
-            calls = _parse_tool_calls(buf.text if buf is not None else sent_text,
-                                      payload.get("tools"))
+            calls = _parse_tool_calls(buf.text, payload.get("tools"))
             if calls:
+                tail = rs.close_think()
+                if tail:
+                    yield chunk({"content": tail})
                 for i, c in enumerate(calls):
                     yield chunk({
                         "tool_calls": [{
@@ -910,13 +1012,40 @@ class ChatGlmWebClient:
                             "function": c["function"],
                         }]
                     })
+                yield chunk({}, usage=_usage(payload, sent_text))
                 yield chunk({}, finish="tool_calls")
                 yield "data: [DONE]\n\n"
                 return
-            # 没解析出工具调用，按普通文本发出（缓冲器里还有扣住的尾巴）
-            plain = _strip_tool_block(buf.text if buf is not None else sent_text)
-            if plain:
-                yield chunk({"content": plain})
+            # 没解析出工具调用：只放**未发出**的尾巴（缓冲器扣住的部分），
+            # 剥掉可能的标记残迹。旧实现这里把 buf.text 全文重发一遍，
+            # 而正文早已流出——这就是「GLM 回复重复两遍」的直接原因
+            rel_tail = _strip_tool_block(buf.flush())
+        else:
+            rel_tail = ""
+
+        # 尾巴过守卫（疑似整段重复会被扣住），再统一清算放行
+        if rel_tail:
+            safe = guard.feed(rel_total + rel_tail)
+            d_text = safe[len(sent_text):]
+            sent_text = safe
+            out_r, out_c = rs.feed("", d_text)
+            if out_r:
+                yield chunk({"reasoning_content": out_r})
+            if out_c:
+                yield chunk({"content": out_c})
+        # 守卫扣住的残余是未发过的增量：截断的复述按保守策略放行，不丢内容
+        final_tail = guard.finish()
+        if final_tail:
+            out_r, out_c = rs.feed("", final_tail)
+            if out_r:
+                yield chunk({"reasoning_content": out_r})
+            if out_c:
+                yield chunk({"content": out_c})
+        out_r, out_c = rs.finish()
+        if out_r:
+            yield chunk({"reasoning_content": out_r})
+        if out_c:
+            yield chunk({"content": out_c})
 
         # 无条件带上 usage（客户端没传 include_usage 也要给，
         # 否则 opencode 等客户端统计不到用量）

@@ -268,6 +268,36 @@ _RELAY_JS = r"""
       let answerChars = 0;
       let sawFinish = false;
       const seenReasoning = {};
+      // ── 多路候选回答过滤（移植自 Rfym21/Qwen2API）─────────────
+      // 上游偶尔对同一次请求开多路候选回答：多个 response.created
+      // （chat_id/parent_id 相同、response_index 0/1、response_id 不同），
+      // 随后两路增量帧交错到达。不区分 response_id 一律拼接，两路内容
+      // 就会搅在一起——qwen3.8-max「语无伦次」的根源（官方网页端只展示
+      // index=0 的主回答）。旧协议无 created 元数据时锁定第一路带
+      // response_id 的正文；完全不带 response_id 时一律放行。
+      let acceptedResponseId = null;
+      let sawCreatedEvent = false;
+      const responseIndexes = {};
+      function acceptEvent(ev){
+        const created = ev['response.created'] || (ev.response && ev.response.created);
+        if(created && typeof created === 'object'){
+          sawCreatedEvent = true;
+          const rid = created.response_id || created.responseId || null;
+          const ridx = Number(created.response_index != null ? created.response_index : created.responseIndex);
+          if(rid && Number.isFinite(ridx)) responseIndexes[rid] = ridx;
+          if(rid && ridx === 0) acceptedResponseId = rid;
+          else if(rid && acceptedResponseId === null && !Number.isFinite(ridx)) acceptedResponseId = rid;
+          return !rid || acceptedResponseId === null || rid === acceptedResponseId;
+        }
+        const rid = ev.response_id;
+        if(!rid) return true;
+        if(acceptedResponseId !== null) return rid === acceptedResponseId;
+        const ridx = responseIndexes[rid];
+        if(ridx === 0){ acceptedResponseId = rid; return true; }
+        if(Number.isFinite(ridx) || sawCreatedEvent) return false;
+        acceptedResponseId = rid;
+        return true;
+      }
       if(!resp.body || !resp.body.getReader){
         await push('error', {message: '当前浏览器不支持流式读取'}); return;
       }
@@ -287,6 +317,8 @@ _RELAY_JS = r"""
           if(!raw || raw === '[DONE]') continue;
           let ev;
           try{ ev = JSON.parse(raw); }catch(e){ continue; }
+          // 多路候选过滤：非主回答流的帧整条丢弃（错误帧不带 response_id，不受影响）
+          if(!acceptEvent(ev)) continue;
           if(ev.error || ev.success === false){
             const d = (ev && ev.data) || {};
             const code = d.code || '';
@@ -309,9 +341,9 @@ _RELAY_JS = r"""
             if(!primaryResponseId) primaryResponseId = ev.response_id;
             responseId = responseId || primaryResponseId;
           }
-          // 关键：绝不因 response_id 不同就整条丢弃事件——
-          // 千问会把「思考/搜索/作答」拆成多条不同 response_id 的流，
-          // 早期版本在这里 continue 掉，导致最终一个字都没输出、直接结束。
+          // 多路候选已在 acceptEvent 里按 response_index=0 锁定主回答，
+          // 走到这里的事件都属于主回答流（思考/搜索在 phase 字段里区分，
+          // 见下方 thinking_summary / answer 分支）。
           const choices = ev.choices || [];
           for(const ch of choices){
             const d = ch.delta || {};

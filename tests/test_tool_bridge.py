@@ -13,8 +13,10 @@ import json
 from webai2api.adapters.tool_bridge import (
     ToolStreamBuffer,
     increment_text,
+    is_forced_tool_choice,
     parse_tool_calls,
     render_tool_result,
+    required_nudge,
     strip_tool_markup,
     text_of,
     tool_name_by_id,
@@ -165,6 +167,94 @@ def test_parse_limit_one_call():
     text = ("<tool_call>{\"name\": \"write\", \"arguments\": {}}</tool_call>\n"
             "<tool_call>{\"name\": \"write\", \"arguments\": {}}</tool_call>")
     assert len(parse_tool_calls(text, TOOLS, tag="tool_call")) == 1
+
+
+# ── 多行 / 裸 JSON（v0.1.28 解析重构）─────────────────────
+
+def test_parse_marker_multiline_json():
+    """标记后 JSON 写成多行：配平扫描要取全，不能只拿第一个 '{'。"""
+    text = ('我来看看\n<<<TOOL_CALL>>>{\n'
+            '  "name": "write",\n'
+            '  "arguments": {"filePath": "a.md", "content": "x"}\n'
+            '}\n后续说明')
+    calls = parse_tool_calls(text, TOOLS, marker="<<<TOOL_CALL>>>")
+    assert calls and calls[0]["function"]["name"] == "write"
+    assert json.loads(calls[0]["function"]["arguments"]) == {
+        "filePath": "a.md", "content": "x"}
+
+
+def test_parse_marker_json_with_braces_in_string():
+    """JSON 字符串值里的花括号不能干扰配平。"""
+    text = '<<<TOOL_CALL>>>{"name": "write", "arguments": {"content": "a{b}c"}}'
+    calls = parse_tool_calls(text, TOOLS, marker="<<<TOOL_CALL>>>")
+    assert calls and json.loads(calls[0]["function"]["arguments"])["content"] == "a{b}c"
+
+
+def test_parse_bare_json_fallback():
+    """模型不带任何标记直接把调用 JSON 写进正文 → 兜底要能解析。"""
+    text = '好的，我来写入文件：\n{"name": "write", "arguments": {"filePath": "a"}}\n完成。'
+    calls = parse_tool_calls(text, TOOLS, marker="<<<TOOL_CALL>>>")
+    assert calls and calls[0]["function"]["name"] == "write"
+
+
+def test_parse_bare_json_multiline():
+    text = ('{"name": "write",\n'
+            ' "arguments": {"filePath": "a"}}')
+    calls = parse_tool_calls(text, TOOLS, tag="tool_call")
+    assert calls and calls[0]["function"]["name"] == "write"
+
+
+def test_parse_bare_json_rejects_unknown_name():
+    """普通文本里恰好有 {"name": "xxx"}（不在工具清单）→ 不误判。"""
+    text = '配置文件内容：{"name": "settings", "arguments": {"verbose": true}}'
+    assert parse_tool_calls(text, TOOLS, marker="<<<TOOL_CALL>>>") == []
+
+
+def test_parse_bare_json_requires_arguments_key():
+    """工具定义回显（有 name 无 arguments）不算调用。"""
+    text = '工具清单：{"name": "write", "description": "写入文件", "parameters": {}}'
+    assert parse_tool_calls(text, TOOLS, marker="<<<TOOL_CALL>>>") == []
+
+
+def test_parse_truncated_json_returns_empty():
+    """流截断（JSON 没写完）→ 宁可不调，不能产出半个调用。"""
+    text = '<<<TOOL_CALL>>>{"name": "write", "arguments": {"filePath": "a"'
+    assert parse_tool_calls(text, TOOLS, marker="<<<TOOL_CALL>>>") == []
+
+
+def test_parse_marker_preferred_over_bare():
+    """标记命中时优先标记；正文的裸 JSON 不抢调用。"""
+    text = ('参考 {"name": "write", "arguments": {"filePath": "正文里的"}}\n'
+            '<<<TOOL_CALL>>>{"name": "write", "arguments": {"filePath": "标记里的"}}')
+    calls = parse_tool_calls(text, TOOLS, marker="<<<TOOL_CALL>>>")
+    assert json.loads(calls[0]["function"]["arguments"])["filePath"] == "标记里的"
+
+
+def test_strip_multiline_marker_json():
+    """剥离时多行 JSON 的续行不能残留在正文里。"""
+    text = ('正文一\n<<<TOOL_CALL>>>{\n'
+            '  "name": "write",\n'
+            '  "arguments": {}\n'
+            '}\n正文二')
+    out = strip_tool_markup(text, marker="<<<TOOL_CALL>>>")
+    assert out == "正文一\n正文二"
+
+
+# ── tool_choice 强校验辅助 ───────────────────────────────
+
+def test_is_forced_tool_choice():
+    assert not is_forced_tool_choice({})
+    assert not is_forced_tool_choice({"tool_choice": "auto"})
+    assert not is_forced_tool_choice({"tool_choice": "none"})
+    assert is_forced_tool_choice({"tool_choice": "required"})
+    assert is_forced_tool_choice(
+        {"tool_choice": {"type": "function", "function": {"name": "write"}}})
+
+
+def test_required_nudge_contains_platform_example():
+    assert "<<<TOOL_CALL>>>" in required_nudge(marker="<<<TOOL_CALL>>>")
+    n = required_nudge(tag="tool_call")
+    assert "<tool_call>" in n and "必须调用一个工具" in n
 
 
 # ── ToolStreamBuffer ──────────────────────────────────────

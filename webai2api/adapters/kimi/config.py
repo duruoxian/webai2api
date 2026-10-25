@@ -31,6 +31,9 @@ class KimiConfig:
     anti_rate_limit_min_delay: float = 1.5
     anti_rate_limit_max_delay: float = 3.0
     search_enabled: bool = False
+    # LEGACY_REASONING_IN_CONTENT：true 时思考以 <think> 块并入 content
+    # （给不认识 reasoning_content 的旧客户端）；空正文兜底不受此开关影响
+    legacy_reasoning_in_content: bool = False
 
     # ── 防风控：设备指纹与节奏 ──
     device_id: str = ""
@@ -132,6 +135,7 @@ def build_config(store, account: dict) -> KimiConfig:
         anti_rate_limit_min_delay=float(g("kimi_anti_min", "1.5")),
         anti_rate_limit_max_delay=float(g("kimi_anti_max", "3.0")),
         search_enabled=gb("kimi_search", False),
+        legacy_reasoning_in_content=gb("legacy_reasoning_in_content", False),
         device_id=_stable_device_id(account),
         user_agent=str(prof.get("ua") or ""),
         device_model=str(prof.get("platform") or ""),

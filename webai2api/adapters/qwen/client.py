@@ -20,7 +20,7 @@ import uuid
 from logging import Logger
 from urllib.parse import quote, urlsplit
 
-from .. import tool_bridge
+from .. import reasoning_bridge, tool_bridge
 from .config import QwenConfig
 
 USER_AGENTS = [
@@ -205,6 +205,67 @@ def _effort_to_payload(effort: str, model: str = "") -> dict:
     if tier == "思考":
         return {"thinking_enabled": True, "auto_thinking": False}
     return {"thinking_enabled": False, "auto_thinking": False}
+
+
+class UpstreamResponseFilter:
+    """千问多路候选回答过滤器（移植自 Rfym21/Qwen2API 的同名机制）。
+
+    上游偶尔对同一次请求开启**多路候选回答**：先连续下发多个
+    response.created（chat_id/parent_id 相同、response_index 为 0/1、
+    response_id 各不同），随后两路增量帧**交错到达**。不区分
+    response_id 一律拼接，两路内容就会搅在一起——这正是 qwen3.8-max
+    「语无伦次」的根源（官方网页端只展示 index=0 的主回答，所以网页正常）。
+
+    锁定规则：
+    - 新协议：锁定 response.created 里 response_index=0 的那一路；
+    - 旧协议（没有 created 元数据）：锁定第一路带 response_id 的正文；
+    - 上游完全不带 response_id：一律放行。
+    """
+
+    def __init__(self) -> None:
+        self._accepted: str | None = None
+        self._saw_created = False
+        self._indexes: dict[str, float] = {}
+
+    def accept(self, ev: dict) -> bool:
+        """该帧是否属于已锁定的主回答流。"""
+        if not isinstance(ev, dict):
+            return True
+        created = ev.get("response.created")
+        if not isinstance(created, dict):
+            resp = ev.get("response")
+            created = resp.get("created") if isinstance(resp, dict) else None
+        if isinstance(created, dict):
+            self._saw_created = True
+            rid = created.get("response_id") or created.get("responseId")
+            raw_idx = created.get("response_index", created.get("responseIndex"))
+            idx: float | None = None
+            try:
+                if raw_idx is not None:
+                    idx = float(raw_idx)
+            except (TypeError, ValueError):
+                idx = None
+            if isinstance(rid, str) and rid:
+                if idx is not None:
+                    self._indexes[rid] = idx
+                if idx == 0:
+                    self._accepted = rid
+                elif self._accepted is None and idx is None:
+                    self._accepted = rid
+            return (not rid or self._accepted is None or rid == self._accepted)
+        rid = ev.get("response_id")
+        if not isinstance(rid, str) or not rid:
+            return True
+        if self._accepted is not None:
+            return rid == self._accepted
+        idx = self._indexes.get(rid)
+        if idx == 0:
+            self._accepted = rid
+            return True
+        if idx is not None or self._saw_created:
+            return False
+        self._accepted = rid
+        return True
 
 
 class QwenWebClient:
@@ -837,8 +898,11 @@ class QwenWebClient:
         chat_id = cached
         text = ""
         reasoning = ""
+        rfilter = UpstreamResponseFilter()
         try:
             for event in self._iter_events(resp):
+                if not rfilter.accept(event):
+                    continue
                 cid = event.get("chat_id")
                 if isinstance(cid, str) and cid and cid != chat_id:
                     chat_id = cid
@@ -861,6 +925,26 @@ class QwenWebClient:
         yield {"__done__": True, "text": text, "reasoning": reasoning, "chat_id": chat_id}
 
     # ── 对外接口 ───────────────────────────────────────
+    def _forced_retry(self, payload: dict, tools: list) -> tuple[str, str, list]:
+        """tool_choice=required 强校验重试：加强指令再问一次（上限 1 次）。"""
+        self.logger.info("Qwen tool_choice=required 首轮未调用工具，加强指令重试一次")
+        retry = dict(payload)
+        retry["messages"] = list(payload.get("messages") or []) + [{
+            "role": "user",
+            "content": tool_bridge.required_nudge(
+                tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER),
+        }]
+        text = reasoning = ""
+        for ev in self._stream_events(retry):
+            text, reasoning = ev["text"], ev["reasoning"]
+        calls = tool_bridge.parse_tool_calls(
+            text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER)
+        if not calls:
+            raise QwenError(
+                "工具调用强校验失败：重试一次后模型仍未按要求调用工具"
+                "（tool_choice=required）")
+        return text, reasoning, calls
+
     def chat_completion(self, payload: dict) -> dict:
         model = payload.get("model") or self.config.default_model
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -871,6 +955,8 @@ class QwenWebClient:
 
         calls = tool_bridge.parse_tool_calls(
             text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER) if tools else []
+        if not calls and tools and tool_bridge.is_forced_tool_choice(payload):
+            text, reasoning, calls = self._forced_retry(payload, tools)
         if calls:
             return {
                 "id": completion_id,
@@ -887,9 +973,13 @@ class QwenWebClient:
                 "usage": _usage(payload, text),
             }
 
-        # 带工具但没解析出调用：剥掉可能残留的标记再下发
+        # 带工具但没解析出调用：剥掉可能残留的标记再下发；
+        # 空正文兜底——思考里就是答案时顶上来
         content = tool_bridge.strip_tool_markup(
             text, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER) if tools else text
+        content, reasoning = reasoning_bridge.finalize_reasoning(
+            content, reasoning,
+            legacy=self.config.legacy_reasoning_in_content)
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -922,28 +1012,80 @@ class QwenWebClient:
         yield chunk({"role": "assistant", "content": ""})
 
         tools = _active_tools(payload)
+        forced = bool(tools) and tool_bridge.is_forced_tool_choice(payload)
+
+        # tool_choice=required 强校验模式：不直播，解析失败先重试一次，
+        # 再失败按明确错误返回（直播一段注定作废的正文没有意义）
+        if forced:
+            text = reasoning = ""
+            try:
+                for ev in self._stream_events(payload):
+                    text, reasoning = ev["text"], ev["reasoning"]
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("Qwen 流式请求失败: %s", exc)
+                err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
+                yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            calls = tool_bridge.parse_tool_calls(
+                text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER)
+            if not calls:
+                try:
+                    text, reasoning, calls = self._forced_retry(payload, tools)
+                except QwenError as exc:
+                    err = {"error": {"message": str(exc), "type": "tool_required_error"}}
+                    yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+            rs = reasoning_bridge.ReasoningStream(
+                legacy=self.config.legacy_reasoning_in_content)
+            out_r, out_c = rs.feed(reasoning, "")
+            if out_r:
+                yield chunk({"reasoning_content": out_r})
+            if out_c:
+                yield chunk({"content": out_c})
+            tail = rs.close_think()
+            if tail:
+                yield chunk({"content": tail})
+            yield chunk({"tool_calls": [{
+                "index": 0,
+                "id": calls[0]["id"],
+                "type": "function",
+                "function": calls[0]["function"],
+            }]})
+            yield chunk({}, usage=_usage(payload, text))
+            yield chunk({}, finish="tool_calls")
+            yield "data: [DONE]\n\n"
+            return
+
         # 有工具时扣住标记文本：<tool_call> 出现前照常流式，出现后扣留等解析，
         # 标记 JSON 不会漏进 content
         buf = tool_bridge.ToolStreamBuffer(
             [f"<{QWEN_TOOL_TAG}>", QWEN_TOOL_MARKER]) if tools else None
         sent_text = ""
         sent_reasoning = ""
+        # 思考增量统一走分发器：legacy 开关决定走 reasoning_content 还是
+        # <think> 并入 content；收尾做空正文兜底
+        rs = reasoning_bridge.ReasoningStream(
+            legacy=self.config.legacy_reasoning_in_content)
         try:
             for ev in self._stream_events(payload):
-                dr = ev["reasoning"][len(sent_reasoning):]
-                if dr:
+                d_reason = ev["reasoning"][len(sent_reasoning):]
+                if d_reason:
                     sent_reasoning = ev["reasoning"]
-                    yield chunk({"reasoning_content": dr})
                 if buf is not None:
                     released = buf.feed(ev["text"])
-                    dt = released[len(sent_text):]
+                    d_text = released[len(sent_text):]
                     sent_text = released
                 else:
-                    dt = ev["text"][len(sent_text):]
-                    if dt:
+                    d_text = ev["text"][len(sent_text):]
+                    if d_text:
                         sent_text = ev["text"]
-                if dt:
-                    yield chunk({"content": dt})
+                out_r, out_c = rs.feed(d_reason, d_text)
+                if out_r:
+                    yield chunk({"reasoning_content": out_r})
+                if out_c:
+                    yield chunk({"content": out_c})
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("Qwen 流式请求失败: %s", exc)
             err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
@@ -955,6 +1097,9 @@ class QwenWebClient:
         calls = tool_bridge.parse_tool_calls(
             full_text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER) if tools else []
         if calls:
+            tail = rs.close_think()
+            if tail:
+                yield chunk({"content": tail})
             yield chunk({"tool_calls": [{
                 "index": 0,
                 "id": calls[0]["id"],
@@ -970,7 +1115,16 @@ class QwenWebClient:
             # 没解析出工具调用：把扣住的尾巴放出去（通常为空）
             tail = buf.flush()
             if tail:
-                yield chunk({"content": tail})
+                out_r, out_c = rs.feed("", tail)
+                if out_r:
+                    yield chunk({"reasoning_content": out_r})
+                if out_c:
+                    yield chunk({"content": out_c})
+        out_r, out_c = rs.finish()
+        if out_r:
+            yield chunk({"reasoning_content": out_r})
+        if out_c:
+            yield chunk({"content": out_c})
         yield chunk({}, usage=_usage(payload, full_text))
         yield chunk({}, finish="stop")
         yield "data: [DONE]\n\n"

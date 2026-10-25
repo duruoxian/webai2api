@@ -23,7 +23,7 @@ from collections import OrderedDict
 from logging import Logger
 from urllib.parse import urlsplit
 
-from .. import tool_bridge
+from .. import reasoning_bridge, tool_bridge
 from .config import KimiConfig
 
 USER_AGENTS = [
@@ -932,6 +932,28 @@ class KimiWebClient:
         raise KimiError("没有可用的 Kimi 模型")
 
     # ── 对外接口 ───────────────────────────────────────
+    def _forced_retry(self, payload: dict, tools: list) -> tuple[str, str, list]:
+        """tool_choice=required 强校验重试：加强指令再问一次（上限 1 次）。
+
+        返回重试后的 (text, reasoning, calls)；仍解析不出调用则抛
+        KimiError——按明确错误返回，而不是静默当普通文本。
+        """
+        self.logger.info("Kimi tool_choice=required 首轮未调用工具，加强指令重试一次")
+        retry = dict(payload)
+        retry["messages"] = list(payload.get("messages") or []) + [{
+            "role": "user",
+            "content": tool_bridge.required_nudge(marker=TOOL_MARKER),
+        }]
+        text = reasoning = ""
+        for ev in self._stream_events(retry):
+            text, reasoning = ev["text"], ev["reasoning"]
+        calls = _parse_tool_calls(text, tools)
+        if not calls:
+            raise KimiError(
+                "工具调用强校验失败：重试一次后模型仍未按要求调用工具"
+                "（tool_choice=required）")
+        return text, reasoning, calls
+
     def chat_completion(self, payload: dict) -> dict:
         model = payload.get("model") or self.config.default_model
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -941,6 +963,8 @@ class KimiWebClient:
 
         tools = payload.get("tools") or []
         calls = _parse_tool_calls(text, tools) if tools else []
+        if not calls and tools and tool_bridge.is_forced_tool_choice(payload):
+            text, reasoning, calls = self._forced_retry(payload, tools)
         if calls:
             return {
                 "id": completion_id,
@@ -957,6 +981,11 @@ class KimiWebClient:
                 "usage": _usage(payload, text),
             }
 
+        # 空正文兜底：Kimi 全系实测会把最终答案写进思考块（正文空白），
+        # content 为空时用 reasoning 顶上，保证客户端拿得到答案
+        content, reasoning = reasoning_bridge.finalize_reasoning(
+            _strip_tool_block(text), reasoning,
+            legacy=self.config.legacy_reasoning_in_content)
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -964,7 +993,7 @@ class KimiWebClient:
             "model": model,
             "choices": [{
                 "index": 0,
-                "message": {"role": "assistant", "content": _strip_tool_block(text),
+                "message": {"role": "assistant", "content": content,
                             "reasoning_content": reasoning or None},
                 "finish_reason": "stop",
             }],
@@ -991,26 +1020,78 @@ class KimiWebClient:
         tools = payload.get("tools") or []
         if payload.get("tool_choice") == "none":
             tools = []
+        forced = bool(tools) and tool_bridge.is_forced_tool_choice(payload)
+
+        # tool_choice=required 强校验模式：不直播（客户端要求必须拿到工具
+        # 调用，直播一段注定作废的正文没有意义），解析失败先重试一次，
+        # 再失败按明确错误返回
+        if forced:
+            text = reasoning = ""
+            try:
+                for ev in self._stream_events(payload):
+                    text, reasoning = ev["text"], ev["reasoning"]
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("Kimi 流式请求失败: %s", exc)
+                err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
+                yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            calls = _parse_tool_calls(text, tools)
+            if not calls:
+                try:
+                    text, reasoning, calls = self._forced_retry(payload, tools)
+                except KimiError as exc:
+                    err = {"error": {"message": str(exc), "type": "tool_required_error"}}
+                    yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+            rs = reasoning_bridge.ReasoningStream(
+                legacy=self.config.legacy_reasoning_in_content)
+            out_r, out_c = rs.feed(reasoning, "")
+            if out_r:
+                yield chunk({"reasoning_content": out_r})
+            if out_c:
+                yield chunk({"content": out_c})
+            tail = rs.close_think()
+            if tail:
+                yield chunk({"content": tail})
+            yield chunk({"tool_calls": [{
+                "index": 0,
+                "id": calls[0]["id"],
+                "type": "function",
+                "function": calls[0]["function"],
+            }]})
+            yield chunk({}, usage=_usage(payload, text))
+            yield chunk({}, finish="tool_calls")
+            yield "data: [DONE]\n\n"
+            return
+
         # 有工具时扣住标记文本，不让 <<<TOOL_CALL>>> 漏进 content
         buf = tool_bridge.ToolStreamBuffer([TOOL_MARKER]) if tools else None
         sent_text = ""
         sent_reasoning = ""
+        # 思考增量统一走分发器：legacy 开关决定走 reasoning_content 还是
+        # <think> 并入 content；收尾做空正文兜底
+        rs = reasoning_bridge.ReasoningStream(
+            legacy=self.config.legacy_reasoning_in_content)
         try:
             for ev in self._stream_events(payload):
-                dr = ev["reasoning"][len(sent_reasoning):]
-                if dr:
+                d_reason = ev["reasoning"][len(sent_reasoning):]
+                if d_reason:
                     sent_reasoning = ev["reasoning"]
-                    yield chunk({"reasoning_content": dr})
                 if buf is not None:
                     released = buf.feed(ev["text"])
-                    dt = released[len(sent_text):]
+                    d_text = released[len(sent_text):]
                     sent_text = released
                 else:
-                    dt = ev["text"][len(sent_text):]
-                    if dt:
+                    d_text = ev["text"][len(sent_text):]
+                    if d_text:
                         sent_text = ev["text"]
-                if dt:
-                    yield chunk({"content": dt})
+                out_r, out_c = rs.feed(d_reason, d_text)
+                if out_r:
+                    yield chunk({"reasoning_content": out_r})
+                if out_c:
+                    yield chunk({"content": out_c})
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("Kimi 流式请求失败: %s", exc)
             err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
@@ -1023,6 +1104,9 @@ class KimiWebClient:
         calls = _parse_tool_calls(buf.text if buf is not None else sent_text,
                                   tools) if tools else []
         if calls:
+            tail = rs.close_think()
+            if tail:
+                yield chunk({"content": tail})
             yield chunk({"tool_calls": [{
                 "index": 0,
                 "id": calls[0]["id"],
@@ -1034,6 +1118,21 @@ class KimiWebClient:
             yield "data: [DONE]\n\n"
             return
 
+        # 普通回答：放出缓冲器扣住的尾巴（标记被拆包也没关系），
+        # 再做空正文兜底——思考里就是答案时补发 content
+        if buf is not None:
+            tail = buf.flush()
+            if tail:
+                out_r, out_c = rs.feed("", tail)
+                if out_r:
+                    yield chunk({"reasoning_content": out_r})
+                if out_c:
+                    yield chunk({"content": out_c})
+        out_r, out_c = rs.finish()
+        if out_r:
+            yield chunk({"reasoning_content": out_r})
+        if out_c:
+            yield chunk({"content": out_c})
         yield chunk({}, usage=_usage(payload, sent_text))
         yield chunk({}, finish="stop")
         yield "data: [DONE]\n\n"

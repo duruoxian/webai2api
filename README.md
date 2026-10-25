@@ -97,6 +97,8 @@ copy(JSON.stringify({
 - **API Key**：你生成的 `sk-...`
 - **模型**：`deepseek-chat` / `deepseek-reasoner` / `GLM-5.3` / `GLM-5.3-Flash` / `kimi-k3` / `kimi-k2.8` / `kimi-k2.6` / `qwen3.7-plus` / `qwen3.8-max` / `qwen3.8-omni-flash`
 
+> ⚠️ `qwen3.8-max` 目前为**实验性**：网页反代下稳定性差（偶发语序混乱、逻辑不连贯，属模型自身问题，适配层无法修复）。对输出质量有要求时建议用 `qwen3.7-plus`。
+
 ## opencode 接入示例
 
 ### 方式 A：用 opencode 图形界面添加（推荐，无需改文件）
