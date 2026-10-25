@@ -372,3 +372,35 @@ def test_delta_buffer_split_opener_never_leaks():
     for ch in "答案<<<TOOL_CALL>>>{":
         out += delta.feed_delta(ch)
     assert "<<<TOOL_CALL>>>" not in out
+
+
+# ── 参数名模糊校正（小模型不守 schema 的兜底）──────────────
+
+TOOLS_STRICT = [{
+    "type": "function",
+    "function": {
+        "name": "write",
+        "description": "写入本地文件",
+        "parameters": {"type": "object", "properties": {
+            "filePath": {"type": "string"}, "content": {"type": "string"},
+        }, "required": ["filePath", "content"]},
+    },
+}]
+
+
+def test_parse_fixes_wrong_arg_name():
+    """omni-flash 场景：path → filePath（大小写不敏感子串唯一命中）。"""
+    text = '<tool_call>{"name": "write", "arguments": {"path": "a.txt", "content": "hi"}}</tool_call>'
+    calls = parse_tool_calls(text, TOOLS_STRICT, tag="tool_call")
+    args = json.loads(calls[0]["function"]["arguments"])
+    assert args == {"filePath": "a.txt", "content": "hi"}
+
+
+def test_parse_keeps_ambiguous_or_unknown_arg_names():
+    """歧义（两个形参都含该子串）或无命中：保持原样不瞎猜。"""
+    tools2 = [{"type": "function", "function": {"name": "write", "parameters": {
+        "type": "object", "properties": {"pathName": {"type": "string"},
+                                         "pathAlias": {"type": "string"}}}}}]
+    text = '<tool_call>{"name": "write", "arguments": {"path": "x"}}</tool_call>'
+    calls = parse_tool_calls(text, tools2, tag="tool_call")
+    assert json.loads(calls[0]["function"]["arguments"]) == {"path": "x"}

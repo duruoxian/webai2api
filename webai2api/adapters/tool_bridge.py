@@ -348,8 +348,40 @@ def _bare_blobs(text: str, allowed: set) -> list:
     return out
 
 
-def _build_calls(blobs: list, allowed: set, limit: int) -> list:
+def _fix_arg_names(args: dict, tool: dict | None) -> dict:
+    """把 arguments 的参数名校正到工具 schema 的形参名。
+
+    小模型（如 omni-flash）经常不守 schema：要 filePath 它给 path。
+    校正规则（保守）：错名不在 schema 里，且与某个形参**大小写不敏感
+    子串匹配唯一命中**时才改名；有歧义或无命中保持原样。
+    """
+    if not isinstance(args, dict) or not isinstance(tool, dict):
+        return args
+    params = tool.get("function", tool).get("parameters") or {}
+    props = params.get("properties")
+    if not isinstance(props, dict) or not props:
+        return args
+    keys = {k.lower(): k for k in props}
+    fixed = {}
+    for k, v in args.items():
+        if k in props:
+            fixed[k] = v
+            continue
+        low = k.lower()
+        hits = [orig for low_k, orig in keys.items() if low in low_k]
+        fixed[hits[0] if len(hits) == 1 else k] = v
+    return fixed
+
+
+def _build_calls(blobs: list, allowed: set, limit: int,
+                 tools: list | None = None) -> list:
     """把 JSON 片段列表规整成标准 OpenAI tool_calls（白名单放行）。"""
+    by_name = {}
+    for t in tools or []:
+        if isinstance(t, dict):
+            fn = t.get("function") or t
+            if fn.get("name"):
+                by_name[fn["name"]] = t
     calls = []
     for raw in blobs:
         obj = _loads_loose(raw)
@@ -360,7 +392,8 @@ def _build_calls(blobs: list, allowed: set, limit: int) -> list:
             continue
         args = obj.get("arguments", obj.get("args", {}))
         if not isinstance(args, str):
-            args = json.dumps(args or {}, ensure_ascii=False)
+            args = json.dumps(_fix_arg_names(args or {}, by_name.get(name)),
+                              ensure_ascii=False)
         calls.append({
             "id": f"call_{uuid.uuid4().hex[:16]}",
             "type": "function",
@@ -392,10 +425,10 @@ def parse_tool_calls(text: str, tools: list, *, tag: str | None = None,
     if marker:
         blobs += _marker_blobs(text, marker)
 
-    calls = _build_calls(blobs, allowed, limit)
+    calls = _build_calls(blobs, allowed, limit, tools)
     if calls:
         return calls
-    return _build_calls(_bare_blobs(text, allowed), allowed, limit)
+    return _build_calls(_bare_blobs(text, allowed), allowed, limit, tools)
 
 
 def strip_tool_markup(text: str, *, tag: str | None = None,
