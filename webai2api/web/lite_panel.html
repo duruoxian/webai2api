@@ -11,7 +11,7 @@
 (function(){
   try{
     var t = localStorage.getItem('wapi_theme');
-    var KNOWN = ['light','dark','paper','sakura','neon','terminal'];
+    var KNOWN = ['light','dark','paper','sakura','neon','terminal','mono-light','mono-dark'];
     if (KNOWN.indexOf(t) < 0) t = 'light';
     document.documentElement.setAttribute('data-theme', t);
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
@@ -1785,6 +1785,8 @@ const THEMES=[
   {id:'sakura',  name:'樱花初雪', sw:'#f6edf1', dark:false},
   {id:'neon',    name:'暗夜霓虹', sw:'#0b0d18', dark:true},
   {id:'terminal',name:'终端机',   sw:'#060907', dark:true},
+  {id:'mono-light',name:'极简白', sw:'#ffffff', dark:false},
+  {id:'mono-dark', name:'极简黑', sw:'#050505', dark:true},
 ];
 function isDarkTheme(t){
   const th=THEMES.find(x=>x.id===t); return th?th.dark:false;
