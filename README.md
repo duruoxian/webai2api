@@ -22,7 +22,10 @@ OpenAI 兼容 API**，自带中文管理面板 😃
 > 风控 ⛈️ 面前，低调是最长的保险。
 
 > 🥹 这个项目从「一个周末的反代脚本」长成了现在这棵树，
-> 中间被真实使用打碎又重装了好几轮——踩坑记录见博客系列文章。
+> 中间被真实使用打碎又重装了好几轮。完整踩坑记录（博客系列）：
+> [一、把网页版做成 API](https://duruoxian-blog.pages.dev/posts/webai2api) ｜
+> [二、从玩具到能卖的客户端](https://duruoxian-blog.pages.dev/posts/webai2api-v2) ｜
+> [三、让网页模型真的会调工具](https://duruoxian-blog.pages.dev/posts/webai2api-v3)
 
 ## 下载（Windows）
 
