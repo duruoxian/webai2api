@@ -341,56 +341,76 @@ def _extract_parts(parts: list, is_silent: bool = False) -> tuple[str, str]:
 
 
 class _GlmParts:
-    """智谱 parts 累积器（机制移植自 glm2api 的 GLMEventAccumulator）。
+    """智谱 parts 累积器。
 
-    上游 SSE 每帧带 parts 数组：同一 part（logic_id 相同）重复出现时携带
-    **全量快照**（内容增长、甚至整段重写），且多 part 会交错/乱序到达。
-    按到达序盲拼快照 = 输出咬字交错（实测「上—你是里的编写你本。后到do早
-    之前楼or」）。这里按 logic_id 逐 part 累积：
+    上游 SSE 语义（2026-10-25 抓帧实测确认）：
+    - 每帧 parts 携带该 part 的**增量 delta**（每帧只有几个新字）；
+    - part 结束时发 status=finish 帧，content 里是该 part 的**全量快照**
+      （权威终态，用于校准）；
+    - 思考/正文/代码是不同 logic_id 的 part，交错到达；
+    - 偶发空的 tool_calls part（st=finish 无内容），忽略。
 
-    - 每 part 只保留「历史最长版本」——快照整段重写/缩短时不回退，宁旧勿错；
-    - 产出**单调增长的全量文本**：part 按首见顺序用空行拼接，与流式
-      prefix-diff 链（ToolStreamBuffer / RepeatGuard / sent_text）完全兼容。
+    因此按 logic_id 累积 delta，finish 帧用全量校准，全量输出按 part
+    首见顺序拼接。此前把 delta 当快照做前缀差，是丢字/咬字/JSON 漏
+    正文的总根源。
     """
 
     def __init__(self, is_silent: bool = False) -> None:
         self._is_silent = is_silent
-        self._snapshots: dict[str, dict] = {}   # logic_id -> 最新快照
-        self._order: list[str] = []             # part 首见顺序
-        self._frozen_text: dict[str, str] = {}  # logic_id -> 冻结正文
-        self._frozen_think: dict[str, str] = {} # logic_id -> 冻结思考
-        self.text = ""                          # 全量正文（单调增长）
-        self.reasoning = ""                     # 全量思考（单调增长）
+        self._order: list[str] = []         # lid 首见序
+        self._text: dict[str, str] = {}     # lid -> 正文累计
+        self._think: dict[str, str] = {}    # lid -> 思考累计
+        self._extra: dict[str, str] = {}    # lid -> code/image 等一次性渲染
+        self.text = ""                      # 全量正文
+        self.reasoning = ""                 # 全量思考
+
+    @staticmethod
+    def _calibrate(buf: str, piece: str, status) -> str:
+        """finish 帧携带全量快照（权威终态），其余帧是增量 delta。"""
+        if status == "finish":
+            return piece if piece else buf
+        return buf + piece
 
     def consume(self, parts) -> None:
-        """喂入一帧的 parts 数组，更新累积快照与全量文本。"""
         if not isinstance(parts, list):
             return
-        changed = False
-        for idx, part in enumerate(parts):
+        dirty = False
+        for part in parts:
             if not isinstance(part, dict):
                 continue
-            # 无 logic_id 的 part 按出现位置给稳定假 id
-            lid = str(part.get("logic_id") or f"\x00anon:{len(self._order)}:{idx}")
-            if lid not in self._snapshots:
+            content = part.get("content")
+            if not isinstance(content, list):
+                continue
+            lid = str(part.get("logic_id")
+                      or f"\x00anon:{len(self._order)}:{id(part)}")
+            if lid not in self._text:
                 self._order.append(lid)
-                self._frozen_text[lid] = ""
-                self._frozen_think[lid] = ""
-            self._snapshots[lid] = part
-
-            text, reasoning = _render_part(part, self._is_silent)
-            ft, fr = self._frozen_text[lid], self._frozen_think[lid]
-            if len(text) >= len(ft) and text != ft:
-                self._frozen_text[lid] = text
-                changed = True
-            if len(reasoning) >= len(fr) and reasoning != fr:
-                self._frozen_think[lid] = reasoning
-                changed = True
-        if changed:
-            self.text = "\n\n".join(
-                self._frozen_text[lid] for lid in self._order if self._frozen_text[lid])
-            self.reasoning = "\n\n".join(
-                self._frozen_think[lid] for lid in self._order if self._frozen_think[lid])
+                self._text[lid] = ""
+                self._think[lid] = ""
+                self._extra[lid] = ""
+            status = part.get("status")
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                t = item.get("type")
+                if t == "text":
+                    self._text[lid] = self._calibrate(
+                        self._text[lid], item.get("text") or "", status)
+                    dirty = True
+                elif t == "think" and not self._is_silent:
+                    self._think[lid] = self._calibrate(
+                        self._think[lid], item.get("think") or "", status)
+                    dirty = True
+                else:
+                    rendered, _ = _render_part(
+                        {"content": [item], "status": status}, self._is_silent)
+                    if rendered:
+                        self._extra[lid] += rendered
+                        dirty = True
+        if dirty:
+            self.text = "".join(
+                self._text[lid] + self._extra[lid] for lid in self._order)
+            self.reasoning = "".join(self._think[lid] for lid in self._order)
 
 
 class ChatGlmWebClient:

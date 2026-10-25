@@ -241,16 +241,27 @@ def _effort_to_payload(effort: str, model: str = "") -> dict:
     return {"thinking": True, "reasoningEffort": "REASONING_EFFORT_MAX"}
 
 
-def _internal_models(model: str | None) -> list[tuple[str, str]]:
-    """对外模型名 → [(内部 model id, scenario), ...]（按优先级）。"""
+def _internal_models(model: str | None, *, has_tools: bool = False) -> list[tuple[str, str]]:
+    """对外模型名 → [(内部 model id, scenario), ...]（按优先级）。
+
+    has_tools：请求带工具时跳过 OK_COMPUTER（agent 场景）——抓帧实测该
+    场景对注入的工具协议一律回空响应（heartbeat+done，不报错），工具
+    调用完全失效；CHAT 场景正常。
+    """
     m = (model or "").strip().lower()
     if m in _MODEL_CANDIDATES:
-        return list(_MODEL_CANDIDATES[m])
-    if m in _INTERNAL_AGENT_IDS:
-        return [(m, _SCENARIO_AGENT)]
-    if m in _INTERNAL_CHAT_IDS:
-        return [(m, _SCENARIO_CHAT)]
-    return [(DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT)]
+        cands = list(_MODEL_CANDIDATES[m])
+    elif m in _INTERNAL_AGENT_IDS:
+        cands = [(m, _SCENARIO_AGENT)]
+    elif m in _INTERNAL_CHAT_IDS:
+        cands = [(m, _SCENARIO_CHAT)]
+    else:
+        cands = [(DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT)]
+    if has_tools:
+        chat = [(mid, sc) for mid, sc in cands if sc != _SCENARIO_AGENT]
+        if chat:
+            cands = chat
+    return cands
 
 
 def _frame(payload: bytes) -> bytes:
@@ -835,8 +846,8 @@ class KimiWebClient:
                 self._bump("deleted")
 
     # ── 流式事件 ───────────────────────────────────────
-    def _model_candidates(self, model: str) -> list[tuple[str, str]]:
-        candidates = _internal_models(model)
+    def _model_candidates(self, model: str, *, has_tools: bool = False) -> list[tuple[str, str]]:
+        candidates = _internal_models(model, has_tools=has_tools)
         resolved = self._resolved_models.get(model)
         if resolved and resolved in candidates:
             candidates.remove(resolved)
@@ -857,7 +868,9 @@ class KimiWebClient:
         self._bump("upstream")
 
         model = str(payload.get("model") or self.config.default_model)
-        candidates = self._model_candidates(model)
+        candidates = self._model_candidates(
+            model, has_tools=bool(payload.get("tools"))
+            and payload.get("tool_choice") != "none")
         last_error: KimiError | None = None
 
         for idx, (internal, scenario) in enumerate(candidates):
