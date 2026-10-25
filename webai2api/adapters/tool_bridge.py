@@ -42,6 +42,7 @@ __all__ = [
     "is_forced_tool_choice",
     "required_nudge",
     "ToolStreamBuffer",
+    "DeltaToolBuffer",
 ]
 
 
@@ -367,7 +368,7 @@ def required_nudge(*, tag: str | None = None, marker: str | None = None) -> str:
 
 
 class ToolStreamBuffer:
-    """流式输出里扣住工具标记，保证标记文本不漏进 content 增量。
+    """流式输出里扣住工具标记（**全文快照口径**）。
 
     用法：每个流事件把**全文快照**喂给 `feed()`，拿到的返回值是
     「可以安全下发给客户端的完整前缀」；结束时分两种情况：
@@ -413,3 +414,50 @@ class ToolStreamBuffer:
     @property
     def text(self) -> str:
         return self._text
+
+
+class DeltaToolBuffer:
+    """工具标记扣留器（**增量口径**），与 ToolStreamBuffer 行为等价。
+
+    差别只在喂法：`feed_delta(piece)` 接收**新增量**而非全文快照，内部
+    自行累计。给「流循环先做无损前缀差、再扣留标记」的链路用——快照
+    口径的 buf 会回扣尾部，输出非单调，嵌套在多层前缀差里会把下层
+    错位咬字（GLM 实测）。
+    """
+
+    def __init__(self, openers: list) -> None:
+        self._openers = [o for o in (openers or []) if o]
+        self._full = ""
+        self._emitted = 0
+        self._open_at = -1
+
+    def feed_delta(self, piece: str) -> str:
+        if piece:
+            self._full += piece
+        if self._open_at < 0 and self._openers:
+            for op in self._openers:
+                i = self._full.find(op)
+                if 0 <= i and (self._open_at < 0 or i < self._open_at):
+                    self._open_at = i
+        if self._open_at >= 0:
+            out = self._full[self._emitted:self._open_at]
+            self._emitted = self._open_at
+            return out
+        hold = max((len(op) for op in self._openers), default=1)
+        safe_end = max(self._emitted, len(self._full) - hold)
+        out = self._full[self._emitted:safe_end]
+        self._emitted = safe_end
+        return out
+
+    def flush(self) -> str:
+        out = self._full[self._emitted:]
+        self._emitted = len(self._full)
+        return out
+
+    @property
+    def opener_found(self) -> bool:
+        return self._open_at >= 0
+
+    @property
+    def text(self) -> str:
+        return self._full

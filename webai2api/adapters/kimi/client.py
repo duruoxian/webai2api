@@ -1085,8 +1085,8 @@ class KimiWebClient:
             yield "data: [DONE]\n\n"
             return
 
-        # 有工具时扣住标记文本，不让 <<<TOOL_CALL>>> 漏进 content
-        buf = tool_bridge.ToolStreamBuffer([TOOL_MARKER]) if tools else None
+        # 有工具时扣住标记文本，不让 <<<TOOL_CALL>>> 漏进 content（增量口径）
+        buf = tool_bridge.DeltaToolBuffer([TOOL_MARKER]) if tools else None
         sent_text = ""
         sent_reasoning = ""
         # 思考增量统一走分发器：legacy 开关决定走 reasoning_content 还是
@@ -1098,15 +1098,10 @@ class KimiWebClient:
                 d_reason = ev["reasoning"][len(sent_reasoning):]
                 if d_reason:
                     sent_reasoning = ev["reasoning"]
-                if buf is not None:
-                    released = buf.feed(ev["text"])
-                    d_text = released[len(sent_text):]
-                    sent_text = released
-                else:
-                    d_text = ev["text"][len(sent_text):]
-                    if d_text:
-                        sent_text = ev["text"]
-                out_r, out_c = rs.feed(d_reason, d_text)
+                d_text = ev["text"][len(sent_text):]
+                sent_text = ev["text"]
+                d_out = buf.feed_delta(d_text) if buf is not None else d_text
+                out_r, out_c = rs.feed(d_reason, d_out)
                 if out_r:
                     yield chunk({"reasoning_content": out_r})
                 if out_c:

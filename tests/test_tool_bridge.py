@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 from webai2api.adapters.tool_bridge import (
+    DeltaToolBuffer,
     ToolStreamBuffer,
     increment_text,
     is_first_turn,
@@ -324,3 +325,50 @@ def test_first_turn_detection():
     chain = first + [_assistant_tool_call("write", {}, "call_x"),
                      {"role": "tool", "tool_call_id": "call_x", "content": "ok"}]
     assert is_first_turn(chain) is False
+
+
+# ── DeltaToolBuffer（增量口径扣留器）─────────────────────
+
+def test_delta_buffer_equivalent_to_snapshot_buffer():
+    """增量喂入与快照喂入行为等价（流链重构的正确性前提）。
+
+    opener 出现前：两版放行序列逐字符一致（不含任何标记字符）；
+    opener 出现后：生产代码不再 flush 下发（直接解析 tool_calls），
+    这里只验证两版 flush 的剩余内容也彼此一致。
+    """
+    text = "前面的正文\n<<<TOOL_CALL>>>{\"name\":\"write\",\"arguments\":{}}"
+    snap = ToolStreamBuffer(["<<<TOOL_CALL>>>"])
+    delta = DeltaToolBuffer(["<<<TOOL_CALL>>>"])
+    snap_out = ""
+    delta_out = ""
+    for i in range(1, len(text) + 1):
+        snap_out += snap.feed(text[:i])          # 快照口径：喂全文
+        delta_out += delta.feed_delta(text[i-1]) # 增量口径：喂单字符
+        assert snap.opener_found == delta.opener_found
+    assert "<<<TOOL_CALL>>>" not in snap_out
+    assert "<<<TOOL_CALL>>>" not in delta_out
+    assert snap_out == delta_out
+    assert snap.flush() == delta.flush()
+
+
+def test_delta_buffer_no_opener_passes_all():
+    delta = DeltaToolBuffer(["<<<TOOL_CALL>>>"])
+    out = delta.feed_delta("普通回答一") + delta.feed_delta("普通回答二") + delta.flush()
+    assert out == "普通回答一普通回答二"
+
+
+def test_delta_buffer_holds_after_opener():
+    delta = DeltaToolBuffer(["<<<TOOL_CALL>>>"])
+    out = delta.feed_delta("回答正文<<<TOOL_CALL>>>{\"name\":\"write\"]")
+    assert out == "回答正文"
+    assert delta.opener_found
+    assert delta.text.startswith("回答正文<<<TOOL_CALL>>>")
+
+
+def test_delta_buffer_split_opener_never_leaks():
+    """opener 拆在两个增量之间：任何片段不得提前漏出。"""
+    delta = DeltaToolBuffer(["<<<TOOL_CALL>>>"])
+    out = ""
+    for ch in "答案<<<TOOL_CALL>>>{":
+        out += delta.feed_delta(ch)
+    assert "<<<TOOL_CALL>>>" not in out

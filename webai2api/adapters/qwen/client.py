@@ -1064,8 +1064,8 @@ class QwenWebClient:
             return
 
         # 有工具时扣住标记文本：<tool_call> 出现前照常流式，出现后扣留等解析，
-        # 标记 JSON 不会漏进 content
-        buf = tool_bridge.ToolStreamBuffer(
+        # 标记 JSON 不会漏进 content（增量口径扣留器）
+        buf = tool_bridge.DeltaToolBuffer(
             [f"<{QWEN_TOOL_TAG}>", QWEN_TOOL_MARKER]) if tools else None
         sent_text = ""
         sent_reasoning = ""
@@ -1078,15 +1078,10 @@ class QwenWebClient:
                 d_reason = ev["reasoning"][len(sent_reasoning):]
                 if d_reason:
                     sent_reasoning = ev["reasoning"]
-                if buf is not None:
-                    released = buf.feed(ev["text"])
-                    d_text = released[len(sent_text):]
-                    sent_text = released
-                else:
-                    d_text = ev["text"][len(sent_text):]
-                    if d_text:
-                        sent_text = ev["text"]
-                out_r, out_c = rs.feed(d_reason, d_text)
+                d_text = ev["text"][len(sent_text):]
+                sent_text = ev["text"]
+                d_out = buf.feed_delta(d_text) if buf is not None else d_text
+                out_r, out_c = rs.feed(d_reason, d_out)
                 if out_r:
                     yield chunk({"reasoning_content": out_r})
                 if out_c:

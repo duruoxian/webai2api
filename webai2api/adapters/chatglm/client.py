@@ -237,46 +237,6 @@ def _dedup_repeated(text: str) -> str:
     return text
 
 
-class RepeatGuard:
-    """流式输出去重守卫：喂入「已放行内容的全文快照」，返回安全前缀。
-
-    只在已放行部分 ≥ _DUP_MIN_BLOCK 时启用扣留；短文本零行为差异。
-    finish() 按保守策略放行扣留残余（截断的复述不算数，不丢内容）。
-    """
-
-    def __init__(self) -> None:
-        self._text = ""      # 已见全文（含扣住部分）
-        self._sent = 0       # 已放行长度
-        self._pending = ""   # 扣住的疑似重复
-        self._armed = True
-
-    def feed(self, text: str) -> str:
-        if not self._armed:
-            return text
-        if self._text and not text.startswith(self._text):
-            # 上游回撤/改写快照（不该发生）：放弃守卫直通
-            self._armed = False
-            self._text, self._sent, self._pending = text, len(text), ""
-            return text
-        self._pending += text[len(self._text):]
-        self._text = text
-        if self._sent < _DUP_MIN_BLOCK:
-            self._sent, self._pending = len(text), ""
-            return text
-        if self._pending and self._pending == text[:len(self._pending)]:
-            # 复述长度追上已放行长度 → 完整重复确认，整段丢弃
-            if len(self._pending) >= self._sent:
-                self._pending = ""
-            return text[:self._sent]
-        # 不再匹配全文开头 → 不是重复，全部放行
-        self._sent, self._pending = len(text), ""
-        return text
-
-    def finish(self) -> str:
-        out, self._pending = self._pending, ""
-        self._sent = len(self._text)
-        return out
-
 
 def _estimate_tokens(text: str) -> int:
     """估算 token 数：中文约 1.5 字/token，其他约 4 字符/token。
@@ -1049,13 +1009,12 @@ class ChatGlmWebClient:
             yield "data: [DONE]\n\n"
             return
 
-        # 有工具时扣住标记文本：标记出现前照常流式，出现后扣留等解析，
-        # 既不漏 JSON 给客户端，也保住普通回答的流式体验
-        buf = tool_bridge.ToolStreamBuffer([TOOL_MARKER]) if has_tools else None
-        guard = RepeatGuard()
+        # 有工具时扣住标记文本。链路纪律：**前缀差只对单调全量做**，
+        # 扣留器用增量口径（DeltaToolBuffer）——快照口径的 buf 会回扣
+        # 尾部使输出非单调，嵌套在前缀差链里会错位咬字（GLM 实测）
+        buf = tool_bridge.DeltaToolBuffer([TOOL_MARKER]) if has_tools else None
         sent_text = ""
         sent_reasoning = ""
-        rel_total = ""   # 已进入守卫的全文快照（缓冲器放行口径）
         rs = reasoning_bridge.ReasoningStream(
             legacy=self.config.legacy_reasoning_in_content)
         try:
@@ -1063,14 +1022,10 @@ class ChatGlmWebClient:
                 d_reason = ev["reasoning"][len(sent_reasoning):]
                 if d_reason:
                     sent_reasoning = ev["reasoning"]
-                if buf is not None:
-                    rel_total = buf.feed(ev["text"])
-                else:
-                    rel_total = ev["text"]
-                safe = guard.feed(rel_total)
-                d_text = safe[len(sent_text):]
-                sent_text = safe
-                out_r, out_c = rs.feed(d_reason, d_text)
+                d_text = ev["text"][len(sent_text):]
+                sent_text = ev["text"]
+                d_out = buf.feed_delta(d_text) if buf is not None else d_text
+                out_r, out_c = rs.feed(d_reason, d_out)
                 if out_r:
                     yield chunk({"reasoning_content": out_r})
                 if out_c:
@@ -1101,27 +1056,13 @@ class ChatGlmWebClient:
                 yield chunk({}, finish="tool_calls")
                 yield "data: [DONE]\n\n"
                 return
-            # 没解析出工具调用：只放**未发出**的尾巴（缓冲器扣住的部分），
-            # 剥掉可能的标记残迹。旧实现这里把 buf.text 全文重发一遍，
-            # 而正文早已流出——这就是「GLM 回复重复两遍」的直接原因
+            # 没解析出工具调用：只放缓冲器扣住的未发尾巴（剥掉标记残迹）
             rel_tail = _strip_tool_block(buf.flush())
         else:
             rel_tail = ""
 
-        # 尾巴过守卫（疑似整段重复会被扣住），再统一清算放行
         if rel_tail:
-            safe = guard.feed(rel_total + rel_tail)
-            d_text = safe[len(sent_text):]
-            sent_text = safe
-            out_r, out_c = rs.feed("", d_text)
-            if out_r:
-                yield chunk({"reasoning_content": out_r})
-            if out_c:
-                yield chunk({"content": out_c})
-        # 守卫扣住的残余是未发过的增量：截断的复述按保守策略放行，不丢内容
-        final_tail = guard.finish()
-        if final_tail:
-            out_r, out_c = rs.feed("", final_tail)
+            out_r, out_c = rs.feed("", rel_tail)
             if out_r:
                 yield chunk({"reasoning_content": out_r})
             if out_c:
