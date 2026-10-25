@@ -59,6 +59,17 @@ def _writable(d: Path) -> bool:
 
 
 def user_data_dir() -> Path:
+    """数据目录。
+
+    安装态 lite **永远**用用户本地目录：授权/账号跟人走，绝不落进
+    Program Files——否则被提权安装器拉起的实例（exe 目录对管理员
+    可写）会在安装目录另建空库，用户侧表现为「授权没了」。
+    其余情况优先 exe 同级（便携/开发态），不可写再回退。
+    """
+    if is_frozen() and _is_lite():
+        alt = _fallback_data_dir()
+        alt.mkdir(parents=True, exist_ok=True)
+        return alt
     d = _exe_dir() / "data"
     if _writable(d):
         return d

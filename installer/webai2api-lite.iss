@@ -3,7 +3,7 @@
 ;   & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\webai2api-lite.iss
 
 #define MyAppName "webai2api 客户版"
-#define MyAppVersion "0.1.28"
+#define MyAppVersion "0.1.29"
 #define MyAppPublisher "DuRuoxian"
 #define MyAppURL "https://github.com/duruoxian/webai2api"
 #define MyAppExeName "webai2api.exe"
@@ -53,7 +53,9 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "webai2api-lite"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; runasoriginaluser：安装器是提权运行的，必须显式降回普通用户启动，
+; 否则程序继承管理员权限后会在安装目录另建空数据库（用户侧表现为「授权消失」）
+Filename: "{app}\{#MyAppExeName}"; Description: "立即启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallDelete]
 ; 卸载时保留 data（用户授权/账号/用量），仅清理日志与端口文件
