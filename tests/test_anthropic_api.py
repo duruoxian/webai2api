@@ -355,3 +355,22 @@ def test_e2e_messages_stream_tool_use_roundtrip(tmp_path):
     r2 = client.post("/v1/messages", headers={"x-api-key": key}, json=body)
     assert r2.status_code == 200, r2.text
     assert r2.json()["type"] == "message"
+
+
+# ── 5. 面板 Anthropic 接入片段（backlog 第 1 项）─────────
+
+def test_panels_have_anthropic_snippet_section():
+    """两面板都要有 Anthropic 客户端接入区：片段容器、构建函数、
+    与 Key 选择联动（rebuildSnippet 里同步填充）。"""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "webai2api" / "web"
+    for name in ("index.html", "lite_panel.html"):
+        html = (root / name).read_text(encoding="utf-8")
+        assert 'id="anthSnippet"' in html, f"{name} 缺片段容器"
+        assert "buildAnthSnippet" in html, f"{name} 缺构建函数"
+        assert "ANTHROPIC_BASE_URL" in html, f"{name} 缺 Claude Code 环境变量"
+        assert "anthropic-messages" in html, f"{name} 缺 ZCode 协议指引"
+        # 随所选 Key 联动
+        assert "buildAnthSnippet(k?k.key:'')" in html, \
+            f"{name} 片段未跟随 Key 选择刷新"

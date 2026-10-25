@@ -257,6 +257,13 @@
         </div>
 
         <div class="set-group" style="margin-top:18px">
+          <div class="set-group-title">Anthropic 客户端（Claude Code / ZCode）</div>
+          <p class="hint" style="margin-bottom:8px">原生说 Anthropic 协议的客户端直接用下面的配置（走 <code>/v1/messages</code> 端点，工具调用/流式/思考均已支持）。Claude Code 把 env 写进 <code>~/.claude/settings.json</code>；ZCode 在自定义模型模板里选 <code>anthropic-messages</code> 协议后填同样的 baseUrl 与 Key：</p>
+          <pre id="anthSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
+          <button class="btn sm" onclick="copyText(document.getElementById('anthSnippet').textContent)" style="margin-top:10px">复制 Anthropic 配置</button>
+        </div>
+
+        <div class="set-group" style="margin-top:18px">
           <div class="set-group-title">其他 OpenAI 兼容客户端</div>
           <p class="muted" style="margin:-2px 0 12px">在任意支持「自定义提供商 / OpenAI 兼容」的客户端里新建提供商，按下表填写。填完点「提交」，再到客户端里添加模型即可。</p>
           <div class="guide">
@@ -1924,6 +1931,24 @@ ${lines.join(',\n')}
     const k=selectedKeyObj();
     OC_SNIP=buildSnippet(models, k?k.key:'');
     const el=document.getElementById('ocSnippet'); if(el) el.textContent=OC_SNIP;
+    const ael=document.getElementById('anthSnippet');
+    if(ael) ael.textContent=buildAnthSnippet(k?k.key:'');
+  }
+  function buildAnthSnippet(keyVal){
+    const base=location.origin;
+    const k=keyVal||'sk-你的Key';
+    return `# Claude Code —— 把 env 段写进 ~/.claude/settings.json（或设为系统环境变量）
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "`+base+`",
+    "ANTHROPIC_AUTH_TOKEN": "`+k+`"
+  }
+}
+
+# ZCode —— 自定义模型模板选 anthropic-messages 协议：
+#   baseUrl: `+base+`        apiKey: `+k+`
+# 模型任选四平台：deepseek-chat / deepseek-reasoner / GLM-5.3-Flash /
+#   kimi-k2.8 / qwen3.7-plus ...（完整清单见「其他 OpenAI 兼容客户端」）`;
   }
   window.rebuildOcSel=rebuildOcSel;
   window.rebuildSnippet=rebuildSnippet;
@@ -1978,6 +2003,8 @@ ${lines.join(',\n')}
   window.ocDisconnectCurrent=ocDisconnectCurrent;
 
   OC_SNIP=buildSnippet(DEFAULT_MODELS,'');
+  const anthEl = document.getElementById('anthSnippet');
+  if(anthEl) anthEl.textContent = buildAnthSnippet('');
   const el = document.getElementById('ocSnippet');
   if(el) el.textContent = OC_SNIP;
   window.__setSnippet=function(models){
