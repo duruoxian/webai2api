@@ -273,6 +273,10 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                     store.get_setting, "qwen_output_limit", "65536"),
                 "admin_password": "******",
             },
+            # 客户版面板的授权卡从 s.license 渲染；0.1.26 单代码库合并时
+            # 把 lite 分支的这行弄丢了，授权卡（含授权码输入框）从此被
+            # 前端当「未启用」隐藏——0.1.30 找回
+            "license": await run_in_threadpool(_license_info),
         }
 
     # ── 账号 ──
