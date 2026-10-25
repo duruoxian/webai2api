@@ -1184,13 +1184,20 @@ def _opencode_status_io() -> dict:
     if exists:
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
-            has_provider = _provider_has_entry(text, "webai2api")
+            has_provider = (_provider_has_entry(text, "webai2api", section="providers")
+                            or _provider_has_entry(text, "webai2api", section="provider"))
         except Exception:
             has_provider = False
     return {"installed": installed, "config_path": str(path), "has_provider": has_provider}
 
 
 def _build_opencode_snippet(host: str, key: str, models: list[str]) -> str:
+    """生成 opencode V2 格式的 webai2api 供应商块。
+
+    V2（opencode ≥2.x）与 V1 的差异：顶层键 providers；供应商用
+    package（@opencode/ai/providers/openai-compatible）与 settings；
+    模型能力用 capabilities（reasoning 是对象）；variants 推理档位沿用。
+    """
     lines = []
     for m in models:
         mid = str(m)
@@ -1225,19 +1232,21 @@ def _build_opencode_snippet(host: str, key: str, models: list[str]) -> str:
                             '"思考": { "reasoningEffort": "high" }, '
                             '"快速": { "reasoningEffort": "low" } }')
         lines.append(
-            f'    {jmid}: {{ "name": {jmid}, "attachment": true, "reasoning": {reasoning},\n'
-            f'      "modalities": {{ "input": ["image","text"], "output": ["text"] }},\n'
+            f'    {jmid}: {{ "name": {jmid},\n'
+            f'      "capabilities": {{ "input": ["image","text"], "output": ["text"],\n'
+            f'        "reasoning": {{ "supported": {reasoning} }} }},\n'
             f'      "limit": {{ "context": {ctx}, "output": {out} }}{variants} }}'
         )
     return (
         '"webai2api": {\n'
-        '  "npm": "@ai-sdk/openai-compatible",\n'
+        '  "package": "@opencode/ai/providers/openai-compatible",\n'
         '  "name": "webai2api",\n'
-        '  "options": {\n'
+        '  "settings": {\n'
         f'    "baseURL": {json.dumps(host + "/v1", ensure_ascii=False)},\n'
         f'    "apiKey": {json.dumps(str(key), ensure_ascii=False)},\n'
         '    "maxRetries": 0\n'
         '  },\n'
+        '  "compatibility": { "streamUsage": true },\n'
         '  "models": {\n'
         + ",\n".join(lines) +
         '\n  }\n}'
@@ -1323,12 +1332,13 @@ def _match_close(text: str, open_idx: int) -> int:
     return -1
 
 
-def _find_provider_span(text: str) -> tuple[int, int] | None:
-    """定位顶层 "provider" 对象的区间 (起 {, 止 } 含)。找不到返回 None。
+def _find_provider_span(text: str, section: str = "provider") -> tuple[int, int] | None:
+    """定位顶层 section（"provider"=V1 / "providers"=V2）对象的区间 (起 {, 止 } 含)。
 
-    逐字符扫描：注释被跳过；字符串字面量内部的 "provider" 因其后不跟 : 而跳过。
-    返回值下标是**原始 text** 中的下标，可直接切片。
+    找不到返回 None。逐字符扫描：注释被跳过；字符串字面量内部的键名
+    因其后不跟 : 而跳过。返回值下标是**原始 text** 中的下标，可直接切片。
     """
+    target_key = '"' + section + '"'
     i = 0
     n = len(text)
     while i < n:
@@ -1345,7 +1355,7 @@ def _find_provider_span(text: str) -> tuple[int, int] | None:
                 j += 1
             literal = text[i:j + 1]
             k = _skip_ws_comment(text, j + 1)
-            if literal == '"provider"' and k < n and text[k] == ":":
+            if literal == target_key and k < n and text[k] == ":":
                 k = _skip_ws_comment(text, k + 1)
                 if k < n and text[k] == "{":
                     close = _match_close(text, k)
@@ -1429,18 +1439,18 @@ def _find_top_level_key(text: str, start: int, end: int, name: str) -> int:
     return -1
 
 
-def _provider_has_entry(text: str, name: str) -> bool:
-    """provider 对象**第一层**是否存在键 "name":（嵌套同名不算）。"""
-    span = _find_provider_span(text)
+def _provider_has_entry(text: str, name: str, section: str = "provider") -> bool:
+    """provider(s) 对象**第一层**是否存在键 "name":（嵌套同名不算）。"""
+    span = _find_provider_span(text, section)
     if not span:
         return False
     start, end = span
     return _find_top_level_key(text, start, end, name) >= 0
 
 
-def _remove_provider_block(text: str, name: str) -> str:
-    """删掉 provider 对象**第一层**的 "name": { ... }, 块（只在该区间内操作）。"""
-    span = _find_provider_span(text)
+def _remove_provider_block(text: str, name: str, section: str = "provider") -> str:
+    """删掉 provider(s) 对象**第一层**的 "name": { ... }, 块（只在该区间内操作）。"""
+    span = _find_provider_span(text, section)
     if not span:
         return text
     start, end = span
@@ -1471,7 +1481,7 @@ def _remove_provider_block(text: str, name: str) -> str:
             head -= 1
     out = text[:head] + text[tail:]
     # 重新配对清理区间内的尾逗号（, } / , ]），只作用于该 provider 区间
-    new_span = _find_provider_span(out)
+    new_span = _find_provider_span(out, section)
     if new_span:
         s2, e2 = new_span
         seg = out[s2:e2 + 1]
@@ -1480,15 +1490,16 @@ def _remove_provider_block(text: str, name: str) -> str:
     return out
 
 
-def _ensure_provider_section(text: str) -> str:
-    """确保顶层存在 "provider": { }，缺则插入；返回新文本。
+def _ensure_provider_section(text: str, section: str = "provider") -> str:
+    """确保顶层存在 "section": { }，缺则插入；返回新文本。
 
     兼容：空文件、只有一个 {}、有其它顶层键、带 // 与 /* */ 注释。
     顶层不是对象（无法安全改写）时原样返回，由调用方报错。
     """
     stripped = _strip_jsonc_comments(text).strip()
     if not stripped:
-        return '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n  }\n}\n'
+        return ('{\n  "$schema": "https://opencode.ai/config.json",\n  "'
+                + section + '": {\n  }\n}\n')
 
     # 顶层必须是 { ... }
     first = _skip_ws_comment(text, 0)
@@ -1498,51 +1509,97 @@ def _ensure_provider_section(text: str) -> str:
     if close < 0:
         return text
 
-    # 已有 provider 键（值不是对象也算存在，交给后续逻辑判断）
+    # 已有该 section 键（值不是对象也算存在，交给后续逻辑判断）
     body = text[first + 1:close]
-    existing = _find_provider_span(text)
+    existing = _find_provider_span(text, section)
     if existing is not None:
         return text
 
     inner = body.strip()
     insert_at = first + 1
     if inner:
-        # 有其它键：追加 ", "provider": {}"
-        block = '\n  "provider": {\n  },\n'
+        # 有其它键：追加 ", "section": {}"
+        block = '\n  "' + section + '": {\n  },\n'
         return text[:insert_at] + block + body.lstrip("\r\n") + text[close:]
-    return text[:insert_at] + '\n  "provider": {\n  }\n' + text[close:]
+    return text[:insert_at] + '\n  "' + section + '": {\n  }\n' + text[close:]
+
+
+def _remove_top_level_section(text: str, section: str) -> str:
+    """整体移除顶层 "section": { ... }（含键名、冒号与相邻逗号）。段不存在时原样返回。"""
+    span = _find_provider_span(text, section=section)
+    if not span:
+        return text
+    brace_open, brace_close = span
+    key_literal = '"' + section + '"'
+    key_end = text.rfind(key_literal, 0, brace_open)
+    start = brace_open
+    if key_end >= 0 and text[key_end + len(key_literal):brace_open].strip() == ":":
+        start = key_end  # 键名 + 冒号一并移除
+    tail = brace_close + 1
+    while tail < len(text) and text[tail] in " \t\r\n":
+        tail += 1
+    if tail < len(text) and text[tail] == ",":
+        tail += 1
+        while tail < len(text) and text[tail] in " \t\r\n":
+            tail += 1
+    head = start
+    while head > 0 and text[head - 1] in " \t":
+        head -= 1
+    if head > 0 and text[head - 1] == ",":
+        head -= 1
+        while head > 0 and text[head - 1] in " \t":
+            head -= 1
+    return text[:head] + text[tail:]
 
 
 def _write_opencode_config(snippet: str) -> dict:
+    """把 webai2api 供应商块写入 opencode 配置（V2 格式）。
+
+    V2（opencode ≥2.x）：顶层键是 "providers"，供应商用
+    package/settings/capabilities。同时清理历史遗留：
+    - 旧 V1 "provider" 段里的 webai2api 块（若整段因此变空，连段一起移除）
+    - disabled_providers 数组里的 webai2api 项
+    """
     path = _opencode_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.write_text('{\n  "$schema": "https://opencode.ai/config.json",\n'
-                        '  "provider": {\n  }\n}\n', encoding="utf-8")
+                        '  "providers": {\n  }\n}\n', encoding="utf-8")
 
     text = path.read_text(encoding="utf-8")
     backup = path.with_name(f"{path.name}.bak_{datetime.now().strftime('%Y%m%d%H%M%S_%f')}")
     backup.write_text(text, encoding="utf-8")
 
-    # 配置里没有 provider 段（全新安装的 opencode 往往如此）：自动补一个空段，
-    # 而不是让用户手动粘贴——保证无论装在哪台机器都能一键导入。
-    if _find_provider_span(text) is None:
-        text = _ensure_provider_section(text)
+    # V1 迁移：旧 "provider" 段里如果有 webai2api（V1 格式残留），先摘除；
+    # 旧段若因此变空（只剩空白），整段连键名一起移除，不给 V2 配置留孤儿键
+    if _provider_has_entry(text, "webai2api", section="provider"):
+        text = _remove_provider_block(text, "webai2api", section="provider")
+        legacy = _find_provider_span(text, section="provider")
+        if legacy:
+            inner = _strip_jsonc_comments(text[legacy[0] + 1:legacy[1]]).strip()
+            inner = re.sub(r",", "", inner).strip()
+            if not inner:
+                text = _remove_top_level_section(text, "provider")
 
-    span = _find_provider_span(text)
+    # 配置里没有 providers 段（全新安装的 opencode 往往如此）：自动补一个空段，
+    # 而不是让用户手动粘贴——保证无论装在哪台机器都能一键导入。
+    if _find_provider_span(text, section="providers") is None:
+        text = _ensure_provider_section(text, section="providers")
+
+    span = _find_provider_span(text, section="providers")
     if not span:
         raise RuntimeError("配置格式异常（顶层不是对象），请手动粘贴")
     _brace, close_pos = span
-    # provider 块闭合后下一个非空白字符必须是 , 或 }（顶层对象结尾）
+    # providers 块闭合后下一个非空白字符必须是 , 或 }（顶层对象结尾）
     tail = _strip_jsonc_comments(text[close_pos + 1:]).lstrip(" \t\n\r")
     if tail and tail[0] not in ",}":
         raise RuntimeError("配置格式异常，请手动粘贴")
 
-    # 移除旧的 webai2api 块
-    text = _remove_provider_block(text, "webai2api")
+    # 移除旧的 webai2api 块（幂等：重复接入不产生重复条目）
+    text = _remove_provider_block(text, "webai2api", section="providers")
 
-    # 重新定位 provider 的 {（同样限定在 provider 对象内，避免注释/字符串干扰）
-    span2 = _find_provider_span(text)
+    # 重新定位 providers 的 {（同样限定在 providers 对象内，避免注释/字符串干扰）
+    span2 = _find_provider_span(text, section="providers")
     if not span2:
         raise RuntimeError("配置格式异常，请手动粘贴")
     orig_brace = span2[0]
@@ -1645,12 +1702,14 @@ def _remove_opencode_provider() -> dict:
         return {"ok": True, "not_present": True, "path": str(path)}
     text = path.read_text(encoding="utf-8")
 
-    has_provider = _find_provider_span(text) is not None
-    in_provider = has_provider and _provider_has_entry(text, "webai2api")
+    in_providers = (_find_provider_span(text, section="providers") is not None
+                    and _provider_has_entry(text, "webai2api", section="providers"))
+    in_legacy = (_find_provider_span(text, section="provider") is not None
+                 and _provider_has_entry(text, "webai2api", section="provider"))
     in_disabled = '"webai2api"' in _strip_jsonc_comments(text) and (
         _remove_disabled_provider(text, "webai2api") != text)
-    if not in_provider and not in_disabled:
-        # provider 段不存在，或存在但没有 webai2api：幂等成功，不写文件不出备份
+    if not in_providers and not in_legacy and not in_disabled:
+        # providers 段不存在，或存在但没有 webai2api：幂等成功，不写文件不出备份
         return {"ok": True, "not_present": True, "path": str(path)}
 
     # 有残留需要删，但 JSONC 本身已损坏：改写可能把用户配置越改越坏，直接报错让用户手改
@@ -1660,7 +1719,14 @@ def _remove_opencode_provider() -> dict:
     backup = path.with_name(f"{path.name}.bak_{datetime.now().strftime('%Y%m%d%H%M%S_%f')}")
     backup.write_text(text, encoding="utf-8")
 
-    new_text = _remove_provider_block(text, "webai2api") if has_provider else text
+    new_text = _remove_provider_block(text, "webai2api", section="providers") if in_providers else text
+    new_text = _remove_provider_block(new_text, "webai2api", section="provider")
+    # V1 段被摘空后整段移除，避免孤儿键
+    legacy = _find_provider_span(new_text, section="provider")
+    if legacy:
+        inner = _strip_jsonc_comments(new_text[legacy[0] + 1:legacy[1]]).strip().replace(",", "")
+        if not inner:
+            new_text = _remove_top_level_section(new_text, "provider")
     new_text = _remove_disabled_provider(new_text, "webai2api")
     if new_text == text:
         return {"ok": True, "not_present": True, "path": str(path), "backup": str(backup)}

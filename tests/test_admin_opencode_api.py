@@ -131,10 +131,10 @@ def test_connect_writes_config(client, config_path):
     assert config_path.exists()
 
     doc = _jsonc(config_path.read_text(encoding="utf-8"))
-    block = doc["provider"]["webai2api"]
-    assert block["npm"] == "@ai-sdk/openai-compatible"
-    assert block["options"]["baseURL"].endswith("/v1")
-    assert block["options"]["apiKey"] == key["key"]
+    block = doc["providers"]["webai2api"]
+    assert block["package"] == "@opencode/ai/providers/openai-compatible"
+    assert block["settings"]["baseURL"].endswith("/v1")
+    assert block["settings"]["apiKey"] == key["key"]
     assert list(block["models"]) == ["deepseek-chat"]
 
 
@@ -173,7 +173,7 @@ def test_connect_without_provider_section_auto_creates(client, config_path):
     assert body["provider"] == "webai2api"
     text = config_path.read_text(encoding="utf-8")
     parsed = json.loads(api._strip_jsonc_comments(text))
-    assert parsed["provider"]["webai2api"]["options"]["apiKey"] == key["key"]
+    assert parsed["providers"]["webai2api"]["settings"]["apiKey"] == key["key"]
     assert parsed["model"] == "x"
 
 
@@ -186,7 +186,7 @@ def test_connect_with_empty_config_creates_provider(client, config_path):
                     json={}, headers=_hdr(tok))
     assert r.json()["ok"] is True
     doc = _jsonc(config_path.read_text(encoding="utf-8"))
-    assert "webai2api" in doc["provider"]
+    assert "webai2api" in doc["providers"]
     assert "我的配置" in config_path.read_text(encoding="utf-8")  # 注释仍在
 
 
@@ -203,7 +203,9 @@ def test_disconnect_removes_block(client, config_path):
     body = r.json()
     assert body["ok"] is True
     assert Path(body["config_path"]) == config_path
-    assert "webai2api" not in _jsonc(config_path.read_text(encoding="utf-8"))["provider"]
+    doc = _jsonc(config_path.read_text(encoding="utf-8"))
+    assert "webai2api" not in doc.get("providers", {})
+    assert "webai2api" not in doc.get("provider", {})  # V1 残留也须清干净
 
 
 def test_disconnect_idempotent_when_absent(client, config_path):

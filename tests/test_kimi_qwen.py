@@ -180,7 +180,7 @@ def test_snippet_variants_by_provider() -> None:
     assert '"极致": { "reasoningEffort": "max" }' in snip      # kimi 非 k2.6 有极致
     assert '"思考研究"' not in snip                              # 旧档名已废弃
     assert '"自动"' in snip and '"思考"' in snip and '"快速"' in snip
-    assert '"reasoning": false' in snip                        # deepseek-chat 非思考
+    assert '"reasoning": { "supported": false }' in snip       # deepseek-chat 非思考
     assert json.loads("{\n" + snip.strip().rstrip(",") + "\n}")  # 外壳结构可解析
 
     # k2.6 不应带极致档；flash 三档里没有"自动"

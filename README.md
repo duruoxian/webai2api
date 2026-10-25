@@ -123,23 +123,29 @@ opencode 主页 → **设置 → 提供商 → 自定义提供商**，按下表�
 
 ### 方式 B：直接改配置文件
 
-在 `~/.config/opencode/opencode.jsonc` 的 `provider` 里加：
+> opencode ≥2.x 用 V2 格式：顶层键 `providers`，供应商用 `package` + `settings`，
+> 模型能力用 `capabilities`。V1（`provider` + `npm` + `options`）已被 V2 取代。
+
+在 `~/.config/opencode/opencode.jsonc` 的 `providers` 里加：
 
 ```jsonc
 "webai2api": {
-  "npm": "@ai-sdk/openai-compatible",
+  "package": "@opencode/ai/providers/openai-compatible",
   "name": "webai2api",
-  "options": {
+  "settings": {
     "baseURL": "http://127.0.0.1:8800/v1",
     "apiKey": "sk-你的key",
     "maxRetries": 0
   },
+  "compatibility": { "streamUsage": true },
   "models": {
-    "deepseek-chat": { "name": "DeepSeek Chat (网页版)", "attachment": true, "reasoning": true,
-      "modalities": { "input": ["image", "text"], "output": ["text"] },
+    "deepseek-chat": { "name": "DeepSeek Chat (网页版)",
+      "capabilities": { "input": ["image", "text"], "output": ["text"],
+        "reasoning": { "supported": false } },
       "limit": { "context": 1000000, "output": 384000 } },
-    "deepseek-reasoner": { "name": "DeepSeek Reasoner (网页版)", "attachment": true, "reasoning": true,
-      "modalities": { "input": ["image", "text"], "output": ["text"] },
+    "deepseek-reasoner": { "name": "DeepSeek Reasoner (网页版)",
+      "capabilities": { "input": ["image", "text"], "output": ["text"],
+        "reasoning": { "supported": true } },
       "limit": { "context": 1000000, "output": 384000 } }
   }
 }

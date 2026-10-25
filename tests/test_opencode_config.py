@@ -247,11 +247,11 @@ def test_snippet_placeholder_is_parseable_object():
                                        ["deepseek-chat", "deepseek-reasoner"])
     obj = json.loads("{" + snip + "}")
     block = obj["webai2api"]
-    assert block["npm"] == "@ai-sdk/openai-compatible"
-    assert block["options"]["baseURL"] == "http://127.0.0.1:8802/v1"
-    assert block["options"]["apiKey"] == "sk-123"
+    assert block["package"] == "@opencode/ai/providers/openai-compatible"
+    assert block["settings"]["baseURL"] == "http://127.0.0.1:8802/v1"
+    assert block["settings"]["apiKey"] == "sk-123"
     assert set(block["models"]) == {"deepseek-chat", "deepseek-reasoner"}
-    assert block["models"]["deepseek-reasoner"]["reasoning"] is True
+    assert block["models"]["deepseek-reasoner"]["capabilities"]["reasoning"] == {"supported": True}
     assert block["models"]["deepseek-chat"]["limit"] == {"context": 1000000, "output": 384000}
 
 
@@ -259,7 +259,7 @@ def test_snippet_glm_variants_and_limits():
     snip = api._build_opencode_snippet("http://127.0.0.1:8802", "k", ["GLM-5.3"])
     block = json.loads("{" + snip + "}")["webai2api"]
     m = block["models"]["GLM-5.3"]
-    assert m["reasoning"] is True
+    assert m["capabilities"]["reasoning"] == {"supported": True}
     assert m["limit"] == {"context": 1000000, "output": 128000}
     assert set(m["variants"]) == {"快速", "深度", "极致"}
 
@@ -270,7 +270,7 @@ def test_snippet_model_id_with_quotes_is_safe():
     block = json.loads("{" + snip + "}")["webai2api"]
     assert list(block["models"]) == [weird]
     assert block["models"][weird]["name"] == weird
-    assert block["options"]["apiKey"] == 'key"with\\quote'
+    assert block["settings"]["apiKey"] == 'key"with\\quote'
 
 
 # ── 与 _write_opencode_config 组合（仍只用 tmp_path） ──
@@ -287,7 +287,8 @@ def test_write_then_remove_roundtrip(monkeypatch, tmp_path):
         '{\n  "$schema": "https://opencode.ai/config.json",\n'
         '  // 用户自己的配置\n'
         '  "disabled_providers": ["webai2api"],\n'
-        '  "provider": {\n    "other": { "npm": "@x" }\n  }\n}\n',
+        '  "provider": {\n    "webai2api": { "npm": "@legacy" }\n  },\n'
+        '  "providers": {\n    "other": { "package": "@x" }\n  }\n}\n',
         encoding="utf-8",
     )
     snip = api._build_opencode_snippet("http://127.0.0.1:8802", "sk-ab", ["deepseek-chat"])
@@ -297,21 +298,24 @@ def test_write_then_remove_roundtrip(monkeypatch, tmp_path):
     text = p.read_text(encoding="utf-8")
     assert api._opencode_structure_ok(text)
     doc = _whole_doc(text)
-    assert "webai2api" in doc["provider"]
-    assert doc["provider"]["other"] == {"npm": "@x"}
+    # V2：webai2api 写进 providers；V1 残留块被迁移清理
+    assert "webai2api" in doc["providers"]
+    assert doc["providers"]["webai2api"]["package"] == "@opencode/ai/providers/openai-compatible"
+    assert doc["providers"]["other"] == {"package": "@x"}
+    assert "webai2api" not in doc.get("provider", {})
     assert doc["disabled_providers"] == []
     assert doc["$schema"].startswith("https://")
 
     # 再写一次：幂等，不应出现重复块
     api._write_opencode_config(snip)
     doc2 = _whole_doc(p.read_text(encoding="utf-8"))
-    assert len([k for k in doc2["provider"] if k == "webai2api"]) == 1
+    assert len([k for k in doc2["providers"] if k == "webai2api"]) == 1
 
     res = api._remove_opencode_provider()
     assert res["ok"] is True
     doc3 = _whole_doc(p.read_text(encoding="utf-8"))
-    assert "webai2api" not in doc3["provider"]
-    assert doc3["provider"]["other"] == {"npm": "@x"}
+    assert "webai2api" not in doc3["providers"]
+    assert doc3["providers"]["other"] == {"package": "@x"}
 
 
 def test_write_creates_config_when_absent(monkeypatch, tmp_path):
@@ -320,7 +324,7 @@ def test_write_creates_config_when_absent(monkeypatch, tmp_path):
     snip = api._build_opencode_snippet("http://127.0.0.1:8802", "k", ["deepseek-chat"])
     api._write_opencode_config(snip)
     doc = _whole_doc(p.read_text(encoding="utf-8"))
-    assert "webai2api" in doc["provider"]
+    assert "webai2api" in doc["providers"]
 
 
 def test_write_creates_provider_when_missing(monkeypatch, tmp_path):
@@ -330,7 +334,7 @@ def test_write_creates_provider_when_missing(monkeypatch, tmp_path):
     p.write_text('{\n  "model": "x"\n}\n', encoding="utf-8")
     api._write_opencode_config('"webai2api": {}')
     doc = _whole_doc(p.read_text(encoding="utf-8"))
-    assert "webai2api" in doc["provider"]
+    assert "webai2api" in doc["providers"]
     assert doc["model"] == "x"
 
 
@@ -392,7 +396,7 @@ def test_status_io_missing_file(monkeypatch, tmp_path):
 def test_status_io_with_provider(monkeypatch, tmp_path):
     p = _use_config(monkeypatch, tmp_path)
     p.parent.mkdir(parents=True)
-    p.write_text('{"provider": {"webai2api": {}}}', encoding="utf-8")
+    p.write_text('{"providers": {"webai2api": {}}}', encoding="utf-8")
     info = api._opencode_status_io()
     assert info["installed"] is True
     assert info["has_provider"] is True

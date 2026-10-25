@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.26">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.27">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -16,7 +16,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.26"></script>
+<script src="/admin/static/hyalite.js?v=0.1.27"></script>
 </head>
 <body>
 
@@ -2170,18 +2170,20 @@ function tuneGlass(dark){
           ? `,\n      "variants": { "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`
           : `,\n      "variants": { "自动": { "reasoningEffort": "medium" }, "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`;
       }
-      lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)}, "attachment": true, "reasoning": ${reason},\n`
-        +`      "modalities": { "input": ["image","text"], "output": ["text"] },\n`
+      lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)},\n`
+        +`      "capabilities": { "input": ["image","text"], "output": ["text"],\n`
+        +`        "reasoning": { "supported": ${reason} } },\n`
         +`      "limit": { "context": ${lim.context}, "output": ${lim.output} }${variants} }`);
     }
     return `"webai2api": {
-  "npm": "@ai-sdk/openai-compatible",
+  "package": "@opencode/ai/providers/openai-compatible",
   "name": "webai2api 多账号网关",
-  "options": {
+  "settings": {
     "baseURL": "${loc}/v1",
     "apiKey": ${JSON.stringify(keyVal||'')},
     "maxRetries": 0
   },
+  "compatibility": { "streamUsage": true },
   "models": {
 ${lines.join(',\n')}
   }
