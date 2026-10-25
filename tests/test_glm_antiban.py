@@ -119,7 +119,7 @@ def test_default_antiban_knobs() -> None:
     assert cfg.session_cache_max_size == 2000
     assert cfg.long_pause_chance == 0.02
     assert cfg.min_request_interval == 1.2
-    assert cfg.max_turns_per_session == 40
+    assert cfg.max_turns_per_session == 200
 
 def test_conv_cache_persists_across_instances(tmp_path) -> None:
     """会话缓存落盘：新实例（模拟重启）仍能复用同一 conversation_id。"""
