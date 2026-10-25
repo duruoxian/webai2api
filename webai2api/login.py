@@ -65,15 +65,28 @@ class LoginManager:
         self.logger = logger
         self._lock = threading.Lock()
         self._procs: dict[str, subprocess.Popen] = {}
+        # 已把 success 信号「落地」为池刷新的账号：登录在子进程完成，主进程
+        # 只能靠状态文件感知——但 success 状态会一直留着，若每次轮询都刷新，
+        # state 接口（面板轮询 + 每次增删后必刷）会被 7 账号 × 全量池重建
+        # 拖到数秒（实测 3~5s）。这里保证每个账号的一次登录只触发一次刷新。
+        self._applied_success: set[str] = set()
 
     def state(self, acc_id: str) -> dict:
         st = read_state(acc_id)
-        if st.get("status") == "success":
-            try:
-                self.registry.refresh()
-            except Exception:
-                pass
+        status = str(st.get("status") or "")
+        if status == "success" and acc_id not in self._applied_success:
+            self._applied_success.add(acc_id)
+            threading.Thread(target=self._refresh_async, daemon=True).start()
+        elif status != "success":
+            # 新一轮登录开始（opening/waiting/error）：重置，下次 success 再刷
+            self._applied_success.discard(acc_id)
         return st
+
+    def _refresh_async(self) -> None:
+        try:
+            self.registry.refresh()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("登录成功后刷新账号池失败: %s", exc)
 
     def _helper_cmd(self, acc_id: str) -> list[str]:
         if getattr(sys, "frozen", False):

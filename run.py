@@ -195,11 +195,16 @@ def _open_log(log_dir: str):
     except Exception:
         pass
     candidates.append(os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "webai2api"))
+    from logging.handlers import RotatingFileHandler
+
     last_exc = None
     for d in candidates:
         try:
             os.makedirs(d, exist_ok=True)
-            return open(os.path.join(d, "webai2api.log"), "a", encoding="utf-8", buffering=1)
+            # 轮转：10MB × 3 份备份。此前用裸 open 无上限，一周就 45MB。
+            return RotatingFileHandler(
+                os.path.join(d, "webai2api.log"), maxBytes=10 * 1024 * 1024,
+                backupCount=3, encoding="utf-8")
         except OSError as exc:
             last_exc = exc
     raise last_exc  # type: ignore[misc]
@@ -208,17 +213,18 @@ def _open_log(log_dir: str):
 def main() -> None:
     log_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(__file__)
     # windowed exe 下 sys.stdout/stderr 为 None，会让 uvicorn / logging 报错。
-    log_file = _open_log(log_dir)
-    log_path = log_file.name
+    log_handler = _open_log(log_dir)
+    log_path = log_handler.baseFilename
     log_dir = os.path.dirname(log_path)
+    log_sink = open(log_path, "a", encoding="utf-8", buffering=1)
     if sys.stdout is None:
-        sys.stdout = log_file
+        sys.stdout = log_sink
     if sys.stderr is None:
-        sys.stderr = log_file
+        sys.stderr = log_sink
 
     root = logging.getLogger()
     root.setLevel(logging.INFO)
-    root.handlers = [logging.StreamHandler(log_file)]
+    root.handlers = [log_handler]
 
     # 内置浏览器登录辅助模式：<exe> --login <account_id>
     if len(sys.argv) >= 3 and sys.argv[1] == "--login":

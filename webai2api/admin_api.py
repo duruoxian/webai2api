@@ -201,79 +201,9 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             "recent_limit": limit,
             "recent_offset": offset,
             "settings": {
-                "deepseek_wasm_path": await run_in_threadpool(
-                    store.get_setting, "deepseek_wasm_path", ""),
-                "deepseek_session_cache": await run_in_threadpool(
-                    store.get_setting, "deepseek_session_cache", "true"),
-                "deepseek_default_model": await run_in_threadpool(
-                    store.get_setting, "deepseek_default_model", "deepseek-chat"),
-                "tray_enabled": await run_in_threadpool(
-                    store.get_setting, "tray_enabled", "true"),
-                "deepseek_search": await run_in_threadpool(
-                    store.get_setting, "deepseek_search", "false"),
-                "deepseek_anti_min": await run_in_threadpool(
-                    store.get_setting, "deepseek_anti_min", "1.5"),
-                "deepseek_anti_max": await run_in_threadpool(
-                    store.get_setting, "deepseek_anti_max", "3.0"),
-                "glm_base_url": await run_in_threadpool(
-                    store.get_setting, "glm_base_url", "https://chatglm.cn"),
-                "glm_default_model": await run_in_threadpool(
-                    store.get_setting, "glm_default_model", "GLM-5.3"),
-                "glm_default_effort": await run_in_threadpool(
-                    store.get_setting, "glm_default_effort", "high"),
-                "glm_anti_min": await run_in_threadpool(
-                    store.get_setting, "glm_anti_min", "1.5"),
-                "glm_anti_max": await run_in_threadpool(
-                    store.get_setting, "glm_anti_max", "3.0"),
-                "glm_search": await run_in_threadpool(
-                    store.get_setting, "glm_search", "false"),
-                "glm_session_cache": await run_in_threadpool(
-                    store.get_setting, "glm_session_cache", "true"),
-                "usage_retain_days": await run_in_threadpool(
-                    store.get_setting, "usage_retain_days", "0"),
-                "deepseek_context_limit": await run_in_threadpool(
-                    store.get_setting, "deepseek_context_limit", "1000000"),                "deepseek_output_limit": await run_in_threadpool(
-                    store.get_setting, "deepseek_output_limit", "384000"),
-                "glm_context_limit": await run_in_threadpool(
-                    store.get_setting, "glm_context_limit", "1000000"),
-                "glm_output_limit": await run_in_threadpool(
-                    store.get_setting, "glm_output_limit", "128000"),
-                "kimi_base_url": await run_in_threadpool(
-                    store.get_setting, "kimi_base_url", "https://www.kimi.com"),
-                "kimi_default_model": await run_in_threadpool(
-                    store.get_setting, "kimi_default_model", "kimi-k3"),
-                "kimi_default_effort": await run_in_threadpool(
-                    store.get_setting, "kimi_default_effort", ""),
-                "kimi_anti_min": await run_in_threadpool(
-                    store.get_setting, "kimi_anti_min", "1.5"),
-                "kimi_anti_max": await run_in_threadpool(
-                    store.get_setting, "kimi_anti_max", "3.0"),
-                "kimi_search": await run_in_threadpool(
-                    store.get_setting, "kimi_search", "false"),
-                "kimi_session_cache": await run_in_threadpool(
-                    store.get_setting, "kimi_session_cache", "true"),
-                "kimi_context_limit": await run_in_threadpool(
-                    store.get_setting, "kimi_context_limit", "262144"),
-                "kimi_output_limit": await run_in_threadpool(
-                    store.get_setting, "kimi_output_limit", "32768"),
-                "qwen_base_url": await run_in_threadpool(
-                    store.get_setting, "qwen_base_url", "https://chat.qwen.ai"),
-                "qwen_default_model": await run_in_threadpool(
-                    store.get_setting, "qwen_default_model", "qwen3.8-max"),
-                "qwen_default_effort": await run_in_threadpool(
-                    store.get_setting, "qwen_default_effort", ""),
-                "qwen_anti_min": await run_in_threadpool(
-                    store.get_setting, "qwen_anti_min", "1.5"),
-                "qwen_anti_max": await run_in_threadpool(
-                    store.get_setting, "qwen_anti_max", "3.0"),
-                "qwen_search": await run_in_threadpool(
-                    store.get_setting, "qwen_search", "false"),
-                "qwen_session_cache": await run_in_threadpool(
-                    store.get_setting, "qwen_session_cache", "true"),
-                "qwen_context_limit": await run_in_threadpool(
-                    store.get_setting, "qwen_context_limit", "262144"),
-                "qwen_output_limit": await run_in_threadpool(
-                    store.get_setting, "qwen_output_limit", "65536"),
+
+                # 37 个设置键一次批量读取（原先逐个 await = 37 次线程池往返）
+                **await run_in_threadpool(store.get_many, STATE_SETTING_DEFAULTS),
                 "admin_password": "******",
             },
             # 客户版面板的授权卡从 s.license 渲染；0.1.26 单代码库合并时
@@ -309,7 +239,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             },
             b.get("note", ""),
         )
-        registry.refresh(acc.get("provider"))
+        await run_in_threadpool(registry.refresh, acc.get("provider"))
         return {"ok": True, "account": _safe_account(acc)}
 
     @router.put("/accounts/{account_id}")
@@ -335,7 +265,8 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if "enabled" in fields:
             fields["enabled"] = 1 if fields["enabled"] else 0
         await run_in_threadpool(store.update_account, account_id, **fields)
-        registry.refresh(acc0.get("provider") if acc0 else None)
+        await run_in_threadpool(
+            registry.refresh, acc0.get("provider") if acc0 else None)
         return {"ok": True}
 
     @router.post("/accounts/{account_id}/check")
@@ -376,7 +307,8 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             return g
         acc_del = await run_in_threadpool(store.get_account, account_id)
         await run_in_threadpool(store.delete_account, account_id)
-        registry.refresh(acc_del.get("provider") if acc_del else None)
+        await run_in_threadpool(
+            registry.refresh, acc_del.get("provider") if acc_del else None)
         return {"ok": True}
 
     # ── 风险指标 ──
@@ -635,7 +567,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
             await run_in_threadpool(store.set_setting, "tray_enabled", s)
         try:
-            registry.refresh()
+            await run_in_threadpool(registry.refresh)
         except Exception:
             pass
         return {"ok": True}
@@ -850,6 +782,47 @@ def _issuer_available() -> bool:
         return issuer.load_author_seed() is not None
     except Exception:
         return False
+
+
+STATE_SETTING_DEFAULTS = {
+    "deepseek_wasm_path": "",
+    "deepseek_session_cache": "true",
+    "deepseek_default_model": "deepseek-chat",
+    "tray_enabled": "true",
+    "deepseek_search": "false",
+    "deepseek_anti_min": "1.5",
+    "deepseek_anti_max": "3.0",
+    "glm_base_url": "https://chatglm.cn",
+    "glm_default_model": "GLM-5.3",
+    "glm_default_effort": "high",
+    "glm_anti_min": "1.5",
+    "glm_anti_max": "3.0",
+    "glm_search": "false",
+    "glm_session_cache": "true",
+    "usage_retain_days": "0",
+    "deepseek_context_limit": "1000000",
+    "deepseek_output_limit": "384000",
+    "glm_context_limit": "1000000",
+    "glm_output_limit": "128000",
+    "kimi_base_url": "https://www.kimi.com",
+    "kimi_default_model": "kimi-k3",
+    "kimi_default_effort": "",
+    "kimi_anti_min": "1.5",
+    "kimi_anti_max": "3.0",
+    "kimi_search": "false",
+    "kimi_session_cache": "true",
+    "kimi_context_limit": "262144",
+    "kimi_output_limit": "32768",
+    "qwen_base_url": "https://chat.qwen.ai",
+    "qwen_default_model": "qwen3.8-max",
+    "qwen_default_effort": "",
+    "qwen_anti_min": "1.5",
+    "qwen_anti_max": "3.0",
+    "qwen_search": "false",
+    "qwen_session_cache": "true",
+    "qwen_context_limit": "262144",
+    "qwen_output_limit": "65536",
+}
 
 
 def _license_info() -> dict:

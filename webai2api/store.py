@@ -681,6 +681,19 @@ class Store:
             row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         return row["value"] if row else default
 
+    def get_many(self, defaults: dict) -> dict:
+        """一次连接批量读设置（state 接口有 ~35 个键，逐个查要 35 次
+        线程池往返；合一后单次往返）。defaults: key -> 默认值。"""
+        out = dict(defaults)
+        if not defaults:
+            return out
+        keys = list(defaults)
+        ph = ",".join("?" * len(keys))
+        with self._conn() as c:
+            for row in c.execute(f"SELECT key, value FROM settings WHERE key IN ({ph})", keys):
+                out[row["key"]] = row["value"]
+        return out
+
     def set_setting(self, key: str, value: str) -> None:
         with self._conn() as c:
             c.execute(
