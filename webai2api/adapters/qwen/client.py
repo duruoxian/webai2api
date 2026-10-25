@@ -738,7 +738,10 @@ class QwenWebClient:
 
     def _stream_via_relay(self, payload: dict):
         conv_key = self._conv_key(payload)
-        cached = self._cached_conv(conv_key)
+        # 首轮绝不复用：新客户端会话的首轮指纹常与旧会话相同（同样的
+        # system + 开场白），复用会让模型接着旧上下文聊
+        cached = "" if tool_bridge.is_first_turn(payload.get("messages")) \
+            else self._cached_conv(conv_key)
         parent = self._cached_response_id(conv_key) if cached else ""
         if not cached:
             self._bump("miss")
@@ -874,7 +877,9 @@ class QwenWebClient:
             return
 
         conv_key = self._conv_key(payload)
-        cached = self._cached_conv(conv_key)
+        # 首轮绝不复用（同 _stream_via_relay）
+        cached = "" if tool_bridge.is_first_turn(payload.get("messages")) \
+            else self._cached_conv(conv_key)
         if not cached:
             self._bump("miss")
 

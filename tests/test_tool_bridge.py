@@ -13,6 +13,7 @@ import json
 from webai2api.adapters.tool_bridge import (
     ToolStreamBuffer,
     increment_text,
+    is_first_turn,
     is_forced_tool_choice,
     parse_tool_calls,
     render_tool_result,
@@ -304,3 +305,22 @@ def test_strip_removes_tag_blocks_and_marker_lines():
 def test_render_tool_result_shape():
     out = render_tool_result("write", "OK", tag="tool_response")
     assert out == '<tool_response tool="write">\nOK\n</tool_response>'
+
+
+# ── is_first_turn（会话缓存复用的守门员）──────────────────
+
+def test_first_turn_detection():
+    """首轮（无 assistant）必须新建上游会话：不同客户端会话的首轮
+    指纹常相同，复用会让模型接着旧会话聊（opencode 实测串上下文）。"""
+    first = [{"role": "system", "content": "opencode 助手"},
+             {"role": "user", "content": "你好"}]
+    followup = first + [{"role": "assistant", "content": "你好！"},
+                        {"role": "user", "content": "继续"}]
+    assert is_first_turn(first) is True
+    assert is_first_turn(followup) is False
+    assert is_first_turn([]) is True
+    assert is_first_turn(None) is True
+    # 工具链多轮（assistant.tool_calls + tool 结果）不算首轮
+    chain = first + [_assistant_tool_call("write", {}, "call_x"),
+                     {"role": "tool", "tool_call_id": "call_x", "content": "ok"}]
+    assert is_first_turn(chain) is False

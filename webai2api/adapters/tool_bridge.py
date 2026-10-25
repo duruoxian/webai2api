@@ -38,10 +38,25 @@ __all__ = [
     "increment_text",
     "parse_tool_calls",
     "strip_tool_markup",
+    "is_first_turn",
     "is_forced_tool_choice",
     "required_nudge",
     "ToolStreamBuffer",
 ]
+
+
+def is_first_turn(messages: list) -> bool:
+    """会话首轮判定：messages 里还没有任何 assistant 消息。
+
+    首轮**必须新建上游会话、绝不复用缓存**：不同客户端会话的首轮
+    指纹经常相同（同样的 system + 同样的开场白，如 opencode 每个新
+    会话都发「你好」），复用会让模型接着旧会话的上下文聊——实测
+    表现为「新开会话却记得上一个会话干过什么」。
+    """
+    for m in messages or []:
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            return False
+    return True
 
 
 def text_of(msg: dict) -> str:

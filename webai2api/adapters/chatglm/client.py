@@ -770,9 +770,11 @@ class ChatGlmWebClient:
         self._throttle()
         self._bump("upstream")
         token = self._access()
-        # 命中会话缓存则复用 conversation_id（与 DeepSeek 的多轮增量行为一致）
+        # 命中会话缓存则复用 conversation_id（与 DeepSeek 的多轮增量行为一致）；
+        # 首轮绝不复用——新客户端会话的首轮指纹常与旧会话相同，复用会串上下文
         conv_key = self._conv_key(payload)
-        cached_conv = self._cached_conv(conv_key) or ""
+        cached_conv = "" if tool_bridge.is_first_turn(payload.get("messages")) \
+            else (self._cached_conv(conv_key) or "")
         if not cached_conv:
             self._bump("miss")
         conn, resp = self._open_stream(

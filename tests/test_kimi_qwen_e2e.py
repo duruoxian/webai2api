@@ -255,8 +255,19 @@ def test_qwen_end_to_end(mock_server):
     c.chat_completion(p2)
     assert Handler.captured["qwen"]["body"]["thinking_enabled"] is False
     assert Handler.captured["qwen"]["body"]["auto_thinking"] is False
-    # 同一 plus 会话第二轮带 chat_id query 参数
+    # 同一 plus 会话多轮延续（带 assistant 历史）才复用 chat_id query 参数；
+    # 首轮（无 assistant）必须新建会话——首轮指纹常与旧会话相同，复用会串上下文
+    p_multi = _payload(); p_multi["model"] = "qwen3.7-plus"
+    p_multi["messages"] = p_multi["messages"] + [
+        {"role": "assistant", "content": "我是千问。"},
+        {"role": "user", "content": "继续"},
+    ]
+    c.chat_completion(p_multi)
     assert "chat_id=q-chat-1" in Handler.captured["qwen"]["path"]
+    # 首轮不复用：新会话发同样的开场白也拿不到旧 chat_id
+    p_fresh = _payload(); p_fresh["model"] = "qwen3.7-plus"
+    c.chat_completion(p_fresh)
+    assert "chat_id=" not in Handler.captured["qwen"]["path"]
     # flash 无自动档：medium→思考
     p3 = _payload(); p3["model"] = "qwen3.8-omni-flash"; p3["reasoning_effort"] = "medium"
     c.chat_completion(p3)
