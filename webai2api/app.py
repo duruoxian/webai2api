@@ -90,6 +90,12 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
     app = FastAPI(title="webai2api", version=__version__)
     login_mgr = LoginManager(store, registry, logger)
     recent_errors: list[dict] = []
+    # 千问中继内存看护（单例守护线程；超限且空闲时回收，见 qwen_relay）
+    try:
+        from .qwen_relay import start_memory_guard
+        start_memory_guard(store, logger)
+    except Exception:  # noqa: BLE001
+        pass
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception):

@@ -546,14 +546,20 @@ class ChatGlmWebClient:
     def _split(url: str) -> tuple[str, str]:
         parts = urlsplit(url)
         host = parts.hostname or "chatglm.cn"
+        if parts.port:                     # 非默认端口（本地/自建环境）必须带上
+            host = f"{host}:{parts.port}"
         path = parts.path or "/"
         if parts.query:
             path = f"{path}?{parts.query}"
         return host, path
 
-    def _conn(self, url: str, timeout: int) -> http.client.HTTPSConnection:
+    def _conn(self, url: str, timeout: int):
         host, _ = self._split(url)
-        conn = http.client.HTTPSConnection(host, timeout=max(int(timeout), 30))
+        # base_url 可配（自建/测试环境），按 scheme 分派；默认仍是 https
+        factory = (http.client.HTTPConnection
+                   if url.lower().startswith("http://")
+                   else http.client.HTTPSConnection)
+        conn = factory(host, timeout=max(int(timeout), 30))
         from ...egress import (
             EGRESS_CUSTOM,
             EGRESS_SYSTEM,
@@ -795,7 +801,6 @@ class ChatGlmWebClient:
         messages = payload.get("messages") or []
         if payload.get("tools") and payload.get("tool_choice") != "none":
             messages = _inject_tools(messages, payload["tools"])
-        content = _prepare_content(messages)
         is_silent = "silent" in model
 
         self._throttle()
@@ -808,6 +813,16 @@ class ChatGlmWebClient:
             else (self._cached_conv(conv_key) or "")
         if not cached_conv:
             self._bump("miss")
+        # 复用上游会话时只发增量（最后一条 assistant 之后的 tool 结果与新
+        # user 文本）：上游会话里已有此前全部轮次，重发全量拼平历史会把
+        # 上下文一遍遍重复（长会话越拖越慢、模型越来越乱）。未复用（首轮
+        # /缓存失效/轮换）才发全量拼平——与 Kimi/千问的增量协议一致。
+        if cached_conv:
+            content = tool_bridge.increment_text(messages, result_tag="tool_result")
+            if not content.strip():
+                content = _prepare_content(messages)
+        else:
+            content = _prepare_content(messages)
         conn, resp = self._open_stream(
             self.config.stream_url,
             self._body(

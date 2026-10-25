@@ -184,6 +184,126 @@ def smoke_platform(name: str, model: str, base: str, key: str,
     return errors
 
 
+def _messages(base: str, key: str, body: dict, timeout: int) -> tuple[dict, float]:
+    """打 /v1/messages（Anthropic 协议），返回 (json, 耗时)。"""
+    req = urllib.request.Request(
+        f"{base.rstrip('/')}/v1/messages",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                 "Content-Type": "application/json"},
+    )
+    t0 = time.time()
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if isinstance(data, dict) and data.get("type") == "error":
+        raise RuntimeError(f"anthropic 错误: {data.get('error')}")
+    return data, time.time() - t0
+
+
+def _anth_text(msg: dict) -> str:
+    return "".join(b.get("text") or "" for b in msg.get("content") or []
+                   if isinstance(b, dict) and b.get("type") == "text")
+
+
+def _anth_tool_use(msg: dict) -> dict | None:
+    for b in msg.get("content") or []:
+        if isinstance(b, dict) and b.get("type") == "tool_use":
+            return b
+    return None
+
+
+ANTHROPIC_TOOL = {
+    "name": "write", "description": "把内容写入本地文件",
+    "input_schema": {"type": "object", "properties": {
+        "filePath": {"type": "string"}, "content": {"type": "string"}},
+        "required": ["filePath", "content"]},
+}
+
+
+def smoke_anthropic(model: str, base: str, key: str,
+                    timeout: int, with_tools: bool) -> list[str]:
+    """Anthropic /v1/messages 冒烟：最小对话 + 工具链（tool_use/tool_result）。"""
+    errors: list[str] = []
+    tool_path = Path(tempfile.gettempdir()) / "webai2api_smoke_anthropic.txt"
+    marker = f"smoke-anthropic-{int(time.time())}"
+
+    try:
+        msg, dt = _messages(base, key, {
+            "model": model, "max_tokens": 100,
+            "messages": [{"role": "user", "content": "请只回复两个字：OK"}],
+        }, timeout)
+        text = _anth_text(msg)
+        if not text.strip():
+            errors.append(f"最小对话：空回复（stop={msg.get('stop_reason')}）")
+        elif msg.get("type") != "message" or msg.get("role") != "assistant":
+            errors.append(f"最小对话：响应形态不对 type={msg.get('type')}")
+        else:
+            print(f"    最小对话 PASS（{dt:.1f}s）：{text.strip()[:30]!r}")
+    except Exception as exc:
+        errors.append(f"最小对话异常：{exc}")
+        return errors
+
+    if not with_tools:
+        return errors
+
+    try:
+        tool_path.unlink(missing_ok=True)
+        prompt = (f"请用 write 工具把「{marker}」写入文件 {tool_path}，"
+                  f"写完文件即完成任务。")
+        msg, dt = _messages(base, key, {
+            "model": model, "max_tokens": 300,
+            "messages": [{"role": "user", "content": prompt}],
+            "tools": [ANTHROPIC_TOOL],
+        }, timeout)
+        use = _anth_tool_use(msg)
+        if not use:
+            errors.append(f"工具链：无 tool_use 块（content="
+                          f"{str(msg.get('content'))[:80]!r}）")
+            return errors
+        if use.get("name") != "write":
+            errors.append(f"工具链：调用了错误工具 {use.get('name')!r}")
+            return errors
+        if msg.get("stop_reason") != "tool_use":
+            errors.append(f"工具链：stop_reason={msg.get('stop_reason')!r}（应为 tool_use）")
+        print(f"    tool_use PASS（{dt:.1f}s）：{use.get('name')}"
+              f"({list(use.get('input') or {})[:2]}...)")
+
+        args = use.get("input") or {}
+        try:
+            tool_path.write_text(str(args.get("content") or marker), encoding="utf-8")
+            result = f"写入成功：{tool_path}"
+        except Exception as exc:
+            result = f"写入失败：{exc}"
+
+        msg2, dt2 = _messages(base, key, {
+            "model": model, "max_tokens": 300,
+            "messages": [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": [use]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": use.get("id"),
+                     "content": result},
+                ]},
+            ],
+            "tools": [ANTHROPIC_TOOL],
+        }, timeout)
+        final = _anth_text(msg2)
+        if marker not in (tool_path.read_text(encoding="utf-8")
+                          if tool_path.exists() else ""):
+            errors.append("工具链：文件内容与要求不符")
+        if msg2.get("stop_reason") != "end_turn":
+            errors.append(f"工具链：收尾 stop_reason={msg2.get('stop_reason')!r}")
+        if not final.strip():
+            errors.append(f"工具链：tool_result 回填后无最终回答（{dt2:.1f}s）")
+        else:
+            print(f"    tool_result 回填 PASS（{dt2:.1f}s）：{final.strip()[:40]!r}")
+    except Exception as exc:
+        errors.append(f"工具链异常：{exc}")
+    finally:
+        tool_path.unlink(missing_ok=True)
+    return errors
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="webai2api 发版前冒烟测试")
     ap.add_argument("--base-url", default="http://127.0.0.1:8800")
@@ -191,6 +311,10 @@ def main() -> int:
     ap.add_argument("--only", default="", help="逗号分隔平台名，如 deepseek,qwen")
     ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--skip-tools", action="store_true", help="只跑最小对话")
+    ap.add_argument("--anthropic", action="store_true",
+                    help="改打 /v1/messages（Anthropic 协议端点冒烟）")
+    ap.add_argument("--anthropic-model", default="GLM-5.3-Flash",
+                    help="anthropic 模式使用的模型（默认 GLM-5.3-Flash）")
     args = ap.parse_args()
 
     key = args.key or _key_from_dev_db()
@@ -200,6 +324,20 @@ def main() -> int:
     only = {s.strip().lower() for s in args.only.split(",") if s.strip()}
 
     print(f"目标实例：{args.base_url}")
+    if args.anthropic:
+        model = args.anthropic_model
+        print(f"\n[anthropic] {model} → /v1/messages")
+        errs = smoke_anthropic(model, args.base_url, key,
+                               args.timeout, with_tools=not args.skip_tools)
+        if errs:
+            for e in errs:
+                print(f"    ✗ {e}")
+            print("\n结果：anthropic 0/1 通过")
+            return 1
+        print("    ✓ [anthropic] 全部通过")
+        print("\n结果：anthropic 1/1 通过")
+        return 0
+
     failures = 0
     for name, model in PLATFORMS:
         if only and name not in only:

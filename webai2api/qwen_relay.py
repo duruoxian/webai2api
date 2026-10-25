@@ -531,12 +531,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/health"):
-            self._send_json({
-                "ok": self.runtime.ready,
-                "logged_in": self.runtime.logged_in,
-                "url": self.runtime.url,
-                "account_id": self.runtime.acc_id,
-            })
+            self._send_json(_health_payload(self.runtime))
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -919,3 +914,185 @@ class RelayManager:
             return True
         except Exception:
             return False
+
+def _health_payload(runtime: "_Runtime") -> dict:
+    """中继 /health 应答体；active=是否有进行中的请求（内存看护的空闲依据）。"""
+    return {
+        "ok": bool(runtime.ready),
+        "logged_in": bool(runtime.logged_in),
+        "url": runtime.url,
+        "account_id": runtime.acc_id,
+        "active": bool(runtime.has_active()),
+    }
+
+
+# ── 内存看护：长驻隐藏浏览器的回收 ──────────────────────
+def _win_tree_pids(pid: int) -> list[int]:
+    """Windows：Toolhelp32 快照建父子表，取 pid 及其全部后代。"""
+    import ctypes
+    from ctypes import wintypes
+
+    class PE32(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+
+    snap = ctypes.windll.kernel32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
+    if snap in (0, -1):
+        return []
+    children: dict[int, list[int]] = {}
+    e = PE32()
+    e.dwSize = ctypes.sizeof(PE32)
+    ok = ctypes.windll.kernel32.Process32FirstW(snap, ctypes.byref(e))
+    while ok:
+        try:
+            children.setdefault(e.th32ParentProcessID, []).append(e.th32ProcessID)
+        except Exception:
+            pass
+        ok = ctypes.windll.kernel32.Process32NextW(snap, ctypes.byref(e))
+    ctypes.windll.kernel32.CloseHandle(snap)
+    out, stack = [], [pid]
+    while stack:
+        cur = stack.pop()
+        out.append(cur)
+        stack.extend(children.get(cur, []))
+    return out
+
+
+def _posix_tree_pids(pid: int) -> list[int]:
+    children: dict[int, list[int]] = {}
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            fields = (d / "stat").read_text().rsplit(")", 1)[-1].split()
+            children.setdefault(int(fields[1]), []).append(int(d.name))
+        except Exception:
+            continue
+    out, stack = [], [pid]
+    while stack:
+        cur = stack.pop()
+        out.append(cur)
+        stack.extend(children.get(cur, []))
+    return out
+
+
+def _win_rss_mb(pid: int) -> float:
+    import ctypes
+
+    class PMC(ctypes.Structure):
+        _fields_ = [("cb", ctypes.c_uint), ("PageFaultCount", ctypes.c_uint),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t)]
+
+    h = ctypes.windll.kernel32.OpenProcess(0x0410, False, pid)  # QUERY|VM_READ
+    if not h:
+        return 0.0
+    pmc = PMC()
+    pmc.cb = ctypes.sizeof(PMC)
+    ok = ctypes.windll.psapi.GetProcessMemoryInfo(h, ctypes.byref(pmc), pmc.cb)
+    ctypes.windll.kernel32.CloseHandle(h)
+    return (pmc.WorkingSetSize / 1048576.0) if ok else 0.0
+
+
+def _posix_rss_mb(pid: int) -> float:
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return float(line.split()[1]) / 1024.0
+    except Exception:
+        pass
+    return 0.0
+
+
+def relay_tree_rss_mb(pid: int) -> float:
+    """中继进程树（含 WebView2 子进程）的常驻内存合计，MB；失败返回 0。"""
+    if pid <= 0:
+        return 0.0
+    try:
+        tree = (_win_tree_pids if os.name == "nt" else _posix_tree_pids)(pid)
+        rss = (_win_rss_mb if os.name == "nt" else _posix_rss_mb)
+        return round(sum(rss(p) for p in tree), 1)
+    except Exception:
+        return 0.0
+
+
+def _relay_alive(pid: int) -> bool:
+    try:
+        if os.name == "nt":
+            import ctypes
+            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # SYNCHRONIZE
+            if h:
+                ctypes.windll.kernel32.CloseHandle(h)
+                return True
+            return False
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _should_recycle(rss_mb: float, limit_mb: float, health: dict) -> bool:
+    """回收判定（纯函数，供测试）：超阈值 且 中继空闲。"""
+    return (limit_mb > 0 and rss_mb > limit_mb
+            and bool(health) and health.get("ok") and not health.get("active"))
+
+
+_GUARD_STARTED = threading.Event()
+
+
+def start_memory_guard(store, logger=None, interval: float = 60.0) -> None:
+    """启动中继内存看护（单例守护线程）。
+
+    每轮扫描 relay_state/*.json：进程树内存超 qwen_relay_max_mb（默认
+    900MB，面板可调）且中继空闲（/health active=false）时回收——下一次
+    请求会自动冷启动（约 10~15 秒），登录态不受影响。测量失败/中继
+    忙碌一律跳过，绝不打断进行中的流。
+    """
+    if _GUARD_STARTED.is_set():
+        return
+    _GUARD_STARTED.set()
+
+    def _loop():
+        while True:
+            time.sleep(interval)
+            try:
+                limit = float(store.get_setting("qwen_relay_max_mb", "900") or 0)
+                for st_path in _state_dir().glob("*.json"):
+                    try:
+                        st = read_state(st_path.stem)
+                        pid = int(st.get("pid") or 0)
+                        port = int(st.get("port") or 0)
+                        if not pid or not _relay_alive(pid):
+                            continue
+                        rss = relay_tree_rss_mb(pid)
+                        if rss <= 0:
+                            continue
+                        health = RelayManager._health(port) if port else {}
+                        if _should_recycle(rss, limit, health):
+                            if logger:
+                                logger.warning(
+                                    "千问中继内存 %.0fMB 超限 %.0fMB 且空闲，回收 %s"
+                                    "（下次请求自动冷启动）",
+                                    rss, limit, st_path.stem)
+                            stop_relay(st_path.stem)
+                        elif rss > limit and logger:
+                            logger.info("千问中继内存 %.0fMB 超限但有进行中请求，"
+                                        "暂不回收 %s", rss, st_path.stem)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+    threading.Thread(target=_loop, daemon=True,
+                     name="qwen-relay-memguard").start()
