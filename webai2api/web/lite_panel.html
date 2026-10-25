@@ -1832,18 +1832,20 @@ function tuneGlass(dark){
           ? `,\n      "variants": { "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`
           : `,\n      "variants": { "自动": { "reasoningEffort": "medium" }, "思考": { "reasoningEffort": "high" }, "快速": { "reasoningEffort": "low" } }`;
       }
-      lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)}, "attachment": true, "reasoning": ${reason},\n`
-        +`      "modalities": { "input": ["image","text"], "output": ["text"] },\n`
+      lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)},\n`
+        +`      "capabilities": { "input": ["image","text"], "output": ["text"],\n`
+        +`        "reasoning": { "supported": ${reason} } },\n`
         +`      "limit": { "context": ${lim.context}, "output": ${lim.output} }${variants} }`);
     }
     return `"webai2api": {
-  "npm": "@ai-sdk/openai-compatible",
+  "package": "@opencode/ai/providers/openai-compatible",
   "name": "webai2api 多账号网关",
-  "options": {
+  "settings": {
     "baseURL": "${loc}/v1",
     "apiKey": ${JSON.stringify(keyVal||'')},
     "maxRetries": 0
   },
+  "compatibility": { "streamUsage": true },
   "models": {
 ${lines.join(',\n')}
   }
