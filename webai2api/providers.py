@@ -13,11 +13,13 @@ from .store import Store
 DEFAULT_MODEL = "deepseek-chat"
 
 # 各 provider 的推荐额度 + 硬上限（面板可改，但不能超过上限）
+# 上下文对外宣称值：影响客户端（opencode）的自动压缩时机。上游实际
+# 装不下时网页端会静默截断历史（表现为忘开头），面板设置可按平台调回。
 DEFAULT_LIMITS: dict[str, dict[str, int]] = {
     "deepseek": {"context": 1_000_000, "output": 384_000},
     "chatglm": {"context": 1_000_000, "output": 128_000},
-    "kimi": {"context": 262_144, "output": 32_768},
-    "qwen": {"context": 262_144, "output": 65_536},
+    "kimi": {"context": 1_000_000, "output": 65_536},
+    "qwen": {"context": 1_000_000, "output": 65_536},
 }
 MAX_LIMITS: dict[str, dict[str, int]] = {
     "deepseek": {"context": 1_000_000, "output": 384_000},
