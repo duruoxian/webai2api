@@ -11,7 +11,8 @@
 (function(){
   try{
     var t = localStorage.getItem('wapi_theme');
-    if (t !== 'dark' && t !== 'light') t = 'light';
+    var KNOWN = ['light','dark','paper','sakura','neon','terminal'];
+    if (KNOWN.indexOf(t) < 0) t = 'light';
     document.documentElement.setAttribute('data-theme', t);
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
@@ -291,6 +292,11 @@
         <label class="fld"><span>管理员密码</span>
           <input id="setPw" type="password" placeholder="留空则不修改"></label>
         <button class="btn" onclick="saveGeneralSettings()">保存</button>
+
+        <div class="set-group" style="margin-top:18px">
+          <div class="set-group-title">外观</div>
+          <div class="theme-row" id="themeChips"></div>
+        </div>
 
         <div class="set-group" style="margin-top:18px">
           <div class="set-group-title">系统</div>
@@ -1767,22 +1773,46 @@ async function saveGeneralSettings(){
 function _wapi(){ try{ return window.pywebview && window.pywebview.api; }catch(e){ return null; } }
 function winMinimize(){ const a=_wapi(); if(a&&a.minimize) a.minimize(); }
 function winMaximize(){ const a=_wapi(); if(a&&a.toggle_max) a.toggle_max(); }
+document.addEventListener('DOMContentLoaded',renderThemeChips);
 function winClose(){ const a=_wapi(); if(a&&a.close) a.close(); else window.close(); }
 function copyText(t){navigator.clipboard.writeText(t).then(()=>toast('已复制'));}
 
-/* ── 深浅色主题 ── */
+/* ── 主题系统：液态浅/深 + 纸墨 + 樱花 + 霓虹 + 终端 ── */
+const THEMES=[
+  {id:'light',   name:'液态浅色', sw:'#e7edf7', dark:false},
+  {id:'dark',    name:'液态深色', sw:'#0d1015', dark:true},
+  {id:'paper',   name:'纸墨书卷', sw:'#f3ecdf', dark:false},
+  {id:'sakura',  name:'樱花初雪', sw:'#f6edf1', dark:false},
+  {id:'neon',    name:'暗夜霓虹', sw:'#0b0d18', dark:true},
+  {id:'terminal',name:'终端机',   sw:'#060907', dark:true},
+];
+function isDarkTheme(t){
+  const th=THEMES.find(x=>x.id===t); return th?th.dark:false;
+}
 function currentTheme(){
-  return document.documentElement.getAttribute('data-theme')==='dark'?'dark':'light';
+  const t=document.documentElement.getAttribute('data-theme');
+  return THEMES.some(x=>x.id===t)?t:'light';
 }
 function applyTheme(t){
+  if(!THEMES.some(x=>x.id===t)) t='light';
   document.documentElement.setAttribute('data-theme',t);
   try{ localStorage.setItem('wapi_theme',t); }catch(e){}
+  tuneGlass(isDarkTheme(t));
+  renderThemeChips();
 }
 function toggleTheme(){
-  const next = currentTheme()==='dark'?'light':'dark';
+  // 顶栏按钮仍是快速深浅切换：深色系任意主题 → 液态浅色；反之 → 液态深色
+  const next = isDarkTheme(currentTheme())?'light':'dark';
   applyTheme(next);
-  tuneGlass(next==='dark');
   toast(next==='dark'?'已切换到深色':'已切换到浅色');
+}
+function renderThemeChips(){
+  const host=document.getElementById('themeChips');
+  if(!host) return;
+  const cur=currentTheme();
+  host.innerHTML=THEMES.map(x=>
+    `<button class="theme-chip${x.id===cur?' on':''}" onclick="applyTheme('${x.id}')" title="${x.name}">`
+    +`<span class="sw" style="background:${x.sw}"></span>${x.name}</button>`).join('');
 }
 /* ── 液玻璃（hyalite）：悬浮表面的边缘折射 ── */
 function glassOpts(dark){
@@ -1803,7 +1833,7 @@ function tuneGlass(dark){
 (function initGlass(){
   try{
     if(!window.Hyalite || !Hyalite.supported()) return;
-    Hyalite.watch(document.body,'.hyalite',glassOpts(currentTheme()==='dark'));
+    Hyalite.watch(document.body,'.hyalite',glassOpts(isDarkTheme(currentTheme())));
   }catch(e){}
 })();
 
