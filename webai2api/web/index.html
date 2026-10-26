@@ -1423,7 +1423,10 @@ function renderAccounts(s){
   if(openAcc){
     const m = tb.querySelector(`tr[data-acc="${openAcc}"] .row-menu`);
     const b = m && m.parentElement.querySelector('.row-menu-wrap > button');
-    if(m && b){ placeMenuFixed(m, b); m.classList.add('open'); }
+    if(m && b){
+      placeMenuByRow(b);
+      m.classList.add('open');
+    }
   }
 }
 async function browserLogin(id){
@@ -2259,23 +2262,28 @@ function renderPatternChips(){
 }
 document.addEventListener('DOMContentLoaded',renderAccentChips);
 document.addEventListener('DOMContentLoaded',renderPatternChips);
-function placeMenuFixed(menu, btn){
-  // fixed 定位：脱离 .tbl-scroll 的 overflow 裁剪，低处行的菜单不被截断
-  const r = btn.getBoundingClientRect();
-  menu.style.position = 'fixed';
-  menu.style.top = (r.bottom + 6) + 'px';
-  menu.style.left = 'auto';
-  menu.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+function placeMenuByRow(btn){
+  // 按行在滚动容器中的位置选择展开方向（绝对定位随行滚动，天然不被
+  // overflow 裁剪）：下半区向上展开，上半区向下展开。不要用 fixed——
+  // .card 的 backdrop-filter 会成为 fixed 的包含块，坐标整体偏移。
+  const menu = btn.parentElement.querySelector('.row-menu');
+  const sc = btn.closest('.tbl-scroll');
+  const br = btn.getBoundingClientRect();
+  let openUp = false;
+  if (sc) {
+    const sr = sc.getBoundingClientRect();
+    openUp = (br.top - sr.top) > sr.height / 2;
+  }
+  menu.style.top = openUp ? 'auto' : 'calc(100% + 6px)';
+  menu.style.bottom = openUp ? 'calc(100% + 6px)' : 'auto';
+  return menu;
 }
 function toggleAccMenu(btn,ev){
   ev.stopPropagation();
-  const menu=btn.parentElement.querySelector('.row-menu');
+  const menu = placeMenuByRow(btn);
   const wasOpen=menu.classList.contains('open');
   document.querySelectorAll('.row-menu.open').forEach(m=>m.classList.remove('open'));
-  if(!wasOpen){
-    placeMenuFixed(menu, btn);
-    menu.classList.add('open');
-  }
+  if(!wasOpen)menu.classList.add('open');
 }
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape')
