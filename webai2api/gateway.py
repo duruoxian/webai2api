@@ -139,7 +139,10 @@ def _estimate_tokens(text: str) -> int:
 
 def _messages_text(payload: dict) -> str:
     msgs = payload.get("messages") or []
-    return "".join(str(m.get("content") or "") for m in msgs if isinstance(m, dict))
+    return "".join(
+        _msg_text(m.get("content")) if isinstance(m, dict) else ""
+        for m in msgs
+    )
 
 
 def _estimate_prompt(payload: dict) -> int:
@@ -601,7 +604,8 @@ def create_gateway_router(
         # ── 流式 ──
         # 先在异步上下文里尝试拿到第一块数据，成功后再开始吐流；
         # 这样上游失败时可以换账号重试（而不是已经 200 了才发现失败）。
-        started = time.perf_counter()
+        # ttft 从这里单独起算；latency 仍用链路起点 started（含鉴权/选号）。
+        t_pick = time.perf_counter()
         first_chunk, ac, base = await _stream_with_retry(
             registry,
             store,
@@ -614,15 +618,12 @@ def create_gateway_router(
             logger,
             conv,
         )
-        ttft_ms = int((time.perf_counter() - started) * 1000)
+        ttft_ms = int((time.perf_counter() - t_pick) * 1000)
         if first_chunk is None:
             _quota_release(key_row["id"], reserve)
             return _error(502, "所有可用账号均请求失败，请稍后重试", "upstream_error")
 
         async def gen():
-            import asyncio
-            import threading
-
             prompt_t = completion_t = total_t = 0
             status = "ok"
             out_parts: list[str] = []

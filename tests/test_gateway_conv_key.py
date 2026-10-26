@@ -38,3 +38,16 @@ def test_conv_key_stable_within_same_round():
         + [{"role": "tool", "tool_call_id": "call_x", "content": "另一段结果"}],
     }
     assert _conv_key(a, "k") == _conv_key(b, "k")
+
+
+def test_estimate_prompt_handles_segmented_content():
+    """多段数组 content（OpenAI segments 格式）按文本本身估算 prompt，
+    而不是把 list 的 repr 字符串化后虚估。"""
+    from webai2api.gateway import _estimate_prompt, _estimate_tokens
+
+    payload = {"messages": [
+        {"role": "system", "content": [{"type": "text", "text": "你是助手"}]},
+        {"role": "user", "content": [{"type": "text", "text": "你好"}]},
+        {"role": "user", "content": "纯字符串也兼容"},
+    ]}
+    assert _estimate_prompt(payload) == _estimate_tokens("你是助手你好纯字符串也兼容")
