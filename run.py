@@ -360,7 +360,7 @@ def main() -> None:
     try:
         import webview
 
-        from webai2api.paths import resource_path
+        from webai2api.paths import resource_path, user_data_dir
 
         win = webview.create_window(
             WINDOW_TITLE, admin_url,
@@ -368,7 +368,14 @@ def main() -> None:
             background_color="#eceef1",
         )
         icon = resource_path("assets", APP_ICON_NAME)
-        webview.start(icon=str(icon) if icon.exists() else None)
+        # private_mode=False：pywebview 默认隐私模式会丢弃 localStorage，
+        # 面板主题（wapi_theme）/登录态每次重开都被清空。存储指向数据目录
+        # 的 panel_profile，与登录窗口（子进程、独立一次性目录）互不影响。
+        webview.start(
+            private_mode=False,
+            storage_path=str(user_data_dir() / "panel_profile"),
+            icon=str(icon) if icon.exists() else None,
+        )
         logger.info("窗口已关闭，退出")
         _graceful_exit()
     except Exception as exc:  # noqa: BLE001

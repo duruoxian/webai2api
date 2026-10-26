@@ -117,3 +117,15 @@ def test_mono_themes_restyle_buttons_but_keep_semantic_variants():
     for theme in ("mono-light", "mono-dark"):
         blocks = re.findall(rf"html\[data-theme={theme}\] body\{{(.*?)\}}", css, re.S)
         assert any("background-image:none" in b for b in blocks),             f"{theme} 背景必须是纯色（极简无渐变）"
+
+
+def test_panel_window_persists_localstorage():
+    """主题选择存在 localStorage，面板窗口必须关闭 pywebview 隐私模式。
+
+    事故：run.py 的 webview.start 未传 private_mode（默认 True），
+    WebView2 以 InPrivate 运行 → localStorage 每次启动被清空 →
+    换的主题重开软件就回到默认（同时每次都要重新输管理密码）。
+    """
+    run_py = (ROOT.parent.parent / "run.py").read_text(encoding="utf-8")
+    assert "private_mode=False" in run_py,             "面板窗口必须显式关闭 pywebview 隐私模式"
+    assert "panel_profile" in run_py,             "面板存储必须指向数据目录的 panel_profile"
