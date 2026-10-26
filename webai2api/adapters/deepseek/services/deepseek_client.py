@@ -837,6 +837,7 @@ class DeepSeekWebClient:
                     last_response_message_id: str | None = None
                     accumulated_tokens = 0
                     state = StreamState()
+                    saw_upstream_finish = False
 
                     for event in self._iter_sse_events(response):
                         if not event:
@@ -844,6 +845,9 @@ class DeepSeekWebClient:
 
                         if self._handle_hint_event(event):
                             continue
+
+                        if self._is_finish_event(event):
+                            saw_upstream_finish = True
 
                         msg_id = self._extract_ready_message_id(event)
                         if msg_id is not None:
@@ -893,6 +897,17 @@ class DeepSeekWebClient:
                             completion_id,
                         )
 
+                    # 空正文兜底（对齐 Kimi/GLM）：正文空、思考有货 → 思考顶成正文，
+                    # 否则非流式返回空 content，客户端看不到答案
+                    if not full_text and full_reasoning:
+                        full_text = full_reasoning
+
+                    if not saw_upstream_finish:
+                        self.logger.warning(
+                            "上游流提前中断（未收到 finish 帧）text=%d reasoning=%d，按截断返回 finish=length",
+                            len(full_text), len(full_reasoning),
+                        )
+
                     # JSON 模式校验
                     if self.config.strip_citations:
                         full_text = strip_citation_marks(full_text)
@@ -906,6 +921,7 @@ class DeepSeekWebClient:
                     return self._build_non_stream_result(
                         payload, resolved, full_text, full_reasoning, accumulated_tokens,
                         completion_id,
+                        finish_reason="length" if not saw_upstream_finish else "stop",
                     )
 
                 except ContextLengthExceededError:
@@ -1046,6 +1062,8 @@ class DeepSeekWebClient:
                         tool_calls_emitted = False
                         emitted_calls: list[ParsedToolCall] = []
                         upstream_finish_reason: str | None = None
+                        saw_upstream_finish = False
+                        content_emitted = False
 
                         for event in self._iter_sse_events(response):
                             if not event:
@@ -1069,6 +1087,7 @@ class DeepSeekWebClient:
 
                             if not openai_chunk:
                                 if self._is_finish_event(event):
+                                    saw_upstream_finish = True
                                     break
                                 continue
 
@@ -1077,6 +1096,7 @@ class DeepSeekWebClient:
                                 yield _sse(openai_chunk)
                                 anything_yielded = True
                                 if self._is_finish_event(event):
+                                    saw_upstream_finish = True
                                     break
                                 continue
 
@@ -1098,6 +1118,7 @@ class DeepSeekWebClient:
                                         out = stripper.feed(action.text) if stripper else action.text
                                         if out:
                                             yield _make_content_chunk(out, current_resolved["model"], completion_id)
+                                            content_emitted = True
                                             anything_yielded = True
                                     elif action.kind == "tool_calls" and action.tool_calls:
                                         for ch in _make_tool_call_chunks(
@@ -1112,12 +1133,14 @@ class DeepSeekWebClient:
                             elif finish_reason is not None:
                                 # 上游 finish chunk：记录但不透传，我们最后自己发
                                 upstream_finish_reason = finish_reason
+                                saw_upstream_finish = True
                             else:
                                 # 纯 role chunk / 空 delta chunk：原样透传
                                 yield _sse(openai_chunk)
                                 anything_yielded = True
 
                             if self._is_finish_event(event):
+                                saw_upstream_finish = True
                                 break
 
                         # ── 流结束收尾 ──
@@ -1127,6 +1150,7 @@ class DeepSeekWebClient:
                                 out = stripper.feed(action.text) if stripper else action.text
                                 if out:
                                     yield _make_content_chunk(out, current_resolved["model"], completion_id)
+                                    content_emitted = True
                                     anything_yielded = True
                             elif action.kind == "tool_calls" and action.tool_calls:
                                 for ch in _make_tool_call_chunks(
@@ -1144,7 +1168,21 @@ class DeepSeekWebClient:
                             tail = stripper.finalize()
                             if tail:
                                 yield _make_content_chunk(tail, current_resolved["model"], completion_id)
+                                content_emitted = True
                                 anything_yielded = True
+
+                        # 2.5 空正文兜底（对齐 Kimi/GLM 的 finalize_reasoning）：
+                        #     正文一个字都没发、思考里有货——上游把答案整个写进
+                        #     思考，或思考中途被上游掐流时，把思考顶成正文，
+                        #     否则客户端只看得到空消息或「全部藏在思考里」。
+                        if not tool_calls_emitted and not content_emitted and full_reasoning:
+                            yield _make_content_chunk(
+                                full_reasoning, current_resolved["model"], completion_id
+                            )
+                            content_emitted = True
+                            anything_yielded = True
+                            if not full_text:
+                                full_text = full_reasoning
 
                         # 3. JSON 模式校验（仅在没有工具调用发出时才有意义）
                         if not tool_calls_emitted:
@@ -1173,9 +1211,18 @@ class DeepSeekWebClient:
 
                         # 5. ★ 统一在末尾发 finish chunk
                         #    发出过工具调用 → "tool_calls"
+                        #    上游没发 finish 帧就断流 → "length"（静默截断：
+                        #    长思考/大上下文时上游会中途掐流，要检测出来，
+                        #    不能装作正常结束）
                         #    否则沿用上游 finish_reason（一般 "stop"），缺失时兜底 "stop"
                         if tool_calls_emitted:
                             final_finish = "tool_calls"
+                        elif not saw_upstream_finish:
+                            self.logger.warning(
+                                "上游流提前中断（未收到 finish 帧）text=%d reasoning=%d，按截断返回 finish=length",
+                                len(full_text), len(full_reasoning),
+                            )
+                            final_finish = "length"
                         else:
                             final_finish = upstream_finish_reason or "stop"
                         yield _make_finish_chunk(final_finish, current_resolved["model"], completion_id)
@@ -1588,6 +1635,7 @@ class DeepSeekWebClient:
         full_reasoning: str,
         accumulated_tokens: int,
         completion_id: str,
+        finish_reason: str = "stop",
     ) -> dict:
         prompt_text = resolved["ds_payload"].get("prompt", "")
         prompt_tokens = max(1, _estimate_tokens(prompt_text)) if prompt_text else 0
@@ -1609,7 +1657,7 @@ class DeepSeekWebClient:
                 {
                     "index": 0,
                     "message": message,
-                    "finish_reason": "stop",
+                    "finish_reason": finish_reason,
                     "logprobs": None,
                 }
             ],
