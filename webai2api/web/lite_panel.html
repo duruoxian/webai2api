@@ -1252,7 +1252,8 @@ function renderAccounts(s){
   tb.classList.toggle('no-anim', same);
   if(openAcc){
     const m = tb.querySelector(`tr[data-acc="${openAcc}"] .row-menu`);
-    if(m) m.classList.add('open');
+    const b = m && m.parentElement.querySelector('.row-menu-wrap > button');
+    if(m && b){ placeMenuFixed(m, b); m.classList.add('open'); }
   }
 }
 async function browserLogin(id){
@@ -1922,18 +1923,21 @@ function renderPatternChips(){
 }
 document.addEventListener('DOMContentLoaded',renderAccentChips);
 document.addEventListener('DOMContentLoaded',renderPatternChips);
+function placeMenuFixed(menu, btn){
+  // fixed 定位：脱离 .tbl-scroll 的 overflow 裁剪，低处行的菜单不被截断
+  const r = btn.getBoundingClientRect();
+  menu.style.position = 'fixed';
+  menu.style.top = (r.bottom + 6) + 'px';
+  menu.style.left = 'auto';
+  menu.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+}
 function toggleAccMenu(btn,ev){
   ev.stopPropagation();
   const menu=btn.parentElement.querySelector('.row-menu');
   const wasOpen=menu.classList.contains('open');
   document.querySelectorAll('.row-menu.open').forEach(m=>m.classList.remove('open'));
   if(!wasOpen){
-    // fixed 定位：脱离 .tbl-scroll 的 overflow 裁剪，低处行的菜单不被截断
-    const r=btn.getBoundingClientRect();
-    menu.style.position='fixed';
-    menu.style.top=(r.bottom+6)+'px';
-    menu.style.left='auto';
-    menu.style.right=Math.max(8, window.innerWidth - r.right)+'px';
+    placeMenuFixed(menu, btn);
     menu.classList.add('open');
   }
 }
