@@ -92,6 +92,15 @@ QWEN_TOOL_TAG = "tool_call"
 QWEN_RESULT_TAG = "tool_response"
 QWEN_TOOL_MARKER = "<<<TOOL_CALL>>>"  # 兜底标记：模型偶尔不按标签输出时仍可解析
 
+# ── 断流自动续写（中继路径）─────────────────────────
+# 上游偶尔在长回答中途掐流且中继不发 done 事件。检测到断流后，向同一
+# chat 发一条「继续」（parent_id 指向截断的 response——千问会话历史里
+# 已有模型的半截回答，它会自然接着写）。续写轮基线拼接，输出对上层
+# prefix-diff 保持单调。最多 2 次，失败降级截断。仅中继路径（生产路径）；
+# 直连兜底路径无 done 信号可判定，维持原行为。
+MAX_AUTO_CONTINUATIONS = 2
+CONTINUE_PROMPT = "继续"
+
 QWEN_TOOL_INSTRUCTION = """# Tools
 
 你运行在用户的本地电脑上，可以使用以下工具读写本地文件、执行任务：
@@ -650,62 +659,117 @@ class QwenWebClient:
 
         chat_id = cached
         response_id = parent
-        text = ""
-        reasoning = ""
+        base_text = ""
+        base_reasoning = ""
+        saw_done = False
+        _cont_rounds = 0
+        cont_failed = False
         try:
-            for line in resp:
+            while True:
+                round_text = ""
+                round_reasoning = ""
+                is_cont = _cont_rounds > 0
                 try:
-                    line = line.decode("utf-8", "replace").strip()
-                except Exception:
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                payload_txt = line[5:].strip()
-                if not payload_txt:
-                    continue
-                try:
-                    event = json.loads(payload_txt)
-                except Exception:
-                    continue
-                typ = event.get("type")
-                if typ == "meta":
-                    cid = event.get("chat_id")
-                    if isinstance(cid, str) and cid:
-                        chat_id = cid
-                    rid = event.get("response_id")
-                    if isinstance(rid, str) and rid:
-                        response_id = rid
-                    yield {"text": text, "reasoning": reasoning,
-                           "chat_id": chat_id or response_id}
-                elif typ == "reasoning":
-                    reasoning += str(event.get("content") or "")
-                    yield {"text": text, "reasoning": reasoning,
-                           "chat_id": chat_id or response_id}
-                elif typ == "delta":
-                    text += str(event.get("content") or "")
-                    yield {"text": text, "reasoning": reasoning,
-                           "chat_id": chat_id or response_id}
-                elif typ == "done":
-                    cid = event.get("chat_id")
-                    if isinstance(cid, str) and cid:
-                        chat_id = cid
-                    rid = event.get("response_id")
-                    if isinstance(rid, str) and rid:
-                        response_id = rid
+                    for line in resp:
+                        try:
+                            line = line.decode("utf-8", "replace").strip()
+                        except Exception:
+                            continue
+                        if not line.startswith("data:"):
+                            continue
+                        payload_txt = line[5:].strip()
+                        if not payload_txt:
+                            continue
+                        try:
+                            event = json.loads(payload_txt)
+                        except Exception:
+                            continue
+                        typ = event.get("type")
+                        if typ == "meta":
+                            cid = event.get("chat_id")
+                            if isinstance(cid, str) and cid:
+                                chat_id = cid
+                            rid = event.get("response_id")
+                            if isinstance(rid, str) and rid:
+                                response_id = rid
+                            yield {"text": base_text + round_text,
+                                   "reasoning": base_reasoning + round_reasoning,
+                                   "chat_id": chat_id or response_id,
+                                   "finish_seen": saw_done}
+                        elif typ == "reasoning":
+                            round_reasoning += str(event.get("content") or "")
+                            yield {"text": base_text + round_text,
+                                   "reasoning": base_reasoning + round_reasoning,
+                                   "chat_id": chat_id or response_id,
+                                   "finish_seen": saw_done}
+                        elif typ == "delta":
+                            round_text += str(event.get("content") or "")
+                            yield {"text": base_text + round_text,
+                                   "reasoning": base_reasoning + round_reasoning,
+                                   "chat_id": chat_id or response_id,
+                                   "finish_seen": saw_done}
+                        elif typ == "done":
+                            cid = event.get("chat_id")
+                            if isinstance(cid, str) and cid:
+                                chat_id = cid
+                            rid = event.get("response_id")
+                            if isinstance(rid, str) and rid:
+                                response_id = rid
+                            saw_done = True
+                            break
+                        elif typ == "error":
+                            if is_cont:
+                                # 续写轮报错：按截断收场，不让已输出的流变报错
+                                self.logger.warning("续写轮中继错误（按截断返回）: %s",
+                                                    event.get("message"))
+                                cont_failed = True
+                                break
+                            self.logger.warning("Qwen 中继错误: %s", event)
+                            msg = str(event.get("message") or "中继请求失败")
+                            body = event.get("body")
+                            if body:
+                                msg = f"{msg} | {str(body)[:400]}"
+                            raise QwenError(msg, int(event.get("status") or 502))
+                finally:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+
+                _cont_rounds += 1
+                if (saw_done or cont_failed
+                        or _cont_rounds >= MAX_AUTO_CONTINUATIONS):
                     break
-                elif typ == "error":
-                    self.logger.warning("Qwen 中继错误: %s", event)
-                    msg = str(event.get("message") or "中继请求失败")
-                    body = event.get("body")
-                    if body:
-                        msg = f"{msg} | {str(body)[:400]}"
-                    raise QwenError(msg, int(event.get("status") or 502))
+                if not (chat_id and response_id):
+                    break  # 无锚点（连会话 id 都没拿到），无法续写
+                base_text += round_text
+                base_reasoning += round_reasoning
+                self._bump("auto_continued")
+                self.logger.warning(
+                    "上游流提前中断（未见 done 事件），自动续写 %d/%d",
+                    _cont_rounds, MAX_AUTO_CONTINUATIONS,
+                )
+                cont_body = dict(req_body, prompt=CONTINUE_PROMPT, system="",
+                                 chat_id=chat_id, parent_id=response_id)
+                raw = json.dumps(cont_body, ensure_ascii=False).encode("utf-8")
+                req = urllib.request.Request(
+                    url, data=raw, method="POST",
+                    headers={"Content-Type": "application/json",
+                             "Accept": "text/event-stream"})
+                try:
+                    resp = urllib.request.urlopen(
+                        req, timeout=self.config.request_timeout)
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.warning("自动续写失败（按截断返回）: %s", exc)
+                    break
         finally:
             try:
                 resp.close()
             except Exception:
                 pass
 
+        text = base_text + round_text
+        reasoning = base_reasoning + round_reasoning
         if chat_id and self.config.session_cache_enabled:
             store_key = tool_bridge.conv_fingerprint(
                 (payload.get("messages") or []) + [
@@ -713,8 +777,12 @@ class QwenWebClient:
                 payload.get("model") or "",
                 payload.get("_wapi_key_id") or "")
             self._store_conv(store_key, chat_id, response_id)
+        if not saw_done:
+            self.logger.warning(
+                "上游流提前中断（续写未救回），按截断返回 finish=length")
         yield {"__done__": True, "text": text, "reasoning": reasoning,
-               "chat_id": chat_id or response_id}
+               "chat_id": chat_id or response_id,
+               "finish_seen": saw_done}
 
     def _stream_events(self, payload: dict):
         if self.config.relay_enabled and self.config.account_id:
@@ -805,8 +873,11 @@ class QwenWebClient:
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         tools = _active_tools(payload)
         text = reasoning = ""
+        finish_seen = True
         for ev in self._stream_events(payload):
             text, reasoning = ev["text"], ev["reasoning"]
+            if ev.get("__done__"):
+                finish_seen = bool(ev.get("finish_seen", True))
 
         calls = tool_bridge.parse_tool_calls(
             text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER) if tools else []
@@ -835,6 +906,9 @@ class QwenWebClient:
         content, reasoning = reasoning_bridge.finalize_reasoning(
             content, reasoning,
             legacy=self.config.legacy_reasoning_in_content)
+        if not finish_seen:
+            self.logger.warning(
+                "上游流提前中断（续写未救回），按截断返回 finish=length")
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -844,7 +918,7 @@ class QwenWebClient:
                 "index": 0,
                 "message": {"role": "assistant", "content": content,
                             "reasoning_content": reasoning or None},
-                "finish_reason": "stop",
+                "finish_reason": "stop" if finish_seen else "length",
             }],
             "usage": _usage(payload, text),
         }
@@ -923,8 +997,11 @@ class QwenWebClient:
         # <think> 并入 content；收尾做空正文兜底
         rs = reasoning_bridge.ReasoningStream(
             legacy=self.config.legacy_reasoning_in_content)
+        finish_seen = True
         try:
             for ev in self._stream_events(payload):
+                if ev.get("__done__"):
+                    finish_seen = bool(ev.get("finish_seen", True))
                 d_reason = ev["reasoning"][len(sent_reasoning):]
                 if d_reason:
                     sent_reasoning = ev["reasoning"]
@@ -979,5 +1056,8 @@ class QwenWebClient:
         if out_c:
             yield chunk({"content": out_c})
         yield chunk({}, usage=_usage(payload, full_text))
-        yield chunk({}, finish="stop")
+        if not finish_seen:
+            self.logger.warning(
+                "上游流提前中断（续写未救回），按截断返回 finish=length")
+        yield chunk({}, finish="stop" if finish_seen else "length")
         yield "data: [DONE]\n\n"

@@ -150,6 +150,14 @@ def _usage(payload: dict, text: str) -> dict:
 # 这样 opencode 之类的客户端才能真正读写本地文件，而不是「假装」写到沙箱路径。
 TOOL_MARKER = "<<<TOOL_CALL>>>"  # 旧协议兜底：历史会话/模型偶尔仍按旧格式输出
 
+# ── 断流自动续写 ────────────────────────────────────
+# 上游偶尔在长回答中途掐流且不发 done 事件。检测到断流后，向同一
+# chat 发一条「继续」（parent 指向截断的 assistant 消息——Kimi 会话
+# 历史里已有模型的半截回答，它会自然接着写）。续写轮用全新 _ReplyState
+# + 基线拼接，输出对上层 prefix-diff 保持单调。最多 2 次，失败降级截断。
+MAX_AUTO_CONTINUATIONS = 2
+CONTINUE_PROMPT = "继续"
+
 TOOL_INSTRUCTION = """你可以调用以下工具来完成任务：
 
 {tools}
@@ -736,9 +744,13 @@ class KimiWebClient:
 
             state = _ReplyState()
             retry_model = False
+            # 正常结束的两种形态：done 事件，或 0x02 结束帧（可能不带 done）。
+            # 两者都没出现才算断流——否则正常回答会被误续写。
+            finished = False
             try:
                 for flag, raw in _iter_connect_frames(resp):
                     if flag == 0x02:
+                        finished = True
                         err = _connect_error(raw)
                         if err is not None:
                             code, message = err
@@ -763,6 +775,7 @@ class KimiWebClient:
                         "chat_id": state.chat_id,
                     }
                     if state.done:
+                        finished = True
                         break
             finally:
                 try:
@@ -779,12 +792,87 @@ class KimiWebClient:
                                  internal, scenario, candidates[idx + 1])
                 continue
 
+            # ── 断流自动续写 ──
+            # 上游没发 done 事件、也没发 0x02 结束帧就断流：向同一 chat 发
+            # 「继续」，parent 指向截断的 assistant 消息。续写轮用全新
+            # _ReplyState + 基线拼接，输出对上层 prefix-diff 保持单调。
+            # 失败降级为截断。
+            cur_chat = state.chat_id or cached
+            cur_parent = state.assistant_message_id or state.last_message_id or parent
+            base_text = ""
+            base_reasoning = ""
+            _cont_rounds = 0
+            while (
+                not finished
+                and _cont_rounds < MAX_AUTO_CONTINUATIONS
+                and cur_chat
+                and cur_parent
+            ):
+                _cont_rounds += 1
+                self._bump("auto_continued")
+                self.logger.warning(
+                    "上游流提前中断（未见结束信号），自动续写 %d/%d",
+                    _cont_rounds, MAX_AUTO_CONTINUATIONS,
+                )
+                base_text += state.text_value()
+                base_reasoning += state.think_value()
+                state = _ReplyState()
+                cont_finished = False
+                try:
+                    cont_payload = {"model": model,
+                                    "messages": [{"role": "user",
+                                                  "content": CONTINUE_PROMPT}]}
+                    if payload.get("reasoning_effort"):
+                        cont_payload["reasoning_effort"] = payload["reasoning_effort"]
+                    cont_body = self._body(
+                        cont_payload, chat_id=cur_chat, parent_id=cur_parent,
+                        internal_model=internal, scenario=scenario)
+                    conn, resp = self._open_chat(
+                        cont_body, self._valid_token(),
+                        self.config.request_timeout)
+                    try:
+                        for flag, raw in _iter_connect_frames(resp):
+                            if flag == 0x02:
+                                cont_finished = True
+                                break  # 结束帧：本轮正常收尾
+                            try:
+                                event = json.loads(raw.decode("utf-8"))
+                            except Exception:
+                                continue
+                            state.apply(event)
+                            if state.error:
+                                break
+                            yield {
+                                "text": base_text + state.text_value(),
+                                "reasoning": base_reasoning + state.think_value(),
+                                "chat_id": state.chat_id or cur_chat,
+                                "finish_seen": cont_finished or state.done,
+                            }
+                            if state.done:
+                                cont_finished = True
+                                break
+                    finally:
+                        try:
+                            resp.read()
+                        except Exception:
+                            pass
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.warning("自动续写失败（按截断返回）: %s", exc)
+                    break
+                finished = cont_finished or state.done
+                cur_parent = (state.assistant_message_id
+                              or state.last_message_id or cur_parent)
+
             self._resolved_models[model] = (internal, scenario)
-            chat_id = state.chat_id or cached
+            chat_id = state.chat_id or cached or cur_chat
             if chat_id and self.config.session_cache_enabled:
                 # store key 必须与客户端多轮回传时的查询 key 一致：
                 # 把本轮 assistant（解析后的调用或文本）追加进历史再算指纹
-                reply = state.text_value()
+                reply = base_text + state.text_value()
                 calls = _parse_tool_calls(reply, payload.get("tools") or [])
                 asst = {"role": "assistant",
                         "content": None if calls else reply,
@@ -798,9 +886,10 @@ class KimiWebClient:
                     state.assistant_message_id or state.last_message_id)
             yield {
                 "__done__": True,
-                "text": state.text_value(),
-                "reasoning": state.think_value(),
+                "text": base_text + state.text_value(),
+                "reasoning": base_reasoning + state.think_value(),
                 "chat_id": chat_id,
+                "finish_seen": finished,
             }
             return
 
@@ -835,8 +924,11 @@ class KimiWebClient:
         model = payload.get("model") or self.config.default_model
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         text = reasoning = ""
+        finish_seen = True
         for ev in self._stream_events(payload):
             text, reasoning = ev["text"], ev["reasoning"]
+            if ev.get("__done__"):
+                finish_seen = bool(ev.get("finish_seen", True))
 
         tools = payload.get("tools") or []
         calls = _parse_tool_calls(text, tools) if tools else []
@@ -863,6 +955,9 @@ class KimiWebClient:
         content, reasoning = reasoning_bridge.finalize_reasoning(
             _strip_tool_block(text), reasoning,
             legacy=self.config.legacy_reasoning_in_content)
+        if not finish_seen:
+            self.logger.warning(
+                "上游流提前中断（续写未救回），按截断返回 finish=length")
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -872,7 +967,7 @@ class KimiWebClient:
                 "index": 0,
                 "message": {"role": "assistant", "content": content,
                             "reasoning_content": reasoning or None},
-                "finish_reason": "stop",
+                "finish_reason": "stop" if finish_seen else "length",
             }],
             "usage": _usage(payload, text),
         }
@@ -953,12 +1048,15 @@ class KimiWebClient:
         )
         sent_text = ""
         sent_reasoning = ""
+        finish_seen = True
         # 思考增量统一走分发器：legacy 开关决定走 reasoning_content 还是
         # <think> 并入 content；收尾做空正文兜底
         rs = reasoning_bridge.ReasoningStream(
             legacy=self.config.legacy_reasoning_in_content)
         try:
             for ev in self._stream_events(payload):
+                if ev.get("__done__"):
+                    finish_seen = bool(ev.get("finish_seen", True))
                 d_reason = ev["reasoning"][len(sent_reasoning):]
                 if d_reason:
                     sent_reasoning = ev["reasoning"]
@@ -1012,5 +1110,8 @@ class KimiWebClient:
         if out_c:
             yield chunk({"content": out_c})
         yield chunk({}, usage=_usage(payload, sent_text))
-        yield chunk({}, finish="stop")
+        if not finish_seen:
+            self.logger.warning(
+                "上游流提前中断（续写未救回），按截断返回 finish=length")
+        yield chunk({}, finish="stop" if finish_seen else "length")
         yield "data: [DONE]\n\n"
