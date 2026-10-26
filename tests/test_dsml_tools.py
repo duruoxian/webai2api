@@ -190,3 +190,38 @@ def test_delta_buffer_holds_dsml_opener_split_across_chunks():
     assert emitted == "正文\n"
     assert buf.opener_found is True
     assert buf.text.endswith("<|DSML|invoke")
+
+
+# ── 病态输入护栏（2026-10-27 审查发现：可被提示注入诱导）──────
+def test_parse_dsml_deep_nesting_does_not_crash():
+    """~600 层嵌套参数：按文本折叠返回，绝不 RecursionError
+    （此前 ~500 层即爆栈 → 上游成功回复被当 502）。"""
+    import time
+    deep = "<|DSML|parameter name=\"a\">" * 600 + "v" + "</|DSML|parameter>" * 600
+    text = (DSML_TOOL_CALLS_OPEN
+            + f'<|DSML|invoke name="write">{deep}</|DSML|invoke>'
+            + "</|DSML|tool_calls>")
+    t0 = time.time()
+    calls = parse_dsml_tool_calls(text, TOOLS)
+    assert isinstance(calls, list)
+    assert time.time() - t0 < 2
+
+
+def test_parse_dsml_opener_flood_guard():
+    """两万个未闭合开标签：护栏直接放弃解析（此前 460KB 需 34 秒）。"""
+    import time
+    flood = "<|DSML|invoke name=\"write\">" * 20000
+    text = DSML_TOOL_CALLS_OPEN + flood
+    t0 = time.time()
+    calls = parse_dsml_tool_calls(text, TOOLS)
+    assert calls == []
+    assert time.time() - t0 < 2
+
+
+def test_strip_dsml_opener_flood_guard():
+    import time
+    flood = "<|DSML|invoke>" * 20000
+    t0 = time.time()
+    out = strip_tool_markup("前文" + flood, dsml=True)
+    assert time.time() - t0 < 2
+    assert out.startswith("前文")

@@ -662,13 +662,16 @@ class QwenWebClient:
         base_text = ""
         base_reasoning = ""
         saw_done = False
-        _cont_rounds = 0
+        _cont_rounds = 0          # 已发起的续写轮数（不含主轮）
         cont_failed = False
+        anchor_seen = False       # 本轮是否拿到过 assistant 锚点（response_id）
         try:
             while True:
                 round_text = ""
                 round_reasoning = ""
                 is_cont = _cont_rounds > 0
+                anchor_base = response_id
+                anchor_seen = False
                 try:
                     for line in resp:
                         try:
@@ -692,6 +695,7 @@ class QwenWebClient:
                             rid = event.get("response_id")
                             if isinstance(rid, str) and rid:
                                 response_id = rid
+                                anchor_seen = True
                             yield {"text": base_text + round_text,
                                    "reasoning": base_reasoning + round_reasoning,
                                    "chat_id": chat_id or response_id,
@@ -715,6 +719,7 @@ class QwenWebClient:
                             rid = event.get("response_id")
                             if isinstance(rid, str) and rid:
                                 response_id = rid
+                                anchor_seen = True
                             saw_done = True
                             break
                         elif typ == "error":
@@ -736,12 +741,15 @@ class QwenWebClient:
                     except Exception:
                         pass
 
-                _cont_rounds += 1
                 if (saw_done or cont_failed
                         or _cont_rounds >= MAX_AUTO_CONTINUATIONS):
                     break
-                if not (chat_id and response_id):
-                    break  # 无锚点（连会话 id 都没拿到），无法续写
+                if not (chat_id and anchor_seen
+                        and response_id and response_id != anchor_base):
+                    # 无锚点（连会话 id / assistant response id 都没拿到）：
+                    # 「继续」会挂到上一轮的 response 上成为孤儿分支，不续写
+                    break
+                _cont_rounds += 1
                 base_text += round_text
                 base_reasoning += round_reasoning
                 self._bump("auto_continued")
@@ -776,7 +784,8 @@ class QwenWebClient:
                     {"role": "assistant", "content": text}],
                 payload.get("model") or "",
                 payload.get("_wapi_key_id") or "")
-            self._store_conv(store_key, chat_id, response_id)
+            self._store_conv(store_key, chat_id,
+                             response_id if anchor_seen else "")
         if not saw_done:
             self.logger.warning(
                 "上游流提前中断（续写未救回），按截断返回 finish=length")

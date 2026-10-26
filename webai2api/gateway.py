@@ -787,10 +787,18 @@ def create_gateway_router(
         payload["_wapi_key_id"] = ""  # 占位：chat_completions 会写入真实值
         model = payload.get("model") or DEFAULT_MODEL
         want_stream = bool(payload.get("stream"))
-        if not payload.get("system"):
-            # Anthropic 的顶层 system 是可选字段；缺失时 chat 链路没有 system
-            # 消息，三家网页端会以「无视工具说明」的口吻作答（实测：工具型
-            # 对话回填结果后不认账）。补一句占位 system，工具注入落在这里。
+        # Anthropic 的 system 已由 anthropic_to_openai 转成 messages[0]；
+        # 只有当转换结果里确实没有任何 system 消息时才补占位——
+        # 占位恒插入会把客户端真实 system 挤到第二位，而 Kimi/Qwen 只取
+        # 第一条 system，真实指令会整个丢失（审查发现的真 bug）。
+        _has_system = any(
+            isinstance(m, dict) and m.get("role") == "system"
+            for m in (payload.get("messages") or [])
+        )
+        if not _has_system and not payload.get("system"):
+            # 缺失时 chat 链路没有 system 消息，三家网页端会以「无视工具
+            # 说明」的口吻作答（实测：工具型对话回填结果后不认账）。
+            # 补一句占位 system，工具注入落在这里。
             payload["system"] = "你是 webai2api 网关转发的助手。"
             payload["messages"].insert(
                 0, {"role": "system", "content": payload["system"]}

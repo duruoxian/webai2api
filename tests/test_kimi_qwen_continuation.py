@@ -41,6 +41,7 @@ KIMI_TAIL_EVENTS = [
 class Handler(BaseHTTPRequestHandler):
     # Kimi: 每次调用依次取 (events, has_end_frame)；Qwen: 每次取一组事件
     kimi_rounds: list = []
+    kimi_ends: list = []
     qwen_rounds: list = []
     call_no: int = 0
     kimi_requests: list = []
@@ -63,8 +64,10 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_kimi(self):
         body = self._read_framed()
         type(self).kimi_requests.append(body)
-        events, has_end = type(self).kimi_rounds[
-            min(type(self).call_no, len(type(self).kimi_rounds) - 1)]
+        idx = min(type(self).call_no, len(type(self).kimi_rounds) - 1)
+        events, has_end = type(self).kimi_rounds[idx]
+        end_payload = (type(self).kimi_ends[idx]
+                       if idx < len(type(self).kimi_ends) else b"{}")
         type(self).call_no += 1
         self.send_response(200)
         self.send_header("Content-Type", "application/connect+json")
@@ -72,7 +75,7 @@ class Handler(BaseHTTPRequestHandler):
         for ev in events:
             self.wfile.write(_json_frame(ev))
         if has_end:
-            self.wfile.write(_frame(0x02, b"{}"))
+            self.wfile.write(_frame(0x02, end_payload))
         # has_end=False：直接关连接，模拟上游掐流（无 0x02、无 done）
 
     def _serve_relay(self):
@@ -115,6 +118,7 @@ class Handler(BaseHTTPRequestHandler):
 @pytest.fixture()
 def mock_server():
     Handler.kimi_rounds = []
+    Handler.kimi_ends = []
     Handler.qwen_rounds = []
     Handler.call_no = 0
     Handler.kimi_requests = []
@@ -244,4 +248,67 @@ def test_qwen_relay_normal_end_never_continues(mock_server, tmp_path, monkeypatc
     c = QwenWebClient(cfg, logging.getLogger("t"))
     out = c.chat_completion(_payload())
     assert out["choices"][0]["finish_reason"] == "stop"
+    assert len(Handler.relay_requests) == 1
+
+
+# ── 锚点与失败降级（2026-10-27 审查发现）────────────
+def test_kimi_truncated_without_assistant_id_never_continues(mock_server):
+    """主轮没拿到 assistant 消息 id 就断流：不发起续写（「继续」会挂到
+    上一轮消息上成为孤儿分支），按截断返回 finish=length。"""
+    head = [
+        {"op": "set", "chat": {"id": "chat-777"}},
+        {"op": "set", "message": {"id": "msg-u", "role": "user",
+                                  "status": "MESSAGE_STATUS_COMPLETED"}},
+        {"op": "set", "mask": "block.text", "block": {"id": "b1", "text": {"content": ""}}},
+        {"op": "append", "mask": "block.text.content",
+         "block": {"id": "b1", "text": {"content": "半截"}}},
+        # 无 assistant 消息事件、无 done、无 0x02 → 断流且无锚点
+    ]
+    Handler.kimi_rounds = [(head, False), (KIMI_TAIL_EVENTS, True)]
+    cfg = KimiConfig(base_url=mock_server, auth_token="t", egress="direct",
+                     anti_rate_limit_enabled=False, session_store_path="")
+    c = KimiWebClient(cfg, logging.getLogger("t"))
+    out = c.chat_completion(_payload())
+    assert out["choices"][0]["finish_reason"] == "length"
+    assert len(Handler.kimi_requests) == 1, "无锚点不得发起续写"
+
+
+def test_kimi_continuation_rejected_degrades_to_length(mock_server):
+    """续写轮被 0x02 错误帧拒绝：按截断收场（finish=length），
+    绝不误报 stop，也绝不把已输出的流变成报错。"""
+    Handler.kimi_rounds = [
+        (_kimi_events_head(), False),
+        ([], True),   # 空 events + 错误帧
+    ]
+    Handler.kimi_ends = [
+        None,
+        json.dumps({"error": {"code": "rate_limit",
+                              "message": "too many requests"}}).encode(),
+    ]
+    cfg = KimiConfig(base_url=mock_server, auth_token="t", egress="direct",
+                     anti_rate_limit_enabled=False, session_store_path="")
+    c = KimiWebClient(cfg, logging.getLogger("t"))
+    out = c.chat_completion(_payload())
+    assert out["choices"][0]["finish_reason"] == "length"
+    chunks_err = None
+    assert chunks_err is None
+
+
+def test_qwen_relay_no_anchor_never_continues(mock_server, tmp_path, monkeypatch):
+    """中继流连 meta（会话/响应锚点）都没发就断流：不发起续写。"""
+    port = int(mock_server.rsplit(":", 1)[1])
+    from webai2api import qwen_relay
+    monkeypatch.setattr(qwen_relay, "user_data_dir", lambda: tmp_path)
+    qwen_relay.write_state("acc-cont", {
+        "pid": os.getpid(), "port": port, "provider": "qwen",
+        "started_at": time.time(),
+    })
+    Handler.qwen_rounds = [[{"type": "delta", "content": "半截"}]]
+    cfg = QwenConfig(base_url="https://chat.qwen.ai", auth_token="tok-q",
+                     egress="direct", anti_rate_limit_enabled=False,
+                     session_store_path="", account_id="acc-cont",
+                     relay_enabled=True)
+    c = QwenWebClient(cfg, logging.getLogger("t"))
+    out = c.chat_completion(_payload())
+    assert out["choices"][0]["finish_reason"] == "length"
     assert len(Handler.relay_requests) == 1

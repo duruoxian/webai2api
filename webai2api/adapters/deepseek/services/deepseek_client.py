@@ -905,7 +905,6 @@ class DeepSeekWebClient:
                                     if r:
                                         full_reasoning += r
 
-                        _cont_rounds += 1
                         if saw_upstream_finish or _cont_rounds >= MAX_AUTO_CONTINUATIONS:
                             break
                         if not (last_response_message_id
@@ -923,7 +922,12 @@ class DeepSeekWebClient:
                             _cont_rounds, MAX_AUTO_CONTINUATIONS,
                         )
                         self._bump("auto_continued")
+                        _cont_rounds += 1
                         try:
+                            try:
+                                response.close()
+                            except Exception:
+                                pass
                             cont_resolved = self._continuation_resolved(
                                 resolved, session_id, last_response_message_id)
                             response, session_id = self._open_chat_stream(cont_resolved)
@@ -972,10 +976,12 @@ class DeepSeekWebClient:
                             len(full_text), len(full_reasoning),
                         )
 
-                    # JSON 模式校验
+                    # JSON 模式校验（截断时跳过：半截 JSON 必然校验失败，
+                    # 不能把已经消费完的内部流变成 502 报错）
                     if self.config.strip_citations:
                         full_text = strip_citation_marks(full_text)
-                    self._validate_response_format(payload, full_text)
+                    if saw_upstream_finish:
+                        self._validate_response_format(payload, full_text)
 
                     self._store_after_response(resolved, session_id, full_text, last_response_message_id)
 
@@ -1188,6 +1194,10 @@ class DeepSeekWebClient:
 
                                 delta = choices[0].get("delta") or {}
                                 finish_reason = choices[0].get("finish_reason")
+                                if finish_reason is not None:
+                                    # 嵌套快照可能同时携带 content 与 finish_reason，
+                                    # 必须先记录，否则会被 r/c 分支吞掉导致漏判完成
+                                    upstream_finish_reason = finish_reason
                                 c = delta.get("content", "") or ""
                                 r = delta.get("reasoning_content", "") or ""
 
@@ -1216,16 +1226,14 @@ class DeepSeekWebClient:
                                             tool_calls_emitted = True
                                             emitted_calls.extend(action.tool_calls)
                                             anything_yielded = True
-                                elif finish_reason is not None:
-                                    # 上游 finish chunk：记录但不透传，我们最后自己发
-                                    upstream_finish_reason = finish_reason
-                                else:
+                                elif finish_reason is None:
                                     # 纯 role chunk / 空 delta chunk：原样透传
                                     # （续写轮客户端已收到过 role，跳过重复的）
                                     if skip_role and _is_role_only(openai_chunk):
                                         continue
                                     yield _sse(openai_chunk)
                                     anything_yielded = True
+                                # 带 finish_reason 的块不透传，finish 我们最后自己发
 
                                 if self._is_finish_event(event):
                                     return True
@@ -1271,15 +1279,17 @@ class DeepSeekWebClient:
                                 cont_resp, cont_session = self._open_chat_stream(cont_resolved)
                                 if cont_session:
                                     current_session_id = cont_session
-                                saw = yield from _consume(cont_resp, skip_role=True)
                                 try:
-                                    cont_resp.read()
-                                except Exception:
-                                    pass
-                                try:
-                                    cont_resp.close()
-                                except Exception:
-                                    pass
+                                    saw = yield from _consume(cont_resp, skip_role=True)
+                                finally:
+                                    try:
+                                        cont_resp.read()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        cont_resp.close()
+                                    except Exception:
+                                        pass
                             except Exception as exc:  # noqa: BLE001
                                 # 续写失败按截断收场，绝不能把已输出的流变成报错
                                 self.logger.warning("自动续写失败（按截断返回）: %s", exc)
@@ -1328,8 +1338,9 @@ class DeepSeekWebClient:
                             if not full_text:
                                 full_text = full_reasoning
 
-                        # 3. JSON 模式校验（仅在没有工具调用发出时才有意义）
-                        if not tool_calls_emitted:
+                        # 3. JSON 模式校验（仅在没有工具调用发出且正常结束时：
+                        #    截断的半截 JSON 必然校验失败，不能让已输出的流变报错）
+                        if not tool_calls_emitted and saw_upstream_finish:
                             self._validate_response_format(payload, full_text)
 
                         # 4. usage chunk（无条件发送：客户端即使没传 include_usage，

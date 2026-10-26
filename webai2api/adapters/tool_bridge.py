@@ -221,6 +221,23 @@ _DSML_PARAM_OPEN_RE = re.compile(r"<\|DSML\|parameter\b([^<>]*?)>", re.I)
 _DSML_PARAM_CLOSE_RE = re.compile(r"</\|DSML\|parameter\s*>", re.I)
 _DSML_CDATA_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.S)
 _DSML_ITEM_RE = re.compile(r"<item\b[^>]*>(.*?)</item>", re.I | re.S)
+# 健壮性护栏：模型输出可被提示注入诱导出病态 DSML（几百层嵌套 → 递归爆栈；
+# 大量未闭合开标签 → 正则二次放大 CPU）。超过任一阈值即放弃 DSML 解析，
+# 回退 JSON/文本路径——正常的工具调用（哪怕携带几十 KB 文件内容）远够不着。
+_DSML_MAX_DEPTH = 24
+_DSML_MAX_OPENERS = 512
+_DSML_MAX_TEXT = 1_000_000
+
+
+def _dsml_openers(text: str) -> int:
+    """统计 DSML 开标签出现次数（纯字符串计数，线性——不能用带 lazy
+    尾段的 INVOKE 正则：未闭合输入会让计数器本身变成二次复杂度）。"""
+    if not text:
+        return 0
+    low = text.lower()
+    return (low.count("<|dsml|parameter")
+            + low.count("<|dsml|invoke")
+            + low.count("<|dsml|tool_calls"))
 
 
 def _dsml_attr(attrs: str, key: str = "name") -> str:
@@ -237,20 +254,22 @@ def _dsml_cdata(s: str) -> str | None:
     return "".join(_DSML_CDATA_RE.findall(s))
 
 
-def _dsml_value(raw: str):
+def _dsml_value(raw: str, depth: int = 0):
     """DSML 参数值 → Python 值：CDATA 字符串 / 嵌套对象 / <item> 数组 /
-    JSON 字面量 / 原样文本。"""
+    JSON 字面量 / 原样文本。depth 防深度递归爆栈（上限 _DSML_MAX_DEPTH，
+    超限按原样文本返回）。"""
     s = (raw or "").strip()
     if not s:
         return ""
     cdata = _dsml_cdata(s)
     if cdata is not None:
         return cdata
-    if _DSML_PARAM_OPEN_RE.search(s):
-        return _dsml_params(s)
-    items = _DSML_ITEM_RE.findall(s)
-    if items and not _DSML_ITEM_RE.sub("", s).strip():
-        return [_dsml_value(x) for x in items]
+    if depth < _DSML_MAX_DEPTH and _DSML_PARAM_OPEN_RE.search(s):
+        return _dsml_params(s, depth + 1)
+    if depth < _DSML_MAX_DEPTH:
+        items = _DSML_ITEM_RE.findall(s)
+        if items and not _DSML_ITEM_RE.sub("", s).strip():
+            return [_dsml_value(x, depth + 1) for x in items]
     try:
         return json.loads(s)
     except Exception:
@@ -276,7 +295,7 @@ def _dsml_param_end(text: str, start: int) -> tuple[int, int]:
                 return mc.start(), mc.end()
 
 
-def _dsml_params(text: str) -> dict:
+def _dsml_params(text: str, depth: int = 0) -> dict:
     out: dict = {}
     pos = 0
     while True:
@@ -286,7 +305,7 @@ def _dsml_params(text: str) -> dict:
         name = _dsml_attr(m.group(1))
         end, pos = _dsml_param_end(text, m.end())
         if name:
-            out[name] = _dsml_value(text[m.end() : end])
+            out[name] = _dsml_value(text[m.end() : end], depth + 1)
 
 
 def _dsml_blocks(text: str) -> list:
@@ -305,9 +324,15 @@ def parse_dsml_tool_calls(
 
     只放行 tools 清单里声明过的名字；参数名走与 JSON 路径相同的
     schema 校正（`_fix_arg_names`）；一轮最多 limit 个调用。
+    病态输入护栏（可被提示注入诱导）：嵌套超限按文本折叠（见
+    _dsml_value），开标签数/文本长度超限或递归仍爆栈时整体放弃
+    DSML 解析返回空——上游回复绝不因解析失败变成 502。
     """
     allowed = tool_names(tools)
     if not text or not allowed:
+        return []
+    if (len(text) > _DSML_MAX_TEXT
+            or _dsml_openers(text) > _DSML_MAX_OPENERS):
         return []
     by_name = {}
     for t in tools or []:
@@ -316,24 +341,27 @@ def parse_dsml_tool_calls(
             if fn.get("name"):
                 by_name[fn["name"]] = t
     calls: list = []
-    for block in _dsml_blocks(text):
-        for m in _DSML_INVOKE_RE.finditer(block):
-            name = _dsml_attr(m.group(1))
-            if not name or name not in allowed:
-                continue
-            args = _fix_arg_names(_dsml_params(m.group(2)), by_name.get(name))
-            calls.append(
-                {
-                    "id": f"call_{uuid.uuid4().hex[:16]}",
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": json.dumps(args, ensure_ascii=False),
-                    },
-                }
-            )
-            if len(calls) >= limit:
-                return calls
+    try:
+        for block in _dsml_blocks(text):
+            for m in _DSML_INVOKE_RE.finditer(block):
+                name = _dsml_attr(m.group(1))
+                if not name or name not in allowed:
+                    continue
+                args = _fix_arg_names(_dsml_params(m.group(2)), by_name.get(name))
+                calls.append(
+                    {
+                        "id": f"call_{uuid.uuid4().hex[:16]}",
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(args, ensure_ascii=False),
+                        },
+                    }
+                )
+                if len(calls) >= limit:
+                    return calls
+    except RecursionError:
+        return []
     return calls
 
 
@@ -713,10 +741,15 @@ def strip_tool_markup(
         return text or ""
     out = text
     if dsml:
-        out = _DSML_BLOCK_RE.sub("", out)
-        m = re.search(r"<\|DSML\|tool_calls\b", out, re.I)
-        if m:
-            out = out[: m.start()]
+        if len(out) > _DSML_MAX_TEXT or _dsml_openers(out) > _DSML_MAX_OPENERS:
+            # 病态输入护栏：跳过 O(n²) 的块正则，直接从首个 opener 截断
+            m = re.search(r"<\|DSML\|tool_calls\b", out, re.I)
+            out = out[: m.start()] if m else out
+        else:
+            out = _DSML_BLOCK_RE.sub("", out)
+            m = re.search(r"<\|DSML\|tool_calls\b", out, re.I)
+            if m:
+                out = out[: m.start()]
         out = out.strip()
     if tag:
         # 连同行尾换行一起移除，避免剥完留下一串空行

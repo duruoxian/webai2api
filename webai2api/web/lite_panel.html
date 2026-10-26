@@ -906,7 +906,9 @@ async function refresh(){
   qs += `${sep}limit=${RECENT_LIMIT}&offset=${RECENT_OFFSET}`;
   if(RECENT_KEY) qs+='&key_id='+encodeURIComponent(RECENT_KEY);
   if(RECENT_ACC) qs+='&account_id='+encodeURIComponent(RECENT_ACC);
-  const s=await api('/state'+qs); if(!s||!s.ok)return;
+  const s=await api('/state'+qs);
+  document.body.classList.remove('loading');
+  if(!s||!s.ok)return;
   LAST_STATE=s;
   document.getElementById('navAcc').innerHTML =
     `可用账号 <b>${s.accounts.filter(a=>a.enabled).length}</b>`;
@@ -914,7 +916,6 @@ async function refresh(){
     `Key <b>${s.keys.length}</b>`;
   renderOverview(s);renderAccounts(s);renderKeys(s);renderUsage(s);renderSettings(s);
   document.body.classList.remove('loading');
-  renderOverview(s);renderAccounts(s);renderKeys(s);renderUsage(s);renderSettings(s);
 
   if(window.__setLimits) window.__setLimits(s.settings||{});
   try{
@@ -1209,7 +1210,7 @@ function renderHeatmap(s){
 function renderAccounts(s){
   const tb=document.querySelector('#accTable tbody');
   const cd=s.cooldowns||{};
-  let __rows='';
+  let __rows='';let __sig='';
   s.accounts.forEach(a=>{
     const cred=[a.has_token&&'token',a.has_device&&'device',a.has_settings&&'settings',a.has_cookie&&'cookie']
       .filter(Boolean).join(' · ')||'未填写';
@@ -1228,9 +1229,10 @@ function renderAccounts(s){
     else if(lg.status==='waiting') loginBadge='<span class="tag off">等待登录…</span>';
     else if(lg.status==='success') loginBadge='<span class="tag on">登录成功</span>';
     else if(lg.status==='error') loginBadge='<span class="tag err">'+esc(lg.message||'失败')+'</span>';
-    __rows+=`<tr><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
+    __sig+=`${a.id}|${a.name}|${a.enabled}|${a.health}|${a.provider}|${a.has_token}${a.has_device}${a.has_settings}${a.has_cookie}|${a.egress};`;
+    __rows+=`<tr data-acc="${a.id}"><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
       <td class="muted mono">${cred} ${loginBadge} ${healthBadge} ${egressTag(a.egress)}</td>
-      <td><label class="switch" title="${a.enabled?'点击停用':'点击启用'}"><input type="checkbox" ${a.enabled?'checked':''} onchange="toggleAcc('${a.id}',${a.enabled?0:1})"><span class="knob"></span></label>${cdBadge}</td>
+      <td><label class="switch" title="${a.enabled?'点击停用':'点击启用'}"><input type="checkbox" ${a.enabled?'checked':''} aria-label="启用或停用账号" onchange="toggleAcc('${a.id}',${a.enabled?0:1})"><span class="knob"></span></label>${cdBadge}</td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn sm" onclick="browserLogin('${a.id}')">浏览器登录</button>
         <span class="row-menu-wrap">
@@ -1241,10 +1243,17 @@ function renderAccounts(s){
             <button class="danger" onclick="delAcc('${a.id}')">删除账号</button>
           </div>
         </span></td></tr>`;});
-  const same = tb.dataset.sig === __rows;
-  tb.dataset.sig = __rows;
-  tb.innerHTML = __rows || empty('还没有账号，点右上角添加');
+  if(!__rows)__rows=empty('还没有账号，点右上角添加');
+  const same = tb.dataset.sig === __sig;
+  tb.dataset.sig = __sig;
+  // 5s 轮询重渲染会销毁打开的 ⋯ 菜单：重建后按行回填打开态
+  const openAcc = (tb.querySelector('.row-menu.open')?.closest('tr')?.dataset.acc) || '';
+  tb.innerHTML = __rows;
   tb.classList.toggle('no-anim', same);
+  if(openAcc){
+    const m = tb.querySelector(`tr[data-acc="${openAcc}"] .row-menu`);
+    if(m) m.classList.add('open');
+  }
 }
 async function browserLogin(id){
   const r = await api('/accounts/'+id+'/login','POST');
@@ -1258,13 +1267,15 @@ async function cleanupBrowserResidue(btn){
   else toast((r&&r.error)||'清理失败');
 }
 function renderKeys(s){
-  const tb=document.querySelector('#keyTable tbody');tb.innerHTML='';
+  const tb=document.querySelector('#keyTable tbody');
+  let __krows='';let __ksig='';
   s.keys.forEach(k=>{
     const accN=(k.accounts||[]).length, modN=(k.models||[]).length;
     const scope=`<div class="muted" style="font-size:12px;margin-top:3px">${
       k.owner?esc(k.owner)+' · ':''}${accN?('账号 '+accN+' 个'):'全部账号'} · ${modN?('模型 '+modN+' 个'):'全部模型'}${
       k.expires_at?(' · 到期 '+fmtTime(k.expires_at)):''}</div>`;
-    tb.innerHTML+=`<tr><td><a href="javascript:void(0)" onclick="openKeyDetail('${k.id}')" style="color:inherit;text-decoration:none"><b>${esc(k.name)}</b></a>${scope}</td>
+    __ksig+=`${k.id}|${k.name}|${k.enabled}|${k.accounts.length}|${k.models.length};`;
+    __krows+=`<tr><td><a href="javascript:void(0)" onclick="openKeyDetail('${k.id}')" style="color:inherit;text-decoration:none"><b>${esc(k.name)}</b></a>${scope}</td>
       <td class="muted">${fmtTime(k.created_at)}</td>
       <td><span class="tag ${k.enabled?'on':'off'}">${k.enabled?'启用':'停用'}</span></td>
       <td class="muted">${fmtTime(k.last_used_at)}</td>
@@ -1275,6 +1286,10 @@ function renderKeys(s){
         <button class="btn sm" onclick="ocConnect('${k.id}')">接入</button>
         <button class="btn gray sm" onclick="ocDisconnect('${k.id}')">移除</button>
         <button class="btn danger sm" onclick="delKey('${k.id}')">删除</button></td></tr>`;});
+  const ksame = tb.dataset.sig === __ksig;
+  tb.dataset.sig = __ksig;
+  tb.innerHTML = __krows;
+  tb.classList.toggle('no-anim', ksame);
   if(!s.keys.length)tb.innerHTML=empty('还没有 Key，点右上角生成');
   if(typeof window.rebuildOcSel==='function') window.rebuildOcSel();
 }
@@ -1912,13 +1927,25 @@ function toggleAccMenu(btn,ev){
   const menu=btn.parentElement.querySelector('.row-menu');
   const wasOpen=menu.classList.contains('open');
   document.querySelectorAll('.row-menu.open').forEach(m=>m.classList.remove('open'));
-  if(!wasOpen)menu.classList.add('open');
+  if(!wasOpen){
+    // fixed 定位：脱离 .tbl-scroll 的 overflow 裁剪，低处行的菜单不被截断
+    const r=btn.getBoundingClientRect();
+    menu.style.position='fixed';
+    menu.style.top=(r.bottom+6)+'px';
+    menu.style.left='auto';
+    menu.style.right=Math.max(8, window.innerWidth - r.right)+'px';
+    menu.classList.add('open');
+  }
 }
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape')
+    document.querySelectorAll('.row-menu.open').forEach(m=>m.classList.remove('open'));
+});
 document.addEventListener('click',()=>{
   document.querySelectorAll('.row-menu.open').forEach(m=>m.classList.remove('open'));
 });
 function winClose(){ const a=_wapi(); if(a&&a.close) a.close(); else window.close(); }
-function copyText(t){navigator.clipboard.writeText(t).then(()=>toast('已复制'));}
+
 
 /* ── 主题系统：液态浅/深 + 纸墨 + 樱花 + 霓虹 + 终端 ── */
 const THEMES=[

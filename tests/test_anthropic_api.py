@@ -621,3 +621,77 @@ def test_panels_have_anthropic_snippet_section():
         assert "anthropic-messages" in html, f"{name} 缺 ZCode 协议指引"
         # 随所选 Key 联动
         assert "buildAnthSnippet(k?k.key:'')" in html, f"{name} 片段未跟随 Key 选择刷新"
+
+
+# ── 5. system 占位回归（2026-10-27 审查发现的真 bug）──────────
+
+
+def test_e2e_client_system_not_shadowed_by_placeholder(tmp_path):
+    """客户端自带 system 时，占位 system 不得插到真实 system 前面——
+    Kimi/Qwen 只取第一条 system，占位恒插入会让真实指令整个丢失。"""
+    captured = {}
+
+    class _Cap(_FakeClient):
+        def chat_completion(self, payload):
+            captured["payload"] = payload
+            return super().chat_completion(payload)
+
+    client = _make_client(tmp_path, _Cap(
+        response={
+            "model": "GLM-5.3-Flash",
+            "choices": [{"finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "好"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                      "total_tokens": 2},
+        }
+    ))
+    key = _make_key(client)
+    r = client.post(
+        "/v1/messages",
+        headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+        json={
+            "model": "GLM-5.3-Flash",
+            "max_tokens": 64,
+            "system": "客户的真实系统指令",
+            "messages": [{"role": "user", "content": "你好"}],
+        },
+    )
+    assert r.status_code == 200
+    msgs = captured["payload"]["messages"]
+    systems = [m for m in msgs if m.get("role") == "system"]
+    assert len(systems) == 1, f"应只有客户端的 1 条 system，实际 {len(systems)} 条"
+    assert systems[0]["content"] == "客户的真实系统指令"
+
+
+def test_e2e_no_system_gets_placeholder(tmp_path):
+    """客户端没带 system 时仍补占位（工具注入的落点，既有行为保持）。"""
+    captured = {}
+
+    class _Cap(_FakeClient):
+        def chat_completion(self, payload):
+            captured["payload"] = payload
+            return super().chat_completion(payload)
+
+    client = _make_client(tmp_path, _Cap(
+        response={
+            "model": "GLM-5.3-Flash",
+            "choices": [{"finish_reason": "stop",
+                         "message": {"role": "assistant", "content": "好"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1,
+                      "total_tokens": 2},
+        }
+    ))
+    key = _make_key(client)
+    r = client.post(
+        "/v1/messages",
+        headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+        json={
+            "model": "GLM-5.3-Flash",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "你好"}],
+        },
+    )
+    assert r.status_code == 200
+    msgs = captured["payload"]["messages"]
+    assert msgs[0]["role"] == "system"
+    assert "webai2api" in msgs[0]["content"]

@@ -796,17 +796,20 @@ class KimiWebClient:
             # 上游没发 done 事件、也没发 0x02 结束帧就断流：向同一 chat 发
             # 「继续」，parent 指向截断的 assistant 消息。续写轮用全新
             # _ReplyState + 基线拼接，输出对上层 prefix-diff 保持单调。
-            # 失败降级为截断。
+            # 失败降级为截断。锚点必须是**本轮**的 assistant 消息 id——
+            # 回退到上一轮的 id 会让「继续」挂在旧上下文上成为孤儿分支。
             cur_chat = state.chat_id or cached
             cur_parent = state.assistant_message_id or state.last_message_id or parent
             base_text = ""
             base_reasoning = ""
             _cont_rounds = 0
+            cont_failed = False
             while (
                 not finished
+                and not cont_failed
                 and _cont_rounds < MAX_AUTO_CONTINUATIONS
                 and cur_chat
-                and cur_parent
+                and state.assistant_message_id
             ):
                 _cont_rounds += 1
                 self._bump("auto_continued")
@@ -834,13 +837,23 @@ class KimiWebClient:
                         for flag, raw in _iter_connect_frames(resp):
                             if flag == 0x02:
                                 cont_finished = True
-                                break  # 结束帧：本轮正常收尾
+                                err = _connect_error(raw)
+                                if err is not None:
+                                    # 续写被上游拒绝：按截断收场，绝不误报 stop
+                                    self.logger.warning(
+                                        "续写轮被上游拒绝（按截断返回）: %s: %s",
+                                        err[0], err[1])
+                                    cont_failed = True
+                                break
                             try:
                                 event = json.loads(raw.decode("utf-8"))
                             except Exception:
                                 continue
                             state.apply(event)
                             if state.error:
+                                self.logger.warning(
+                                    "续写轮错误（按截断返回）: %s", state.error)
+                                cont_failed = True
                                 break
                             yield {
                                 "text": base_text + state.text_value(),
@@ -863,7 +876,7 @@ class KimiWebClient:
                 except Exception as exc:  # noqa: BLE001
                     self.logger.warning("自动续写失败（按截断返回）: %s", exc)
                     break
-                finished = cont_finished or state.done
+                finished = (cont_finished or state.done) and not cont_failed
                 cur_parent = (state.assistant_message_id
                               or state.last_message_id or cur_parent)
 
@@ -881,9 +894,12 @@ class KimiWebClient:
                     (payload.get("messages") or []) + [asst],
                     payload.get("model") or "",
                     payload.get("_wapi_key_id") or "")
+                # 最后一轮可能是失败的续写（无消息 id）：回退到 cur_parent，
+                # 绝不把缓存里的 parent 倒退回上一轮（会话链会分叉丢上下文）
                 self._store_conv(
                     store_key, chat_id,
-                    state.assistant_message_id or state.last_message_id)
+                    state.assistant_message_id or state.last_message_id
+                    or cur_parent)
             yield {
                 "__done__": True,
                 "text": base_text + state.text_value(),
