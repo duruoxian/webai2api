@@ -144,7 +144,9 @@ def test_non_stream_truncated_promotes_and_marks_length():
     msg = out["choices"][0]["message"]
     assert msg["content"] == "用户问1+1，答案是2。我要只输出数字。"
     assert out["choices"][0]["finish_reason"] == "length"
-    assert msg["reasoning_content"] == "用户问1+1，答案是2。我要只输出数字。"
+    # 对齐 Kimi/GLM 的 finalize_reasoning 语义：顶成正文后 reasoning 清空，
+    # 客户端不会在思考与正文里看到重复的同一份答案
+    assert not msg.get("reasoning_content")
 
 
 def test_non_stream_normal_stop():

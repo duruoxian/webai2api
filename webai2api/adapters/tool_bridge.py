@@ -732,7 +732,9 @@ def strip_tool_markup(
             if end < len(out) and out[end] == "\n":
                 end += 1
             out = out[:idx] + out[end:]
-        out = "\n".join(ln for ln in out.splitlines() if marker not in ln)
+        # 兜底：标记还在（后面跟的不是可识别 JSON）时只删标记本身，
+        # 不删整行——标记前若有正文，删行会把正文一起丢掉
+        out = out.replace(marker, "")
     return out.strip()
 
 
@@ -773,62 +775,12 @@ def required_nudge(
     return REQUIRED_NUDGE.format(example=example)
 
 
-class ToolStreamBuffer:
-    """流式输出里扣住工具标记（**全文快照口径**）。
+class _ToolHoldBuffer:
+    """扣留器公共实现（快照/增量两种口径的基类）。
 
-    用法：每个流事件把**全文快照**喂给 `feed()`，拿到的返回值是
-    「可以安全下发给客户端的完整前缀」；结束时分两种情况：
-    - `opener_found` 为真：不再吐 content，直接解析 tool_calls；
-    - 为假：`flush()` 把扣住的尾巴吐干净，正常 finish。
-    未发现 opener 时也会回扣一小段尾巴，防止标记恰好被拆在两次
-    delta 之间漏出去。
-    """
-
-    def __init__(self, openers: list) -> None:
-        self._openers = [o for o in (openers or []) if o]
-        self._text = ""
-        self._emitted = 0
-        self._open_at = -1
-
-    def feed(self, text: str) -> str:
-        self._text = text or ""
-        if self._open_at < 0 and self._openers:
-            for op in self._openers:
-                i = self._text.find(op)
-                if 0 <= i and (self._open_at < 0 or i < self._open_at):
-                    self._open_at = i
-        if self._open_at >= 0:
-            out = self._text[self._emitted : self._open_at]
-            self._emitted = self._open_at
-            return out
-        # 回扣一个完整 opener 的长度：完整出现的 opener 一定还没被发出
-        hold = max((len(op) for op in self._openers), default=1)
-        safe_end = max(self._emitted, len(self._text) - hold)
-        out = self._text[self._emitted : safe_end]
-        self._emitted = safe_end
-        return out
-
-    def flush(self) -> str:
-        out = self._text[self._emitted :]
-        self._emitted = len(self._text)
-        return out
-
-    @property
-    def opener_found(self) -> bool:
-        return self._open_at >= 0
-
-    @property
-    def text(self) -> str:
-        return self._text
-
-
-class DeltaToolBuffer:
-    """工具标记扣留器（**增量口径**），与 ToolStreamBuffer 行为等价。
-
-    差别只在喂法：`feed_delta(piece)` 接收**新增量**而非全文快照，内部
-    自行累计。给「流循环先做无损前缀差、再扣留标记」的链路用——快照
-    口径的 buf 会回扣尾部，输出非单调，嵌套在多层前缀差里会把下层
-    错位咬字（GLM 实测）。
+    状态与推进逻辑只有一份：扫描 opener 首现位置，opener 前照常放行、
+    opener 起全部扣住；未发现 opener 时回扣一个完整 opener 长度的尾巴，
+    防止标记被拆在两次 delta 之间漏出去。
     """
 
     def __init__(self, openers: list) -> None:
@@ -837,9 +789,8 @@ class DeltaToolBuffer:
         self._emitted = 0
         self._open_at = -1
 
-    def feed_delta(self, piece: str) -> str:
-        if piece:
-            self._full += piece
+    def _advance(self) -> str:
+        """基于当前 _full 放行「可以安全下发的前缀」，推进 _emitted。"""
         if self._open_at < 0 and self._openers:
             for op in self._openers:
                 i = self._full.find(op)
@@ -867,3 +818,32 @@ class DeltaToolBuffer:
     @property
     def text(self) -> str:
         return self._full
+
+
+class ToolStreamBuffer(_ToolHoldBuffer):
+    """流式输出里扣住工具标记（**全文快照口径**）。
+
+    用法：每个流事件把**全文快照**喂给 `feed()`，拿到的返回值是
+    「可以安全下发给客户端的完整前缀」；结束时分两种情况：
+    - `opener_found` 为真：不再吐 content，直接解析 tool_calls；
+    - 为假：`flush()` 把扣住的尾巴吐干净，正常 finish。
+    """
+
+    def feed(self, text: str) -> str:
+        self._full = text or ""
+        return self._advance()
+
+
+class DeltaToolBuffer(_ToolHoldBuffer):
+    """工具标记扣留器（**增量口径**），与 ToolStreamBuffer 行为等价。
+
+    差别只在喂法：`feed_delta(piece)` 接收**新增量**而非全文快照，内部
+    自行累计。给「流循环先做无损前缀差、再扣留标记」的链路用——快照
+    口径的 buf 会回扣尾部，输出非单调，嵌套在多层前缀差里会把下层
+    错位咬字（GLM 实测）。
+    """
+
+    def feed_delta(self, piece: str) -> str:
+        if piece:
+            self._full += piece
+        return self._advance()

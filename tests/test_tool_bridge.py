@@ -404,3 +404,16 @@ def test_parse_keeps_ambiguous_or_unknown_arg_names():
     text = '<tool_call>{"name": "write", "arguments": {"path": "x"}}</tool_call>'
     calls = parse_tool_calls(text, tools2, tag="tool_call")
     assert json.loads(calls[0]["function"]["arguments"]) == {"path": "x"}
+
+
+def test_strip_marker_without_json_keeps_prose():
+    """标记后面没跟可识别 JSON 时的兜底：只删标记本身，不删整行——
+    标记前若有正文，删行会把正文一起丢掉。"""
+    text = "我来看看\n<<<TOOL_CALL>>>（这里没写 JSON）\n后续"
+    out = strip_tool_markup(text, marker="<<<TOOL_CALL>>>")
+    assert "<<<TOOL_CALL>>>" not in out
+    assert "我来看看" in out and "后续" in out and "（这里没写 JSON）" in out
+
+    same_line = "前文<<<TOOL_CALL>>>后文"
+    out2 = strip_tool_markup(same_line, marker="<<<TOOL_CALL>>>")
+    assert out2 == "前文后文"

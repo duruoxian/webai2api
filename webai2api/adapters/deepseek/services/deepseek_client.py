@@ -897,10 +897,13 @@ class DeepSeekWebClient:
                             completion_id,
                         )
 
-                    # 空正文兜底（对齐 Kimi/GLM）：正文空、思考有货 → 思考顶成正文，
-                    # 否则非流式返回空 content，客户端看不到答案
+                    # 空正文兜底（对齐 Kimi/GLM 的 finalize_reasoning 语义）：
+                    # 正文空、思考有货 → 思考顶成正文并清空 reasoning_content，
+                    # 否则非流式返回空 content，且客户端会在思考与正文里
+                    # 看到重复的同一份答案
                     if not full_text and full_reasoning:
                         full_text = full_reasoning
+                        full_reasoning = ""
 
                     if not saw_upstream_finish:
                         self.logger.warning(
