@@ -880,6 +880,37 @@ function fmtTokHTML(n){
 function fmtTok(n){
   return fmtTokHTML(n).replace(/<[^>]+>/g,'');
 }
+const REDUCED = (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+function animateNumTo(el, html, num, prev){
+  if(!el) return;
+  if(REDUCED || prev===undefined || String(num)===String(prev)){ el.innerHTML=html; return; }
+  const pm=/(-?[\d,]+(?:\.\d+)?)/.exec(el.innerHTML);
+  const nm=/(-?[\d,]+(?:\.\d+)?)/.exec(html);
+  if(!pm||!nm||pm[1]===nm[1]){ el.innerHTML=html; return; }
+  const ps=el.innerHTML.slice(el.innerHTML.indexOf(pm[1])+pm[1].length);
+  const ns=html.slice(html.indexOf(nm[1])+nm[1].length);
+  if(ps!==ns){ el.innerHTML=html; return; }  // 单位变了（万↔亿）直接换，不做跨单位滚动
+  const from=parseFloat(pm[1].replace(/,/g,''));
+  const to=parseFloat(nm[1].replace(/,/g,''));
+  const dec=(nm[1].split('.')[1]||'').length;
+  const comma=nm[1].includes(',');
+  const t0=performance.now(),dur=650;
+  (function frame(t){
+    const k=Math.min(1,((t||performance.now())-t0)/dur);
+    const e=1-Math.pow(1-k,3);
+    let v=from+(to-from)*e;
+    v=dec?v.toFixed(dec):String(Math.round(v));
+    if(comma)v=Number(v).toLocaleString('en-US');
+    el.innerHTML=html.replace(nm[1],v);
+    if(k<1)requestAnimationFrame(frame);
+  })(performance.now());
+}
+function animateNum(id, html, num){
+  const el=document.getElementById(id); if(!el) return;
+  const prev=el.dataset.num;
+  el.dataset.num=String(num);
+  animateNumTo(el, html, num, prev);
+}
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function fmtTime(ts){if(!ts)return '–';const d=new Date(ts*1000);
   return d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
@@ -1056,6 +1087,7 @@ async function refresh(){
   document.getElementById('navKey').innerHTML =
     `Key <b>${s.keys.length}</b>`;
   renderOverview(s);renderAccounts(s);renderKeys(s);renderUsage(s);renderSettings(s);
+  document.body.classList.remove('loading');
   bindLimitInputs();
   loadSystem();
   if(window.__setLimits) window.__setLimits(s.settings||{});
@@ -1107,16 +1139,18 @@ function renderOverview(s){
     else ab.style.display='none';
   }
   const t=s.usage.total||{};
-  document.getElementById('ovTotal').innerHTML=fmtTokHTML(t.t);
-  document.getElementById('ovReqs').textContent=fmt(t.n);
+  animateNum('ovTotal', fmtTokHTML(t.t), t.t);
+  animateNum('ovReqs', fmt(t.n), t.n);
   const ok=Number(t.ok)||0;
   const rate = t.n ? (ok/t.n*100) : 0;
   document.getElementById('ovReqsFoot').textContent =
     `${RANGE_LABEL()} · 成功率 ${t.n?rate.toFixed(1)+'%':'–'}`;
   document.getElementById('ovTokFoot').textContent =
     `输入 ${fmtTok(t.p)} · 输出 ${fmtTok(t.c)}`;
-  document.getElementById('ov24').innerHTML=fmtTokHTML((s.usage.last24h||{}).t);
-  document.getElementById('ovAcc').textContent=s.accounts.filter(a=>a.enabled).length;
+  animateNum('ov24', fmtTokHTML((s.usage.last24h||{}).t),
+             Number((s.usage.last24h||{}).t||0));
+  animateNum('ovAcc', String(s.accounts.filter(a=>a.enabled).length),
+             s.accounts.filter(a=>a.enabled).length);
   const src=(s.usage.by_model||[]).map(m=>({label:m.model,n:m.n,p:m.p,c:m.c,t:m.t}));
   const tb=document.querySelector('#modelTable tbody');tb.innerHTML='';
   const rows=src.slice().sort((a,b)=>{
@@ -1180,19 +1214,36 @@ function renderDonut(models){
   }
 
   const R=54,C=2*Math.PI*R; let off=0,segs='';
+  const sig = JSON.stringify(data.map(d=>[d.model,d.t]));
+  const changed = svg.dataset.sig !== sig && !REDUCED;
+  svg.dataset.sig = sig;
   data.forEach((m,i)=>{
     const len=(m.t/tot)*C;
     const pct=(m.t/tot*100).toFixed(1);
     const color = m.other ? '#d6d9de' : DONUT_COLORS[i%DONUT_COLORS.length];
+    // 数据变化时：各段从 0 弧长展开 + 逐段延迟 → 圆环按序“画”出来
+    const anim = changed
+      ? `style="stroke-dasharray:0 ${C};transition:stroke-dasharray .6s cubic-bezier(.4,0,.2,1) ${Math.round(i*70)}ms"`
+      : '';
     segs+=`<circle class="donut-seg" r="${R}" cx="70" cy="70" fill="none"
       stroke="${color}" stroke-width="16"
       stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"
+      ${anim}
       transform="rotate(-90 70 70)"
       data-name="${esc(m.model)}" data-val="${fmtTok(m.t)}" data-pct="${pct}"/>`;
     off+=len;
   });
   svg.innerHTML=segs+`<text x="70" y="68" text-anchor="middle" class="donut-num">${fmtTok(tot)}</text>
     <text x="70" y="86" text-anchor="middle" class="donut-lbl">总 Token</text>`;
+  if(changed){
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      svg.querySelectorAll('.donut-seg').forEach(c=>{
+        c.style.strokeDasharray = c.getAttribute('stroke-dasharray');
+      });
+    }));
+    animateNumTo(svg.querySelector('.donut-num'), fmtTok(tot), tot, svg.dataset.num);
+    svg.dataset.num = String(tot);
+  }
 
   // 悬停提示：显示模型、用量、占比
   if(!tip) return;
@@ -1325,8 +1376,9 @@ function renderHeatmap(s){
 
 
 function renderAccounts(s){
-  const tb=document.querySelector('#accTable tbody');tb.innerHTML='';
+  const tb=document.querySelector('#accTable tbody');
   const cd=s.cooldowns||{};
+  let __rows='';
   s.accounts.forEach(a=>{
     const cred=[a.has_token&&'token',a.has_device&&'device',a.has_settings&&'settings',a.has_cookie&&'cookie']
       .filter(Boolean).join(' · ')||'未填写';
@@ -1345,7 +1397,7 @@ function renderAccounts(s){
     else if(lg.status==='waiting') loginBadge='<span class="tag off">等待登录…</span>';
     else if(lg.status==='success') loginBadge='<span class="tag on">登录成功</span>';
     else if(lg.status==='error') loginBadge='<span class="tag err">'+esc(lg.message||'失败')+'</span>';
-    tb.innerHTML+=`<tr><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
+    __rows+=`<tr><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
       <td class="muted mono">${cred} ${loginBadge} ${healthBadge} ${egressTag(a.egress)}</td>
       <td><label class="switch" title="${a.enabled?'点击停用':'点击启用'}"><input type="checkbox" ${a.enabled?'checked':''} onchange="toggleAcc('${a.id}',${a.enabled?0:1})"><span class="knob"></span></label>${cdBadge}</td>
       <td style="text-align:right;white-space:nowrap">
@@ -1358,7 +1410,10 @@ function renderAccounts(s){
             <button class="danger" onclick="delAcc('${a.id}')">删除账号</button>
           </div>
         </span></td></tr>`;});
-  if(!s.accounts.length)tb.innerHTML=empty('还没有账号，点右上角添加');
+  const same = tb.dataset.sig === __rows;
+  tb.dataset.sig = __rows;
+  tb.innerHTML = __rows || empty('还没有账号，点右上角添加');
+  tb.classList.toggle('no-anim', same);
 }
 async function browserLogin(id){
   const r = await api('/accounts/'+id+'/login','POST');
@@ -2224,6 +2279,9 @@ function applyTheme(t){
   try{ localStorage.setItem('wapi_theme',t); }catch(e){}
   tuneGlass(isDarkTheme(t));
   renderThemeChips();
+  document.body.classList.add('theme-fade');
+  clearTimeout(applyTheme._t);
+  applyTheme._t=setTimeout(()=>document.body.classList.remove('theme-fade'),460);
 }
 function toggleTheme(){
   // 顶栏按钮仍是快速深浅切换：深色系任意主题 → 液态浅色；反之 → 液态深色
@@ -2424,7 +2482,7 @@ ${lines.join(',\n')}
     if(mh) mh.textContent=models.join(' / ');
   };
   ['accProvider','accEgress'].forEach(selBuild);
-  if(TOKEN){try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
+  if(TOKEN){document.body.classList.add('loading');try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
   setInterval(()=>{
     if(document.getElementById('mainView').style.display==='none') return;
     if(document.body.classList.contains('modal-open')) return;
