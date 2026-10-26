@@ -199,10 +199,12 @@
     <div id="tab-accounts" class="tabpane">
       <div class="card">
         <div class="card-head"><h2>账号</h2><div class="sp"></div>
+          <button class="btn sm gray" onclick="cleanupBrowserResidue(this)">清浏览器痕迹</button>
           <button class="btn sm" onclick="openAccModal()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>添加账号</button>
         </div>
         <p class="card-sub">每个账号独立存储、互不干扰，也不影响你自己浏览器里的登录状态。<br>
-          <b>用法：</b>点右上角「添加账号」只填<b>名称</b> → 保存 → 回列表点该账号的<b>「浏览器登录」</b>，在弹出的内置浏览器里登录 DeepSeek 即可，凭证会<b>自动抓取</b>。</p>
+          <b>用法：</b>点右上角「添加账号」只填<b>名称</b> → 保存 → 回列表点该账号的<b>「浏览器登录」</b>，在弹出的内置浏览器里登录 DeepSeek 即可，凭证会<b>自动抓取</b>。<br>
+          「清浏览器痕迹」：删除本机残留的一次性登录目录与旧版默认浏览器存储（不影响账号凭证与千问中继登录态）。</p>
         <div class="tbl-scroll tall">
           <table id="accTable"><thead><tr><th>名称</th><th>平台</th><th>凭证</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
         </div>
@@ -1178,6 +1180,12 @@ async function browserLogin(id){
   const r = await api('/accounts/'+id+'/login','POST');
   if(r&&r.ok){ toast('已打开浏览器，请在弹出的窗口里登录'); refresh(); }
   else toast((r&&r.error)||'启动失败');
+}
+async function cleanupBrowserResidue(btn){
+  if(!confirm('清除本机残留的浏览器登录痕迹？\n（一次性登录目录 + 旧版默认浏览器存储；不影响账号凭证）'))return;
+  const r=await api('/browser/cleanup','POST');
+  if(r&&r.ok){ toast('已清除'+(r.removed&&r.removed.length?('，移除 '+r.removed.length+' 项'):'，没有发现残留')); }
+  else toast((r&&r.error)||'清理失败');
 }
 function renderKeys(s){
   const tb=document.querySelector('#keyTable tbody');tb.innerHTML='';

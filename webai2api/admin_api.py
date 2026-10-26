@@ -369,6 +369,16 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             return g
         return {"ok": True, "state": login_mgr.state(account_id)}
 
+    @router.post("/browser/cleanup")
+    async def browser_cleanup(request: Request):
+        """清除本机残留的浏览器登录痕迹（一次性登录目录 + 旧版默认 WebView2 存储）。"""
+        g = _guard(request)
+        if g:
+            return g
+        from .login_webview import cleanup_browser_residue
+
+        return await run_in_threadpool(cleanup_browser_residue)
+
     # ── Key ──
     @router.post("/keys")
     async def add_key(request: Request):

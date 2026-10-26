@@ -216,7 +216,8 @@ def _kill_webview_processes_for(storage: Path) -> None:
     r"""杀掉命令行里带本账号 storage 路径的 msedgewebview2 进程。
 
     残留进程会锁住 Cookies / Local Storage，导致 rmtree 失败、旧登录态被复用。
-    只杀本账号目录的，绝不碰主面板（它用的是默认 %APPDATA%\pywebview 目录）。
+    只杀 cmdline 命中给定路径的进程：主面板（data/panel_profile）、
+    千问中继（browser_profiles/<acc>）等其它目录不受影响。
     """
     try:
         needle = str(storage).lower().replace("\\", "/")
@@ -295,6 +296,54 @@ def _egress_badge_js(mode: str) -> str:
         "font:12px/1.4 system-ui;box-shadow:0 2px 8px rgba(0,0,0,.3);opacity:.92';"
         "document.body.appendChild(b);}b.textContent=" + safe + ";}catch(e){}})()"
     )
+
+
+def cleanup_browser_residue(logger=None) -> dict:
+    """清除本机残留的浏览器登录痕迹（面板「清浏览器痕迹」按钮的后端）。
+
+    范围：
+    - browser_profiles/_session/*：一次性登录目录的残留（正常在每次登录开头
+      被清扫，pywebview 关窗即杀进程时会漏掉）；
+    - %APPDATA%\\pywebview：旧版本（<0.1.21）登录窗口共用的默认 WebView2
+      存储，旧 cookie（如微信授权残留）会一直留在机器上；新版面板已改用
+      data/panel_profile，此目录成为纯残留，整目录删除。
+    不碰 browser_profiles/<acc_id>（千问中继的常驻登录态，删了要重新扫码）。
+    """
+    import logging
+
+    log = logger or logging.getLogger("webai2api.login")
+    data_dir = user_data_dir()
+    removed: list[str] = []
+
+    # 1) 一次性登录目录残留
+    session_root = data_dir / "browser_profiles" / "_session"
+    if session_root.exists():
+        for child in session_root.iterdir():
+            if child.is_dir():
+                _kill_webview_processes_for(child)
+                shutil.rmtree(child, ignore_errors=True)
+            if not child.exists():
+                removed.append(str(child))
+        try:
+            session_root.rmdir()
+            removed.append(str(session_root))
+        except OSError:
+            pass
+
+    # 2) 旧版默认 WebView2 存储。只杀 cmdline 里带该路径的进程：
+    #    新版主面板用 data/panel_profile、登录窗口用一次性目录、
+    #    千问中继用 browser_profiles/<acc>，都不会被误伤。
+    legacy = Path(
+        os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    ) / "pywebview"
+    if legacy.exists():
+        _kill_webview_processes_for(legacy)
+        shutil.rmtree(legacy, ignore_errors=True)
+        if not legacy.exists():
+            removed.append(str(legacy))
+
+    log.info("浏览器痕迹清理完成，移除 %d 项", len(removed))
+    return {"ok": True, "removed": removed}
 
 
 def run_webview_login(acc_id: str) -> None:
