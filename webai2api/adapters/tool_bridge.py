@@ -1,23 +1,25 @@
 """网页版模型的 OpenAI tools 桥接（Kimi / 智谱清言 / 通义千问共用）。
 
-各网页平台没有原生 function calling，桥接约定分三步：
+各网页平台没有原生 function calling 接口，桥接约定分三步：
 
-1. 注入   适配器把工具清单写进 system prompt，要求模型用约定标记输出
-   「一次」工具调用。标记格式按平台对齐其模型的训练习惯，命中率更高：
-     Kimi / 智谱   行内标记 ``<<<TOOL_CALL>>>{json}``
+1. 注入   适配器把工具清单写进 system prompt，要求模型用约定格式输出
+   「一次」工具调用。格式按平台对齐其模型的训练习惯，命中率更高：
+     Kimi          DSML XML（``<|DSML|tool_calls>`` + ``<![CDATA[...]]>``）
+     智谱          行内标记 ``<<<TOOL_CALL>>>{json}``
      千问          Hermes 风格标签 ``<tool_call>{json}</tool_call>``
    （Qwen 系列在训练时就见过这个格式，输出更稳。）
 
 2. 增量   网页会话是增量协议：每次请求只把「上一条 assistant 之后、
    上游还没见过的内容」发给会话。工具链能不能多轮，全看这一步：
    客户端执行完工具会送回 role=tool 的结果消息，`increment_text()`
-   把它渲染成 <tool_response> 块作为本轮增量，模型基于真实执行结果
-   继续——要么再调一个工具，要么给出最终回答。没有这一步，工具
-   结果永远到不了模型眼里，多轮链路是断的。
+   把它渲染成 <tool_result> 块（Kimi 为 DSML tool_result）作为本轮
+   增量，模型基于真实执行结果继续——要么再调一个工具，要么给出
+   最终回答。没有这一步，工具结果永远到不了模型眼里，多轮链路是断的。
 
 3. 解析   流式输出经 `ToolStreamBuffer` 扣住标记文本不漏进 content，
    结束后 `parse_tool_calls()` 解析成标准 OpenAI tool_calls 下发；
-   客户端执行工具后进入下一轮，回到第 2 步。
+   客户端执行工具后进入下一轮，回到第 2 步。智谱另有上游服务端原生
+   tool_calls part，由适配器直接优先采用，不经过本模块解析。
 
 设计约束：
 - 一轮只解析一个工具调用（网页模型并行调用不可靠）；
@@ -36,8 +38,11 @@ __all__ = [
     "tool_names",
     "tool_name_by_id",
     "render_tool_result",
+    "render_dsml_tool_result",
+    "render_dsml_assistant_tool_calls",
     "increment_text",
     "parse_tool_calls",
+    "parse_dsml_tool_calls",
     "strip_tool_markup",
     "strip_call_json",
     "is_first_turn",
@@ -47,6 +52,7 @@ __all__ = [
     "conv_fingerprint",
     "ToolStreamBuffer",
     "DeltaToolBuffer",
+    "DSML_TOOL_CALLS_OPEN",
 ]
 
 
@@ -193,6 +199,210 @@ def render_tool_result(name: str, content: str, *, tag: str = "tool_result") -> 
     return f'<{tag} tool="{name}">\n{content}\n</{tag}>'
 
 
+# ── DSML（Kimi / 智谱原生工具协议）────────────────────────
+# 上游网页模型在调用平台内置工具时输出的是 DSML XML，而不是 JSON：
+#   <|DSML|tool_calls>
+#     <|DSML|invoke name="write">
+#       <|DSML|parameter name="filePath"><![CDATA[D:\a.md]]></|DSML|parameter>
+#     </|DSML|invoke>
+#   </|DSML|tool_calls>
+# 字符串走 CDATA（换行、引号、花括号都不用转义），对象/数组用嵌套
+# parameter 与 <item> 表达。让模型沿用训练里见过的格式，比自造标记稳。
+
+DSML_TOOL_CALLS_OPEN = "<|DSML|tool_calls>"
+
+_DSML_BLOCK_RE = re.compile(
+    r"<\|DSML\|tool_calls\b[^>]*>(.*?)</\|DSML\|tool_calls\s*>", re.I | re.S
+)
+_DSML_INVOKE_RE = re.compile(
+    r"<\|DSML\|invoke\b([^>]*)>(.*?)</\|DSML\|invoke\s*>", re.I | re.S
+)
+_DSML_PARAM_OPEN_RE = re.compile(r"<\|DSML\|parameter\b([^<>]*?)>", re.I)
+_DSML_PARAM_CLOSE_RE = re.compile(r"</\|DSML\|parameter\s*>", re.I)
+_DSML_CDATA_RE = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.S)
+_DSML_ITEM_RE = re.compile(r"<item\b[^>]*>(.*?)</item>", re.I | re.S)
+
+
+def _dsml_attr(attrs: str, key: str = "name") -> str:
+    m = re.search(rf'{key}\s*=\s*"([^"]*)"', attrs or "", re.I)
+    if m is None:
+        m = re.search(rf"{key}\s*=\s*'([^']*)'", attrs or "", re.I)
+    return (m.group(1) if m else "").strip()
+
+
+def _dsml_cdata(s: str) -> str | None:
+    """整段由 CDATA 构成的参数值：取出文本（含 ]]> 的转义拼接）。"""
+    if not s.startswith("<![CDATA["):
+        return None
+    return "".join(_DSML_CDATA_RE.findall(s))
+
+
+def _dsml_value(raw: str):
+    """DSML 参数值 → Python 值：CDATA 字符串 / 嵌套对象 / <item> 数组 /
+    JSON 字面量 / 原样文本。"""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    cdata = _dsml_cdata(s)
+    if cdata is not None:
+        return cdata
+    if _DSML_PARAM_OPEN_RE.search(s):
+        return _dsml_params(s)
+    items = _DSML_ITEM_RE.findall(s)
+    if items and not _DSML_ITEM_RE.sub("", s).strip():
+        return [_dsml_value(x) for x in items]
+    try:
+        return json.loads(s)
+    except Exception:
+        return s
+
+
+def _dsml_param_end(text: str, start: int) -> tuple[int, int]:
+    """找与 start 处 parameter 配对的结束位置（支持同名嵌套）。"""
+    depth = 1
+    pos = start
+    while True:
+        mo = _DSML_PARAM_OPEN_RE.search(text, pos)
+        mc = _DSML_PARAM_CLOSE_RE.search(text, pos)
+        if mc is None:
+            return len(text), len(text)
+        if mo is not None and mo.start() < mc.start():
+            depth += 1
+            pos = mo.end()
+        else:
+            depth -= 1
+            pos = mc.end()
+            if depth == 0:
+                return mc.start(), mc.end()
+
+
+def _dsml_params(text: str) -> dict:
+    out: dict = {}
+    pos = 0
+    while True:
+        m = _DSML_PARAM_OPEN_RE.search(text, pos)
+        if m is None:
+            return out
+        name = _dsml_attr(m.group(1))
+        end, pos = _dsml_param_end(text, m.end())
+        if name:
+            out[name] = _dsml_value(text[m.end() : end])
+
+
+def _dsml_blocks(text: str) -> list:
+    """取出 DSML 调用块；模型漏写根闭合标签时退化为「从 opener 到文末」。"""
+    blocks = _DSML_BLOCK_RE.findall(text or "")
+    if blocks:
+        return blocks
+    m = re.search(r"<\|DSML\|tool_calls\b", text or "", re.I)
+    return [text[m.start() :]] if m else []
+
+
+def parse_dsml_tool_calls(
+    text: str, tools: list, *, limit: int = 1
+) -> list:
+    """把模型的 DSML 工具调用解析成标准 OpenAI tool_calls。
+
+    只放行 tools 清单里声明过的名字；参数名走与 JSON 路径相同的
+    schema 校正（`_fix_arg_names`）；一轮最多 limit 个调用。
+    """
+    allowed = tool_names(tools)
+    if not text or not allowed:
+        return []
+    by_name = {}
+    for t in tools or []:
+        if isinstance(t, dict):
+            fn = t.get("function") or t
+            if fn.get("name"):
+                by_name[fn["name"]] = t
+    calls: list = []
+    for block in _dsml_blocks(text):
+        for m in _DSML_INVOKE_RE.finditer(block):
+            name = _dsml_attr(m.group(1))
+            if not name or name not in allowed:
+                continue
+            args = _fix_arg_names(_dsml_params(m.group(2)), by_name.get(name))
+            calls.append(
+                {
+                    "id": f"call_{uuid.uuid4().hex[:16]}",
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(args, ensure_ascii=False),
+                    },
+                }
+            )
+            if len(calls) >= limit:
+                return calls
+    return calls
+
+
+def render_dsml_assistant_tool_calls(calls: list, text: str = "") -> str:
+    """把 assistant.tool_calls 还原成 DSML 调用块（压平历史用）。"""
+    blocks = []
+    for c in calls or []:
+        if not isinstance(c, dict):
+            continue
+        fn = c.get("function") or {}
+        name = fn.get("name") or ""
+        if not name:
+            continue
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except Exception:
+            args = {}
+        if not isinstance(args, dict):
+            args = {"value": args}
+        lines = [
+            DSML_TOOL_CALLS_OPEN,
+            f'  <|DSML|invoke name="{name}">',
+        ]
+        for k, v in args.items():
+            lines.append(f"    {_dsml_param(k, v)}")
+        lines += ["  </|DSML|invoke>", "</|DSML|tool_calls>"]
+        blocks.append("\n".join(lines))
+    body = "\n".join(blocks)
+    if text and body:
+        return f"{text}\n{body}"
+    return body or text
+
+
+def _dsml_param(name: str, value) -> str:
+    """渲染单个 DSML 参数（字符串走 CDATA，容器递归）。"""
+    tag = f'<|DSML|parameter name="{name}">'
+    if isinstance(value, str):
+        safe = value.replace("]]>", "]]]]><![CDATA[>")
+        return f"{tag}<![CDATA[{safe}]]></|DSML|parameter>"
+    if isinstance(value, dict):
+        inner = "".join(_dsml_param(k, v) for k, v in value.items())
+        return f"{tag}{inner}</|DSML|parameter>"
+    if isinstance(value, list):
+        inner = "".join(
+            f"<item>{_dsml_param_value(v)}</item>" for v in value
+        )
+        return f"{tag}{inner}</|DSML|parameter>"
+    return f"{tag}{json.dumps(value, ensure_ascii=False)}</|DSML|parameter>"
+
+
+def _dsml_param_value(value) -> str:
+    if isinstance(value, str):
+        safe = value.replace("]]>", "]]]]><![CDATA[>")
+        return f"<![CDATA[{safe}]]>"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def render_dsml_tool_result(name: str, content: str, call_id: str = "") -> str:
+    """工具执行结果渲染成 DSML 块（与调用格式同族，模型训练时见过）。"""
+    safe = (content or "").replace("]]>", "]]]]><![CDATA[>")
+    cid = call_id or "unknown"
+    return (
+        f'<|DSML|tool_result call_id="{cid}" name="{name}">'
+        f"<content><![CDATA[{safe}]]></content></|DSML|tool_result>"
+    )
+
+
 def render_assistant_tool_calls(
     calls: list, text: str = "", *, marker: str = "<<<TOOL_CALL>>>"
 ) -> str:
@@ -223,14 +433,16 @@ def render_assistant_tool_calls(
     return body or text
 
 
-def increment_text(messages: list, *, result_tag: str = "tool_result") -> str:
+def increment_text(
+    messages: list, *, result_tag: str = "tool_result", dsml: bool = False
+) -> str:
     """计算本轮应发给网页会话的增量文本。
 
     规则（与网页会话的增量协议对齐）：
     - 会话里还没有 assistant（首轮）：发最后一条 user；
     - 最后一条 assistant 之后有 role=tool 结果：把结果渲染成
-      `<result_tag>` 块，尾随的新 user 消息一并附上——这是工具链
-      多轮的关键增量；
+      `<result_tag>` 块（`dsml=True` 时渲染成 DSML tool_result），
+      尾随的新 user 消息一并附上——这是工具链多轮的关键增量；
     - 只有普通 user 跟在后面（普通多轮）：发最后一条 user，与
       历史行为完全一致。
     """
@@ -254,7 +466,14 @@ def increment_text(messages: list, *, result_tag: str = "tool_result") -> str:
             content = text_of(m)
             if content.strip():
                 name = id2name.get(m.get("tool_call_id") or "", m.get("name") or "tool")
-                parts.append(render_tool_result(name, content, tag=result_tag))
+                if dsml:
+                    parts.append(
+                        render_dsml_tool_result(
+                            name, content, m.get("tool_call_id") or ""
+                        )
+                    )
+                else:
+                    parts.append(render_tool_result(name, content, tag=result_tag))
         elif role == "user":
             t = text_of(m)
             if t.strip():
@@ -443,13 +662,15 @@ def parse_tool_calls(
     *,
     tag: str | None = None,
     marker: str | None = None,
+    dsml: bool = False,
     limit: int = 1,
 ) -> list:
     """从模型输出解析工具调用，返回标准 OpenAI tool_calls 结构。
 
+    - dsml:   DSML XML 块（Kimi/智谱原生格式，``<|DSML|tool_calls>``）
     - tag:    标签形式 ``<tag>{json}</tag>``（DOTALL，模型最常输出）
     - marker: 行内标记 ``<marker>{json}``（配平扫描，支持跨行 JSON）
-    两者都提供时标签优先、标记兜底；都解析不出时再做**裸 JSON 兜底**
+    按 dsml → tag → marker 顺序尝试；都解析不出时再做**裸 JSON 兜底**
     （模型不带任何标记直接把调用 JSON 写进正文的情形，qwen 全系
     实测高发）。只放行 tools 里声明过的名字；一轮最多返回 limit 个
     调用（默认 1，网页模型并行调用不可靠）。
@@ -457,6 +678,11 @@ def parse_tool_calls(
     allowed = tool_names(tools)
     if not text or not allowed:
         return []
+
+    if dsml:
+        calls = parse_dsml_tool_calls(text, tools, limit=limit)
+        if calls:
+            return calls
 
     blobs: list = []
     if tag:
@@ -471,16 +697,27 @@ def parse_tool_calls(
 
 
 def strip_tool_markup(
-    text: str, *, tag: str | None = None, marker: str | None = None
+    text: str,
+    *,
+    tag: str | None = None,
+    marker: str | None = None,
+    dsml: bool = False,
 ) -> str:
-    """从文本里剥掉工具标记（标签块 / 标记 + 其 JSON），用于纯文本回退。
+    """从文本里剥掉工具标记（标签块 / 标记 + 其 JSON / DSML 块）。
 
     marker 模式旧实现按行删，多行 JSON 的续行会残留在正文里；
-    现在标记 + 配平出的整个 JSON 片段一起删。
+    现在标记 + 配平出的整个 JSON 片段一起删。DSML 块整体删除；
+    漏写根闭合标签时从 opener 截断，避免原始标记漏给用户。
     """
     if not text:
         return text or ""
     out = text
+    if dsml:
+        out = _DSML_BLOCK_RE.sub("", out)
+        m = re.search(r"<\|DSML\|tool_calls\b", out, re.I)
+        if m:
+            out = out[: m.start()]
+        out = out.strip()
     if tag:
         # 连同行尾换行一起移除，避免剥完留下一串空行
         out = re.sub(rf"<{tag}>.*?</{tag}>\n?", "", out, flags=re.S)
@@ -514,9 +751,19 @@ REQUIRED_NUDGE = (
 )
 
 
-def required_nudge(*, tag: str | None = None, marker: str | None = None) -> str:
+def required_nudge(
+    *, tag: str | None = None, marker: str | None = None, dsml: bool = False
+) -> str:
     """tool_choice=required 重试时追加的加强指令（含平台各自的调用示例）。"""
-    if tag:
+    if dsml:
+        example = (
+            f"{DSML_TOOL_CALLS_OPEN}\n"
+            '  <|DSML|invoke name="工具名">\n'
+            '    <|DSML|parameter name="参数名"><![CDATA[参数值]]></|DSML|parameter>\n'
+            "  </|DSML|invoke>\n"
+            "</|DSML|tool_calls>"
+        )
+    elif tag:
         example = f'<{tag}>{{"name":"工具名","arguments":{{"参数名":值}}}}</{tag}>'
     else:
         example = (

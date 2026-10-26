@@ -146,22 +146,32 @@ def _usage(payload: dict, text: str) -> dict:
 
 # ── 工具调用（OpenAI tools 协议）─────────────────────────
 # 网页版 Kimi 没有 function calling 接口，只能把工具清单写进 system prompt，
-# 让模型输出一行约定标记，再由本模块解析成标准 tool_calls。
+# 让模型按 DSML 格式输出调用，再由本模块解析成标准 tool_calls。
+# 用 DSML（Kimi 训练里见过的原生工具标记）而不是自造 JSON 标记：字符串走
+# CDATA，文件内容里的换行、引号、花括号都不用转义，写文件类工具命中率更高。
 # 这样 opencode 之类的客户端才能真正读写本地文件，而不是「假装」写到沙箱路径。
-TOOL_MARKER = "<<<TOOL_CALL>>>"
+TOOL_MARKER = "<<<TOOL_CALL>>>"  # 旧协议兜底：历史会话/模型偶尔仍按旧格式输出
 
 TOOL_INSTRUCTION = """你可以调用以下工具来完成任务：
 
 {tools}
 
+调用协议（DSML，必须严格照格式）：
+需要调用工具时，只输出下面这一个可执行块，前后不要附加任何解释文字：
+<|DSML|tool_calls>
+  <|DSML|invoke name="工具名">
+    <|DSML|parameter name="参数名"><![CDATA[参数值]]></|DSML|parameter>
+  </|DSML|invoke>
+</|DSML|tool_calls>
+
 规则：
-1. 如果用户的问题需要调用工具，只输出一行，格式严格为：
-{marker}{{"name":"工具名","arguments":{{"参数名":值}}}}
-2. 一次只调用一个工具。不要输出任何解释文字。
-3. 如果不需要工具，直接用自然语言回答，不要输出 {marker}。
-4. 你运行在用户的本地电脑上，工具就是你唯一能操作本地文件的方式；
+1. 参数名必须与工具 schema 完全一致（区分大小写），不要自创或改写参数名。
+2. 字符串参数用 <![CDATA[...]]> 包裹；对象/数组/数字/布尔可直接写 JSON。
+3. 一次只调用一个工具（一个 invoke）。不要输出 {marker} 这类旧格式。
+4. 不需要工具时直接用自然语言回答，禁止输出任何 DSML 标记。
+5. 你运行在用户的本地电脑上，工具就是你唯一能操作本地文件的方式；
    不要说「我不能访问你的系统盘」，需要写文件时直接调用对应工具。
-5. 收到 <tool_result> 包裹的工具执行结果后，基于真实结果继续：
+6. 收到 <|DSML|tool_result ...> 包裹的工具执行结果后，基于真实结果继续：
    需要更多信息就再调用工具，信息够了就给出最终回答（不要再输出标记）。
 """
 
@@ -189,7 +199,7 @@ def _tools_prompt(tools: list) -> str:
 
 
 def _tools_protocol(tools: list) -> str:
-    """完整的工具协议说明（清单 + 标记约定 + 多轮规则）。"""
+    """完整的工具协议说明（清单 + DSML 约定 + 多轮规则）。"""
     return TOOL_INSTRUCTION.format(tools=_tools_prompt(tools), marker=TOOL_MARKER)
 
 
@@ -210,11 +220,11 @@ def _inject_tools(messages: list, tools: list) -> list:
 
 
 def _strip_tool_block(text: str) -> str:
-    return tool_bridge.strip_tool_markup(text, marker=TOOL_MARKER)
+    return tool_bridge.strip_tool_markup(text, marker=TOOL_MARKER, dsml=True)
 
 
 def _parse_tool_calls(text: str, tools: list) -> list:
-    return tool_bridge.parse_tool_calls(text, tools, marker=TOOL_MARKER)
+    return tool_bridge.parse_tool_calls(text, tools, marker=TOOL_MARKER, dsml=True)
 
 
 def _tier_for(effort: str, model: str) -> str:
@@ -730,7 +740,7 @@ class KimiWebClient:
         # 多轮关键：最后一条 assistant 之后、上游还没见过的增量。
         # role=tool 的执行结果在这里被渲染成 <tool_result> 发给网页会话，
         # 否则工具结果永远到不了模型眼里，多轮工具链是断的。
-        user_text = tool_bridge.increment_text(messages)
+        user_text = tool_bridge.increment_text(messages, dsml=True)
 
         # Kimi 网页版的 options.systemPrompt 实测不生效（CHAT/OK_COMPUTER
         # 场景都无视它），客户端的 system 与工具协议必须随首条用户消息
@@ -962,7 +972,7 @@ class KimiWebClient:
         retry = dict(payload)
         retry["messages"] = list(payload.get("messages") or []) + [{
             "role": "user",
-            "content": tool_bridge.required_nudge(marker=TOOL_MARKER),
+            "content": tool_bridge.required_nudge(dsml=True),
         }]
         text = reasoning = ""
         for ev in self._stream_events(retry):
@@ -1086,8 +1096,14 @@ class KimiWebClient:
             yield "data: [DONE]\n\n"
             return
 
-        # 有工具时扣住标记文本，不让 <<<TOOL_CALL>>> 漏进 content（增量口径）
-        buf = tool_bridge.DeltaToolBuffer([TOOL_MARKER]) if tools else None
+        # 有工具时扣住标记文本，不让 DSML/旧标记漏进 content（增量口径）
+        buf = (
+            tool_bridge.DeltaToolBuffer(
+                [tool_bridge.DSML_TOOL_CALLS_OPEN, TOOL_MARKER]
+            )
+            if tools
+            else None
+        )
         sent_text = ""
         sent_reasoning = ""
         # 思考增量统一走分发器：legacy 开关决定走 reasoning_content 还是

@@ -248,13 +248,13 @@ def _collapse_cached_text(content: str, messages: list) -> str:
 
 
 def _strip_tool_block(text: str) -> str:
-    """去掉文本里的工具调用标记（标记 + 其 JSON，跨行也一并删）。"""
-    return tool_bridge.strip_tool_markup(text, marker=TOOL_MARKER)
+    """去掉文本里的工具调用标记（标记 + 其 JSON / DSML 块，跨行也一并删）。"""
+    return tool_bridge.strip_tool_markup(text, marker=TOOL_MARKER, dsml=True)
 
 
 def _parse_tool_calls(text: str, tools: list) -> list:
-    """从模型回复里解析工具调用（复用 tool_bridge：配平扫描 + 裸 JSON 兜底）。"""
-    return tool_bridge.parse_tool_calls(text, tools, marker=TOOL_MARKER)
+    """从模型回复里解析工具调用（DSML 优先，再走标记 + 裸 JSON 兜底）。"""
+    return tool_bridge.parse_tool_calls(text, tools, marker=TOOL_MARKER, dsml=True)
 
 
 # ── 重复输出去重（问题 3：GLM 回复重复两遍）────────────────
@@ -355,19 +355,25 @@ class _GlmParts:
     - part 结束时发 status=finish 帧，content 里是该 part 的**全量快照**
       （权威终态，用于校准）；
     - 思考/正文/代码是不同 logic_id 的 part，交错到达；
-    - 偶发空的 tool_calls part（st=finish 无内容），忽略。
+    - 偶发空的 tool_calls part（st=finish 无内容），忽略；
+    - 服务端执行完原生工具后，会下发 content 项 ``type=tool_calls``
+      （``{"id","name","arguments"}``），这是上游已经确定的调用意图，
+      比从正文里解析标记可靠，优先采用。
 
     因此按 logic_id 累积 delta，finish 帧用全量校准，全量输出按 part
     首见顺序拼接。此前把 delta 当快照做前缀差，是丢字/咬字/JSON 漏
     正文的总根源。
     """
 
-    def __init__(self, is_silent: bool = False) -> None:
+    def __init__(self, is_silent: bool = False, allowed_tools: set | None = None) -> None:
         self._is_silent = is_silent
+        self._allowed_tools = allowed_tools
         self._order: list[str] = []  # lid 首见序
         self._text: dict[str, str] = {}  # lid -> 正文累计
         self._think: dict[str, str] = {}  # lid -> 思考累计
         self._extra: dict[str, str] = {}  # lid -> code/image 等一次性渲染
+        self._call_ids: set[str] = set()
+        self.tool_calls: list[dict] = []  # 服务端原生 tool_calls
         self.text = ""  # 全量正文
         self.reasoning = ""  # 全量思考
 
@@ -377,6 +383,37 @@ class _GlmParts:
         if status == "finish":
             return piece if piece else buf
         return buf + piece
+
+    def _native_call(self, data) -> None:
+        """收集服务端原生 tool_calls（同一 id 只记一次，finish 帧会重发）。"""
+        if isinstance(data, list):
+            for one in data:
+                self._native_call(one)
+            return
+        if not isinstance(data, dict):
+            return
+        name = str(data.get("name") or "").strip()
+        cid = str(data.get("id") or "").strip()
+        if not name:
+            return
+        # 只在客户端明确声明了工具时下发；没声明就当成上游内置能力，
+        # 混进 tool_calls 会让客户端收到无法执行的调用
+        if not self._allowed_tools or name not in self._allowed_tools:
+            return
+        key = cid or f"{name}:{len(self.tool_calls)}"
+        if key in self._call_ids:
+            return
+        args = data.get("arguments", {})
+        if not isinstance(args, str):
+            args = json.dumps(args or {}, ensure_ascii=False)
+        self._call_ids.add(key)
+        self.tool_calls.append(
+            {
+                "id": cid or f"call_{uuid.uuid4().hex[:16]}",
+                "type": "function",
+                "function": {"name": name, "arguments": args},
+            }
+        )
 
     def consume(self, parts) -> None:
         if not isinstance(parts, list):
@@ -399,6 +436,9 @@ class _GlmParts:
                 if not isinstance(item, dict):
                     continue
                 t = item.get("type")
+                if t == "tool_calls":
+                    self._native_call(item.get("tool_calls"))
+                    continue
                 if t == "text":
                     self._text[lid] = self._calibrate(
                         self._text[lid], item.get("text") or "", status
@@ -871,8 +911,11 @@ class ChatGlmWebClient:
         """
         model = payload.get("model") or self.config.default_model
         messages = payload.get("messages") or []
-        if payload.get("tools") and payload.get("tool_choice") != "none":
-            messages = _inject_tools(messages, payload["tools"])
+        tools = payload.get("tools") or []
+        if tools and payload.get("tool_choice") != "none":
+            messages = _inject_tools(messages, tools)
+        else:
+            tools = []
         is_silent = "silent" in model
 
         self._throttle()
@@ -913,7 +956,8 @@ class ChatGlmWebClient:
             self.config.request_timeout,
         )
         conv_id = ""
-        acc = _GlmParts(is_silent)
+        allowed = tool_bridge.tool_names(tools) if tools else None
+        acc = _GlmParts(is_silent, allowed_tools=allowed)
         try:
             for event in self._iter_events(resp):
                 if not isinstance(event, dict):
@@ -925,7 +969,12 @@ class ChatGlmWebClient:
                     acc.consume(event["parts"])
                 if status == "finish":
                     break
-                yield {"text": acc.text, "reasoning": acc.reasoning, "conv_id": conv_id}
+                yield {
+                    "text": acc.text,
+                    "reasoning": acc.reasoning,
+                    "conv_id": conv_id,
+                    "tool_calls": acc.tool_calls,
+                }
         finally:
             try:
                 resp.read()
@@ -940,7 +989,7 @@ class ChatGlmWebClient:
         if conv_id:
             if self.config.session_cache_enabled:
                 # store key 与客户端多轮回传的查询 key 一致（含本轮 assistant 指纹）
-                calls = _parse_tool_calls(text, payload.get("tools") or [])
+                calls = acc.tool_calls or _parse_tool_calls(text, tools)
                 asst = {
                     "role": "assistant",
                     "content": None if calls else text,
@@ -959,6 +1008,7 @@ class ChatGlmWebClient:
             "text": text,
             "reasoning": reasoning,
             "conv_id": conv_id,
+            "tool_calls": acc.tool_calls,
         }
 
     def _delete_conversation(self, conv_id: str, token: str) -> None:
@@ -984,9 +1034,11 @@ class ChatGlmWebClient:
             }
         ]
         text = reasoning = ""
+        native: list = []
         for ev in self._stream_events(retry):
             text, reasoning = ev["text"], ev["reasoning"]
-        calls = _parse_tool_calls(text, tools)
+            native = ev.get("tool_calls") or native
+        calls = native or _parse_tool_calls(text, tools)
         if not calls:
             raise GlmError(
                 "工具调用强校验失败：重试一次后模型仍未按要求调用工具"
@@ -998,12 +1050,14 @@ class ChatGlmWebClient:
         model = payload.get("model") or self.config.default_model
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         text = reasoning = ""
+        native: list = []
         for ev in self._stream_events(payload):
             text, reasoning = ev["text"], ev["reasoning"]
+            native = ev.get("tool_calls") or native
 
-        # 若请求带了 tools，尝试从回复里解析工具调用
+        # 服务端原生 tool_calls 优先（上游已确定调用意图）；没有再解析正文标记
         tools = payload.get("tools") or []
-        calls = _parse_tool_calls(text, tools) if tools else []
+        calls = native or (_parse_tool_calls(text, tools) if tools else [])
         if not calls and tools and tool_bridge.is_forced_tool_choice(payload):
             text, reasoning, calls = self._forced_retry(payload, tools)
         if calls:
@@ -1017,7 +1071,9 @@ class ChatGlmWebClient:
                         "index": 0,
                         "message": {
                             "role": "assistant",
-                            "content": _strip_tool_block(text) or None,
+                            "content": (
+                                None if native else (_strip_tool_block(text) or None)
+                            ),
                             "tool_calls": calls,
                         },
                         "finish_reason": "tool_calls",
@@ -1078,9 +1134,11 @@ class ChatGlmWebClient:
         # 再失败按明确错误返回（直播一段注定作废的正文没有意义）
         if forced:
             text = reasoning = ""
+            native: list = []
             try:
                 for ev in self._stream_events(payload):
                     text, reasoning = ev["text"], ev["reasoning"]
+                    native = ev.get("tool_calls") or native
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning("智谱流式请求失败: %s", exc)
                 err = {
@@ -1089,7 +1147,7 @@ class ChatGlmWebClient:
                 yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
-            calls = _parse_tool_calls(text, payload.get("tools"))
+            calls = native or _parse_tool_calls(text, payload.get("tools"))
             if not calls:
                 try:
                     text, reasoning, calls = self._forced_retry(
@@ -1134,14 +1192,22 @@ class ChatGlmWebClient:
         # 有工具时扣住标记文本。链路纪律：**前缀差只对单调全量做**，
         # 扣留器用增量口径（DeltaToolBuffer）——快照口径的 buf 会回扣
         # 尾部使输出非单调，嵌套在前缀差链里会错位咬字（GLM 实测）
-        buf = tool_bridge.DeltaToolBuffer([TOOL_MARKER]) if has_tools else None
+        buf = (
+            tool_bridge.DeltaToolBuffer(
+                [TOOL_MARKER, tool_bridge.DSML_TOOL_CALLS_OPEN]
+            )
+            if has_tools
+            else None
+        )
         sent_text = ""
         sent_reasoning = ""
+        native: list = []
         rs = reasoning_bridge.ReasoningStream(
             legacy=self.config.legacy_reasoning_in_content
         )
         try:
             for ev in self._stream_events(payload):
+                native = ev.get("tool_calls") or native
                 d_reason = ev["reasoning"][len(sent_reasoning) :]
                 if d_reason:
                     sent_reasoning = ev["reasoning"]
@@ -1161,7 +1227,7 @@ class ChatGlmWebClient:
             return
 
         if has_tools:
-            calls = _parse_tool_calls(buf.text, payload.get("tools"))
+            calls = native or _parse_tool_calls(buf.text, payload.get("tools"))
             if calls:
                 tail = rs.close_think()
                 if tail:

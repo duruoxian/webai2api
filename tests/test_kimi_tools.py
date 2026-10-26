@@ -1,8 +1,9 @@
 """Kimi 工具调用（OpenAI tools 协议）测试。
 
-网页版 Kimi 没有原生 function calling，靠 system prompt 约定标记 + 解析实现。
-这些测试保证：工具清单能注入、模型输出能被解析成标准 tool_calls、
-非法工具名不被放行、普通回答不会被误伤。
+网页版 Kimi 没有原生 function calling，靠 system prompt 约定 DSML 格式 +
+解析实现（旧 JSON 标记继续兜底）。这些测试保证：工具清单能注入、DSML
+输出能被解析成标准 tool_calls、旧标记不回归、非法工具名不被放行、
+普通回答不会被误伤。
 """
 from __future__ import annotations
 
@@ -13,6 +14,10 @@ from webai2api.adapters.kimi.client import (
     _inject_tools,
     _parse_tool_calls,
     _strip_tool_block,
+)
+from webai2api.adapters.tool_bridge import (
+    DSML_TOOL_CALLS_OPEN,
+    increment_text,
 )
 
 TOOLS = [{
@@ -90,3 +95,59 @@ def test_strip_tool_block_removes_marker_line():
     text = "好的\n" + _call_line("write", {"filePath": "a", "content": "1"})
     assert TOOL_MARKER not in _strip_tool_block(text)
     assert _strip_tool_block("普通回答") == "普通回答"
+
+
+# ── DSML 协议（0.1.34 起的主协议）────────────────────────
+def _dsml_call(name: str, params: dict) -> str:
+    body = "".join(
+        f'    <|DSML|parameter name="{k}"><![CDATA[{v}]]></|DSML|parameter>\n'
+        for k, v in params.items()
+    )
+    return (
+        f"{DSML_TOOL_CALLS_OPEN}\n"
+        f'  <|DSML|invoke name="{name}">\n'
+        f"{body}"
+        f"  </|DSML|invoke>\n"
+        f"</|DSML|tool_calls>"
+    )
+
+
+def test_inject_tools_uses_dsml_protocol():
+    out = _inject_tools([{"role": "user", "content": "写个文件"}], TOOLS)
+    assert DSML_TOOL_CALLS_OPEN in out[0]["content"]
+    assert "<|DSML|invoke" in out[0]["content"]
+    assert "<![CDATA[" in out[0]["content"]
+
+
+def test_parse_dsml_call_returns_openai_shape():
+    text = "好的\n" + _dsml_call(
+        "write", {"filePath": "D:\\a.md", "content": '多行\n"内容"'})
+    calls = _parse_tool_calls(text, TOOLS)
+    assert len(calls) == 1
+    args = json.loads(calls[0]["function"]["arguments"])
+    assert args["filePath"] == "D:\\a.md"
+    assert args["content"] == '多行\n"内容"'
+
+
+def test_parse_dsml_rejects_unknown_tool():
+    assert _parse_tool_calls(_dsml_call("rm_rf", {"path": "C:\\"}), TOOLS) == []
+
+
+def test_strip_dsml_block():
+    text = "好的\n" + _dsml_call("write", {"filePath": "a", "content": "1"})
+    out = _strip_tool_block(text)
+    assert "<|DSML|" not in out
+    assert out.strip() == "好的"
+
+
+def test_increment_text_renders_dsml_tool_result():
+    msgs = [
+        {"role": "user", "content": "写文件"},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "write", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "写入成功"},
+    ]
+    out = increment_text(msgs, dsml=True)
+    assert '<|DSML|tool_result call_id="call_1" name="write">' in out
+    assert "写入成功" in out
