@@ -161,6 +161,14 @@ def _prepare_content(messages: list[dict]) -> str:
 
 TOOL_MARKER = "<<<TOOL_CALL>>>"
 
+# ── 断流自动续写 ────────────────────────────────────
+# 上游偶尔在长思考/长回答中途掐流且不发 status=finish 帧。检测到断流后，
+# 向同一 conversation 发一条「继续」——对话历史里已有模型自己的半截回答，
+# 它会自然接着写（无需特殊协议）。续写增量经全新累积器拼进输出，
+# 对上层 prefix-diff 链保持单调。最多续写 2 次，失败降级为截断。
+MAX_AUTO_CONTINUATIONS = 2
+CONTINUE_PROMPT = "继续"
+
 TOOL_INSTRUCTION = """你可以调用以下工具来完成任务：
 
 {tools}
@@ -802,24 +810,111 @@ class ChatGlmWebClient:
         conv_id = ""
         allowed = tool_bridge.tool_names(tools) if tools else None
         acc = _GlmParts(is_silent, allowed_tools=allowed)
-        try:
+        # 跨轮拼接基线：续写轮用全新累积器（避免上游复用 logic_id 时
+        # finish 全量校准污染前一轮内容），输出 = 基线 + 本轮累积，对
+        # 上层 prefix-diff 链保持单调。
+        base_text = ""
+        base_reasoning = ""
+        all_calls: list[dict] = []
+        saw_finish = False
+
+        def _combined() -> tuple[str, str]:
+            return base_text + acc.text, base_reasoning + acc.reasoning
+
+        def _drain(resp) -> bool:
+            """消费一个上游 SSE 流直到 finish/断流，返回是否见到 finish 帧。"""
+            nonlocal conv_id
             for event in self._iter_events(resp):
                 if not isinstance(event, dict):
                     continue
                 if event.get("conversation_id"):
                     conv_id = event["conversation_id"]
-                status = event.get("status")
                 if isinstance(event.get("parts"), list):
                     acc.consume(event["parts"])
-                if status == "finish":
-                    break
+                if event.get("status") == "finish":
+                    return True
+                text, reasoning = _combined()
                 yield {
-                    "text": acc.text,
-                    "reasoning": acc.reasoning,
+                    "text": text,
+                    "reasoning": reasoning,
                     "conv_id": conv_id,
-                    "tool_calls": acc.tool_calls,
+                    "tool_calls": all_calls + acc.tool_calls,
+                    "finish_seen": saw_finish,
                 }
+            return False
+
+        try:
+            try:
+                saw = yield from _drain(resp)
+                if saw:
+                    saw_finish = True
+            finally:
+                try:
+                    resp.read()
+                except Exception:
+                    pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            # ── 断流自动续写 ──
+            # 上游没发 status=finish 帧就断流（长思考/长回答被掐）：向同一
+            # conversation 发一条「继续」，模型看到自己的半截回答会接着写。
+            # 续写轮换全新累积器，输出拼接后对上层保持单调；最多 2 轮。
+            _cont_rounds = 0
+            while (
+                not saw_finish
+                and _cont_rounds < MAX_AUTO_CONTINUATIONS
+                and conv_id
+                and (acc.text or acc.reasoning or acc.tool_calls)
+            ):
+                _cont_rounds += 1
+                self._bump("auto_continued")
+                self.logger.warning(
+                    "上游流提前中断（未见 finish 帧），自动续写 %d/%d",
+                    _cont_rounds, MAX_AUTO_CONTINUATIONS,
+                )
+                base_text += acc.text
+                base_reasoning += acc.reasoning
+                all_calls.extend(acc.tool_calls)
+                acc = _GlmParts(is_silent, allowed_tools=allowed)
+                try:
+                    c_conn, c_resp = self._open_stream(
+                        self.config.stream_url,
+                        self._body(
+                            CONTINUE_PROMPT,
+                            model,
+                            conv_id=conv_id,
+                            effort=str(
+                                payload.get("reasoning_effort")
+                                or self.config.default_effort
+                            ),
+                        ),
+                        _headers_for(self.config, token),
+                        self.config.request_timeout,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.warning("自动续写失败（按截断返回）: %s", exc)
+                    break
+                try:
+                    saw = yield from _drain(c_resp)
+                    if saw:
+                        saw_finish = True
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.warning("自动续写失败（按截断返回）: %s", exc)
+                    break
+                finally:
+                    try:
+                        c_resp.read()
+                    except Exception:
+                        pass
+                    try:
+                        c_conn.close()
+                    except Exception:
+                        pass
         finally:
+            # 兜底关闭主连接（续写轮各自关闭）
             try:
                 resp.read()
             except Exception:
@@ -829,11 +924,12 @@ class ChatGlmWebClient:
             except Exception:
                 pass
 
-        text, reasoning = acc.text, acc.reasoning
+        text, reasoning = base_text + acc.text, base_reasoning + acc.reasoning
+        all_calls.extend(acc.tool_calls)
         if conv_id:
             if self.config.session_cache_enabled:
                 # store key 与客户端多轮回传的查询 key 一致（含本轮 assistant 指纹）
-                calls = acc.tool_calls or _parse_tool_calls(text, tools)
+                calls = all_calls or _parse_tool_calls(text, tools)
                 asst = {
                     "role": "assistant",
                     "content": None if calls else text,
@@ -852,7 +948,8 @@ class ChatGlmWebClient:
             "text": text,
             "reasoning": reasoning,
             "conv_id": conv_id,
-            "tool_calls": acc.tool_calls,
+            "tool_calls": all_calls,
+            "finish_seen": saw_finish,
         }
 
     def _delete_conversation(self, conv_id: str, token: str) -> None:
@@ -895,9 +992,12 @@ class ChatGlmWebClient:
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         text = reasoning = ""
         native: list = []
+        finish_seen = True
         for ev in self._stream_events(payload):
             text, reasoning = ev["text"], ev["reasoning"]
             native = ev.get("tool_calls") or native
+            if ev.get("__done__"):
+                finish_seen = bool(ev.get("finish_seen", True))
 
         # 服务端原生 tool_calls 优先（上游已确定调用意图）；没有再解析正文标记
         tools = payload.get("tools") or []
@@ -932,6 +1032,9 @@ class ChatGlmWebClient:
             reasoning,
             legacy=self.config.legacy_reasoning_in_content,
         )
+        if not finish_seen:
+            self.logger.warning(
+                "上游流提前中断（续写未救回），按截断返回 finish=length")
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -945,7 +1048,7 @@ class ChatGlmWebClient:
                         "content": content,
                         "reasoning_content": reasoning or None,
                     },
-                    "finish_reason": "stop",
+                    "finish_reason": "stop" if finish_seen else "length",
                 }
             ],
             "usage": _usage(payload, text),
@@ -1046,12 +1149,15 @@ class ChatGlmWebClient:
         sent_text = ""
         sent_reasoning = ""
         native: list = []
+        finish_seen = True
         rs = reasoning_bridge.ReasoningStream(
             legacy=self.config.legacy_reasoning_in_content
         )
         try:
             for ev in self._stream_events(payload):
                 native = ev.get("tool_calls") or native
+                if ev.get("__done__"):
+                    finish_seen = bool(ev.get("finish_seen", True))
                 d_reason = ev["reasoning"][len(sent_reasoning) :]
                 if d_reason:
                     sent_reasoning = ev["reasoning"]
@@ -1113,5 +1219,8 @@ class ChatGlmWebClient:
         # 无条件带上 usage（客户端没传 include_usage 也要给，
         # 否则 opencode 等客户端统计不到用量）
         yield chunk({}, usage=_usage(payload, sent_text))
-        yield chunk({}, finish="stop")
+        if not finish_seen:
+            self.logger.warning(
+                "上游流提前中断（续写未救回），按截断返回 finish=length")
+        yield chunk({}, finish="stop" if finish_seen else "length")
         yield "data: [DONE]\n\n"
