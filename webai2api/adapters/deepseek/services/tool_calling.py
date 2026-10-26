@@ -787,6 +787,16 @@ class StreamingToolDetector:
         self._buf = ""
         self._closed = False
         self._saw_dsml = False
+
+    @property
+    def pending_markup(self) -> bool:
+        """是否有未落定的标记块（DSML/哨兵/JSON 收集中）。
+
+        断流自动续写前检查：有残块时续写轮必须换新检测器丢弃残块，
+        否则续写内容拼进半开的块里必然损坏。
+        """
+        return (not self._closed) and (self._state != "SCAN" or bool(self._buf))
+
     # ── 主入口 ────────────────────────────────────────────
 
     def feed(self, delta: str) -> list[StreamAction]:

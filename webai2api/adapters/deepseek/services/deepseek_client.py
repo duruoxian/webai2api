@@ -40,6 +40,10 @@ from .session_cache import SessionCache, SessionState, conv_fingerprint, prefix_
 from .tool_calling import (
     ParsedToolCall,
     StreamingToolDetector,
+    TOOL_CLOSE_PLURAL,
+    TOOL_CLOSE_SINGULAR,
+    TOOL_OPEN_PLURAL,
+    TOOL_OPEN_SINGULAR,
     configure_tool_parsing,
     parse_tool_calls,
 )
@@ -59,6 +63,32 @@ RATE_LIMIT_COOLDOWN_SECONDS = 60
 MAX_RATE_LIMIT_RETRIES = 3
 MAX_CONTEXT_LENGTH_RETRIES = 2
 MAX_FILE_PARSE_RETRIES = 1
+
+# ── 断流自动续写 ────────────────────────────────────
+# 上游偶尔在长思考/长回答中途掐流且不发 finish 帧。检测到断流后，向
+# 同一会话发一条「继续」（parent_message_id 指向截断消息，网页版
+# 「继续生成」同款机制），续写增量拼进同一个 SSE 流。最多续写 2 次；
+# 每次续写都是一轮新的 completion PoW + 请求（有日志可查）。
+MAX_AUTO_CONTINUATIONS = 2
+CONTINUE_PROMPT = "继续"
+
+
+def _drop_trailing_partial_markup(text: str) -> str:
+    """非流式续写前清场：截掉尾部未闭合的 DSML/哨兵 opener 残块。
+
+    续写轮会重发完整调用块；残块留在文本里会让闭合块的正则匹配吞进
+    垃圾，导致整个调用解析失败。"""
+    if not text:
+        return text
+    cut = len(text)
+    for opener, closer in (
+        (TOOL_OPEN_PLURAL, TOOL_CLOSE_PLURAL),
+        (TOOL_OPEN_SINGULAR, TOOL_CLOSE_SINGULAR),
+    ):
+        pos = text.rfind(opener)
+        if pos >= 0 and closer not in text[pos:]:
+            cut = min(cut, pos)
+    return text[:cut] if cut < len(text) else text
 
 
 class UpstreamAPIError(RuntimeError):
@@ -839,37 +869,68 @@ class DeepSeekWebClient:
                     state = StreamState()
                     saw_upstream_finish = False
 
-                    for event in self._iter_sse_events(response):
-                        if not event:
-                            continue
+                    # 非流式全程在内部消费，断流时可以透明续写（客户端无感）：
+                    # 同会话发「继续」，parent 指向截断消息，增量接着累计。
+                    _cont_rounds = 0
+                    while True:
+                        for event in self._iter_sse_events(response):
+                            if not event:
+                                continue
 
-                        if self._handle_hint_event(event):
-                            continue
+                            if self._handle_hint_event(event):
+                                continue
 
-                        if self._is_finish_event(event):
-                            saw_upstream_finish = True
+                            if self._is_finish_event(event):
+                                saw_upstream_finish = True
 
-                        msg_id = self._extract_ready_message_id(event)
-                        if msg_id is not None:
-                            last_response_message_id = msg_id
+                            msg_id = self._extract_ready_message_id(event)
+                            if msg_id is not None:
+                                last_response_message_id = msg_id
 
-                        usage = self._extract_batch_token_usage(event)
-                        if usage is not None:
-                            accumulated_tokens = usage
+                            usage = self._extract_batch_token_usage(event)
+                            if usage is not None:
+                                accumulated_tokens = usage
 
-                        openai_chunk = convert_deepseek_to_openai_chunk(
-                            event, resolved["model"], state, completion_id,
+                            openai_chunk = convert_deepseek_to_openai_chunk(
+                                event, resolved["model"], state, completion_id,
+                            )
+                            if openai_chunk:
+                                choices = openai_chunk.get("choices", [])
+                                if choices and isinstance(choices[0], dict):
+                                    delta = choices[0].get("delta", {})
+                                    c = delta.get("content", "")
+                                    if c:
+                                        full_text += c
+                                    r = delta.get("reasoning_content", "")
+                                    if r:
+                                        full_reasoning += r
+
+                        _cont_rounds += 1
+                        if saw_upstream_finish or _cont_rounds >= MAX_AUTO_CONTINUATIONS:
+                            break
+                        if not (last_response_message_id
+                                and str(last_response_message_id).isdigit()
+                                and session_id):
+                            break
+                        # 工具标记被截断：截掉残块，续写轮会重发完整调用块
+                        trimmed = _drop_trailing_partial_markup(full_text)
+                        if trimmed != full_text:
+                            self.logger.warning(
+                                "上游断流且工具标记被截断，丢弃残块（续写轮会重发完整调用）")
+                            full_text = trimmed
+                        self.logger.warning(
+                            "上游流提前中断（未收到 finish 帧），自动续写 %d/%d",
+                            _cont_rounds, MAX_AUTO_CONTINUATIONS,
                         )
-                        if openai_chunk:
-                            choices = openai_chunk.get("choices", [])
-                            if choices and isinstance(choices[0], dict):
-                                delta = choices[0].get("delta", {})
-                                c = delta.get("content", "")
-                                if c:
-                                    full_text += c
-                                r = delta.get("reasoning_content", "")
-                                if r:
-                                    full_reasoning += r
+                        self._bump("auto_continued")
+                        try:
+                            cont_resolved = self._continuation_resolved(
+                                resolved, session_id, last_response_message_id)
+                            response, session_id = self._open_chat_stream(cont_resolved)
+                        except Exception as exc:  # noqa: BLE001
+                            # 续写失败按截断收场
+                            self.logger.warning("自动续写失败（按截断返回）: %s", exc)
+                            break
 
                     # ── 工具调用检测（无条件尝试；缺 tools 时只认 DSML / 哨兵标记） ──
                     parsed = parse_tool_calls(
@@ -1046,7 +1107,6 @@ class DeepSeekWebClient:
                     try:
                         response, current_session_id = self._open_chat_stream(current_resolved)
 
-                        state = StreamState()
                         stripper = CitationStripper() if self.config.strip_citations else None
                         last_response_message_id: str | None = None
                         accumulated_tokens = 0
@@ -1068,85 +1128,166 @@ class DeepSeekWebClient:
                         saw_upstream_finish = False
                         content_emitted = False
 
-                        for event in self._iter_sse_events(response):
-                            if not event:
-                                continue
+                        def _is_role_only(chunk: dict) -> bool:
+                            try:
+                                d = chunk["choices"][0].get("delta") or {}
+                                return (
+                                    d.get("role") == "assistant"
+                                    and not (d.get("content") or "")
+                                    and not (d.get("reasoning_content") or "")
+                                    and not d.get("tool_calls")
+                                )
+                            except Exception:  # noqa: BLE001
+                                return False
 
-                            if self._handle_hint_event(event):
-                                continue
+                        def _consume(resp, *, skip_role: bool) -> bool:
+                            """消费一个上游 SSE 流直到 finish/断流，返回是否见到 finish 帧。
 
-                            msg_id = self._extract_ready_message_id(event)
-                            if msg_id is not None:
-                                last_response_message_id = msg_id
+                            检测器/剥离器/累计计数**跨轮共享**——断流自动续写轮的
+                            增量直接拼进同一个 SSE 输出，客户端看到的仍是连续的
+                            一条回答。续写轮（skip_role=True）跳过重复的 role chunk。
+                            """
+                            nonlocal full_text, full_reasoning
+                            nonlocal last_response_message_id, accumulated_tokens
+                            nonlocal tool_calls_emitted, emitted_calls, upstream_finish_reason
+                            nonlocal content_emitted, anything_yielded
+                            st = StreamState()
+                            for event in self._iter_sse_events(resp):
+                                if not event:
+                                    continue
 
-                            usage = self._extract_batch_token_usage(event)
-                            if usage is not None:
-                                accumulated_tokens = usage
+                                if self._handle_hint_event(event):
+                                    continue
 
-                            openai_chunk = convert_deepseek_to_openai_chunk(
-                                event, current_resolved["model"], state,
-                                completion_id,
-                            )
+                                msg_id = self._extract_ready_message_id(event)
+                                if msg_id is not None:
+                                    last_response_message_id = msg_id
 
-                            if not openai_chunk:
-                                if self._is_finish_event(event):
-                                    saw_upstream_finish = True
-                                    break
-                                continue
+                                usage = self._extract_batch_token_usage(event)
+                                if usage is not None:
+                                    accumulated_tokens = usage
 
-                            choices = openai_chunk.get("choices") or []
-                            if not choices or not isinstance(choices[0], dict):
-                                yield _sse(openai_chunk)
-                                anything_yielded = True
-                                if self._is_finish_event(event):
-                                    saw_upstream_finish = True
-                                    break
-                                continue
+                                openai_chunk = convert_deepseek_to_openai_chunk(
+                                    event, current_resolved["model"], st,
+                                    completion_id,
+                                )
 
-                            delta = choices[0].get("delta") or {}
-                            finish_reason = choices[0].get("finish_reason")
-                            c = delta.get("content", "") or ""
-                            r = delta.get("reasoning_content", "") or ""
+                                if not openai_chunk:
+                                    if self._is_finish_event(event):
+                                        return True
+                                    continue
 
-                            if r:
-                                # reasoning 原样透传，不参与检测
-                                full_reasoning += r
-                                yield _sse(openai_chunk)
-                                anything_yielded = True
-                            elif c:
-                                # ★ 内容统一喂给检测器
-                                full_text += c
-                                for action in detector.feed(c):
-                                    if action.kind == "text" and action.text:
-                                        out = stripper.feed(action.text) if stripper else action.text
-                                        if out:
-                                            yield _make_content_chunk(out, current_resolved["model"], completion_id)
-                                            content_emitted = True
-                                            anything_yielded = True
-                                    elif action.kind == "tool_calls" and action.tool_calls:
-                                        for ch in _make_tool_call_chunks(
-                                            action.tool_calls,
-                                            current_resolved["model"],
-                                            completion_id,
-                                        ):
-                                            yield ch
-                                        tool_calls_emitted = True
-                                        emitted_calls.extend(action.tool_calls)
+                                choices = openai_chunk.get("choices") or []
+                                if not choices or not isinstance(choices[0], dict):
+                                    if not (skip_role and _is_role_only(openai_chunk)):
+                                        yield _sse(openai_chunk)
                                         anything_yielded = True
-                            elif finish_reason is not None:
-                                # 上游 finish chunk：记录但不透传，我们最后自己发
-                                upstream_finish_reason = finish_reason
-                                saw_upstream_finish = True
-                            else:
-                                # 纯 role chunk / 空 delta chunk：原样透传
-                                yield _sse(openai_chunk)
-                                anything_yielded = True
+                                    if self._is_finish_event(event):
+                                        return True
+                                    continue
 
-                            if self._is_finish_event(event):
-                                saw_upstream_finish = True
+                                delta = choices[0].get("delta") or {}
+                                finish_reason = choices[0].get("finish_reason")
+                                c = delta.get("content", "") or ""
+                                r = delta.get("reasoning_content", "") or ""
+
+                                if r:
+                                    # reasoning 原样透传，不参与检测
+                                    full_reasoning += r
+                                    yield _sse(openai_chunk)
+                                    anything_yielded = True
+                                elif c:
+                                    # ★ 内容统一喂给检测器
+                                    full_text += c
+                                    for action in detector.feed(c):
+                                        if action.kind == "text" and action.text:
+                                            out = stripper.feed(action.text) if stripper else action.text
+                                            if out:
+                                                yield _make_content_chunk(out, current_resolved["model"], completion_id)
+                                                content_emitted = True
+                                                anything_yielded = True
+                                        elif action.kind == "tool_calls" and action.tool_calls:
+                                            for ch in _make_tool_call_chunks(
+                                                action.tool_calls,
+                                                current_resolved["model"],
+                                                completion_id,
+                                            ):
+                                                yield ch
+                                            tool_calls_emitted = True
+                                            emitted_calls.extend(action.tool_calls)
+                                            anything_yielded = True
+                                elif finish_reason is not None:
+                                    # 上游 finish chunk：记录但不透传，我们最后自己发
+                                    upstream_finish_reason = finish_reason
+                                else:
+                                    # 纯 role chunk / 空 delta chunk：原样透传
+                                    # （续写轮客户端已收到过 role，跳过重复的）
+                                    if skip_role and _is_role_only(openai_chunk):
+                                        continue
+                                    yield _sse(openai_chunk)
+                                    anything_yielded = True
+
+                                if self._is_finish_event(event):
+                                    return True
+                            return False
+
+                        saw = yield from _consume(response, skip_role=False)
+                        if saw or upstream_finish_reason is not None:
+                            saw_upstream_finish = True
+
+                        # ── 断流自动续写 ──
+                        # 上游没发 finish 帧就断流（长思考/长回答/大上下文被掐）：
+                        # 向同一会话发一条「继续」（parent_message_id 指向截断的
+                        # 消息——网页版「继续生成」的同款机制），续写增量经同一个
+                        # 检测器/剥离器拼进当前 SSE 流，客户端看到的仍是连续的
+                        # 一条回答。工具标记被截断时丢弃残块，续写轮会重发完整调用。
+                        # 注意：检测器 finalize 必须等续写全部结束后再做。
+                        _cont_rounds = 0
+                        while (
+                            not saw_upstream_finish
+                            and _cont_rounds < MAX_AUTO_CONTINUATIONS
+                            and last_response_message_id
+                            and str(last_response_message_id).isdigit()
+                            and current_session_id
+                        ):
+                            _cont_rounds += 1
+                            self._bump("auto_continued")
+                            if detector.pending_markup:
+                                self.logger.warning(
+                                    "上游断流且工具标记被截断，丢弃残块（续写轮会重发完整调用）")
+                                detector = StreamingToolDetector(
+                                    payload.get("tools"),
+                                    require_marker=not has_tools,
+                                )
+                            self.logger.warning(
+                                "上游流提前中断（未收到 finish 帧），自动续写 %d/%d",
+                                _cont_rounds, MAX_AUTO_CONTINUATIONS,
+                            )
+                            try:
+                                cont_resolved = self._continuation_resolved(
+                                    current_resolved, current_session_id,
+                                    last_response_message_id,
+                                )
+                                cont_resp, cont_session = self._open_chat_stream(cont_resolved)
+                                if cont_session:
+                                    current_session_id = cont_session
+                                saw = yield from _consume(cont_resp, skip_role=True)
+                                try:
+                                    cont_resp.read()
+                                except Exception:
+                                    pass
+                                try:
+                                    cont_resp.close()
+                                except Exception:
+                                    pass
+                            except Exception as exc:  # noqa: BLE001
+                                # 续写失败按截断收场，绝不能把已输出的流变成报错
+                                self.logger.warning("自动续写失败（按截断返回）: %s", exc)
                                 break
+                            if saw or upstream_finish_reason is not None:
+                                saw_upstream_finish = True
 
-                        # ── 流结束收尾 ──
+                        # ── 流结束收尾（finalize 必须在续写全部结束后）──
                         # 1. 检测器残余
                         for action in detector.finalize():
                             if action.kind == "text" and action.text:
@@ -1430,6 +1571,37 @@ class DeepSeekWebClient:
     # ═══════════════════════════════════════════════════════
     # Internal: request pipeline
     # ═══════════════════════════════════════════════════════
+
+    def _continuation_resolved(
+        self, current_resolved: dict, session_id: str, parent_message_id: str
+    ) -> dict:
+        """构造断流续写轮的 resolved：同会话、parent 指向截断消息、只发「继续」。
+
+        cache_key 用一次性哨兵——绝不读/写会话缓存（续写轮对客户端不可见，
+        后续轮仍按「用户 + 完整回答」的前缀哈希匹配，见 _store_after_response）。
+        """
+        synthetic = {
+            "model": current_resolved["model"],
+            "messages": [{"role": "user", "content": CONTINUE_PROMPT}],
+        }
+        ds_payload = convert_openai_to_deepseek_incremental(synthetic, self.config)
+        ds_payload["chat_session_id"] = session_id
+        try:
+            ds_payload["parent_message_id"] = int(parent_message_id)
+        except (TypeError, ValueError):
+            pass
+        return {
+            "mode": "cached",
+            "ds_payload": ds_payload,
+            "session_id": session_id,
+            "cache_key": f"__continue__{uuid.uuid4().hex}",
+            "full_prefix": list(current_resolved.get("full_prefix") or []),
+            "last_message": None,
+            "last_content": "",
+            "model": current_resolved["model"],
+            "turn_count": 0,
+            "msg_count": 0,
+        }
 
     def _open_chat_stream(self, resolved: dict):
         self._anti_rate_limit_pause(context=f"mode={resolved['mode']}")
