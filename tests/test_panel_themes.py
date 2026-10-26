@@ -129,3 +129,15 @@ def test_panel_window_persists_localstorage():
     run_py = (ROOT.parent.parent / "run.py").read_text(encoding="utf-8")
     assert "private_mode=False" in run_py,             "面板窗口必须显式关闭 pywebview 隐私模式"
     assert "panel_profile" in run_py,             "面板存储必须指向数据目录的 panel_profile"
+
+
+def test_both_panels_share_critical_features():
+    """pro/lite 双面板靠纪律手动同步，共享功能漏改一份是历史事故来源
+    （0.1.30 授权卡丢失）。这里钉死两边都必须存在的关键标记。"""
+    pro = (ROOT / "index.html").read_text(encoding="utf-8")
+    lite = (ROOT / "lite_panel.html").read_text(encoding="utf-8")
+    for marker in ("cleanupBrowserResidue", "/browser/cleanup",
+                   "wapi_theme", "browserLogin", "openAccModal",
+                   "renderKeys", "THEMES"):
+        assert marker in pro, f"pro 面板缺关键标记: {marker}"
+        assert marker in lite, f"lite 面板缺关键标记: {marker}"

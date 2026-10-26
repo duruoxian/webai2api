@@ -177,6 +177,7 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         since_ts, until_ts = _range_window(range, start, end)
         limit = max(1, min(int(limit or 50), 500))
         offset = max(0, int(offset or 0))
+        catalog = await run_in_threadpool(registry.model_catalog)
         return {
             "ok": True,
             "range": range,
@@ -184,10 +185,9 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             "accounts": _safe_accounts(accounts),
             "login": {a["id"]: login_mgr.state(a["id"]) for a in accounts},
             "keys": await run_in_threadpool(store.list_keys),
-            "models": [m["id"] for m in await run_in_threadpool(registry.model_catalog)],
+            "models": [m["id"] for m in catalog],
             "model_providers": {
-                m["id"]: infer_provider(m["id"])
-                for m in await run_in_threadpool(registry.model_catalog)
+                m["id"]: infer_provider(m["id"]) for m in catalog
             },
             "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
             "today": await run_in_threadpool(store.today_summary),
