@@ -24,6 +24,7 @@
 - 只放行 tools 清单里声明过的工具名，模型幻觉出来的名字一律丢弃；
 - `tool_choice="none"` 时适配器应完全不注入、完全不解析。
 """
+
 from __future__ import annotations
 
 import json
@@ -68,8 +69,7 @@ def assistant_fingerprint(msg: dict) -> str:
                         args = json.loads(fn.get("arguments") or "{}")
                     except Exception:
                         args = fn.get("arguments") or ""
-                    norm.append({"name": fn.get("name") or "",
-                                 "arguments": args})
+                    norm.append({"name": fn.get("name") or "", "arguments": args})
             return json.dumps(norm, ensure_ascii=False, sort_keys=True)
         except Exception:
             pass
@@ -99,8 +99,10 @@ def conv_fingerprint(messages: list, model: str = "", key_id: str = "") -> str:
             first = text_of(m)
         elif role == "assistant" and not asst:
             asst = assistant_fingerprint(m)
-    raw = (f"{system[:200]}\x00{first[:500]}\x00{asst[:200]}\x00"
-           f"{model or ''}\x00{key_id or ''}")
+    raw = (
+        f"{system[:200]}\x00{first[:500]}\x00{asst[:200]}\x00"
+        f"{model or ''}\x00{key_id or ''}"
+    )
     return hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
 
 
@@ -124,7 +126,7 @@ def strip_call_json(text: str) -> str:
             break
         obj = _loads_loose(blob)
         if isinstance(obj, dict) and "name" in obj and "arguments" in obj:
-            out = out[:i] + out[i + len(blob):]
+            out = out[:i] + out[i + len(blob) :]
         else:
             break
     return out
@@ -191,6 +193,36 @@ def render_tool_result(name: str, content: str, *, tag: str = "tool_result") -> 
     return f'<{tag} tool="{name}">\n{content}\n</{tag}>'
 
 
+def render_assistant_tool_calls(
+    calls: list, text: str = "", *, marker: str = "<<<TOOL_CALL>>>"
+) -> str:
+    """把 assistant.tool_calls 还原成模型当初输出的调用文本（压平用）。
+
+    全量拼平重发时，工具调用轮的 assistant.content 往往为空：如果把调用
+    丢掉，模型就看不到「自己刚刚请求过什么」，后续 <tool_result> 失去
+    归属，实测会原地重发同一个工具调用。
+    """
+    lines = []
+    for c in calls or []:
+        if not isinstance(c, dict):
+            continue
+        fn = c.get("function") or {}
+        name = fn.get("name") or ""
+        if not name:
+            continue
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except Exception:
+            args = fn.get("arguments") or {}
+        lines.append(
+            marker + json.dumps({"name": name, "arguments": args}, ensure_ascii=False)
+        )
+    body = "\n".join(lines)
+    if text and body:
+        return f"{text}\n{body}"
+    return body or text
+
+
 def increment_text(messages: list, *, result_tag: str = "tool_result") -> str:
     """计算本轮应发给网页会话的增量文本。
 
@@ -216,13 +248,12 @@ def increment_text(messages: list, *, result_tag: str = "tool_result") -> str:
 
     id2name = tool_name_by_id(msgs[: last_assist + 1])
     parts: list = []
-    for m in msgs[last_assist + 1:]:
+    for m in msgs[last_assist + 1 :]:
         role = m.get("role")
         if role == "tool":
             content = text_of(m)
             if content.strip():
-                name = id2name.get(m.get("tool_call_id") or "",
-                                   m.get("name") or "tool")
+                name = id2name.get(m.get("tool_call_id") or "", m.get("name") or "tool")
                 parts.append(render_tool_result(name, content, tag=result_tag))
         elif role == "user":
             t = text_of(m)
@@ -253,13 +284,12 @@ def _loads_loose(raw: str):
     s, e = raw.find("{"), raw.rfind("}")
     if s < 0 or e <= s:
         return None
-    frag = raw[s:e + 1]
+    frag = raw[s : e + 1]
     for candidate in (
         frag,
-        re.sub(r",\s*([}\]])", r"\1", frag),          # 尾逗号
-        frag.replace("，", ",").replace("：", ":"),    # 全角标点
-        re.sub(r",\s*([}\]])", r"\1",
-               frag.replace("，", ",").replace("：", ":")),
+        re.sub(r",\s*([}\]])", r"\1", frag),  # 尾逗号
+        frag.replace("，", ",").replace("：", ":"),  # 全角标点
+        re.sub(r",\s*([}\]])", r"\1", frag.replace("，", ",").replace("：", ":")),
     ):
         try:
             return json.loads(candidate)
@@ -297,7 +327,7 @@ def _scan_json_blob(text: str, start: int) -> str:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                return text[s:i + 1]
+                return text[s : i + 1]
     return text[s:]
 
 
@@ -339,8 +369,7 @@ def _bare_blobs(text: str, allowed: set) -> list:
         obj = _loads_loose(blob)
         if isinstance(obj, dict):
             name = obj.get("name") or obj.get("tool") or ""
-            if (name and name in allowed
-                    and ("arguments" in obj or "args" in obj)):
+            if name and name in allowed and ("arguments" in obj or "args" in obj):
                 out.append(blob)
                 i += len(blob)
                 continue
@@ -373,8 +402,9 @@ def _fix_arg_names(args: dict, tool: dict | None) -> dict:
     return fixed
 
 
-def _build_calls(blobs: list, allowed: set, limit: int,
-                 tools: list | None = None) -> list:
+def _build_calls(
+    blobs: list, allowed: set, limit: int, tools: list | None = None
+) -> list:
     """把 JSON 片段列表规整成标准 OpenAI tool_calls（白名单放行）。"""
     by_name = {}
     for t in tools or []:
@@ -392,20 +422,29 @@ def _build_calls(blobs: list, allowed: set, limit: int,
             continue
         args = obj.get("arguments", obj.get("args", {}))
         if not isinstance(args, str):
-            args = json.dumps(_fix_arg_names(args or {}, by_name.get(name)),
-                              ensure_ascii=False)
-        calls.append({
-            "id": f"call_{uuid.uuid4().hex[:16]}",
-            "type": "function",
-            "function": {"name": name, "arguments": args},
-        })
+            args = json.dumps(
+                _fix_arg_names(args or {}, by_name.get(name)), ensure_ascii=False
+            )
+        calls.append(
+            {
+                "id": f"call_{uuid.uuid4().hex[:16]}",
+                "type": "function",
+                "function": {"name": name, "arguments": args},
+            }
+        )
         if len(calls) >= limit:
             break
     return calls
 
 
-def parse_tool_calls(text: str, tools: list, *, tag: str | None = None,
-                     marker: str | None = None, limit: int = 1) -> list:
+def parse_tool_calls(
+    text: str,
+    tools: list,
+    *,
+    tag: str | None = None,
+    marker: str | None = None,
+    limit: int = 1,
+) -> list:
     """从模型输出解析工具调用，返回标准 OpenAI tool_calls 结构。
 
     - tag:    标签形式 ``<tag>{json}</tag>``（DOTALL，模型最常输出）
@@ -431,8 +470,9 @@ def parse_tool_calls(text: str, tools: list, *, tag: str | None = None,
     return _build_calls(_bare_blobs(text, allowed), allowed, limit, tools)
 
 
-def strip_tool_markup(text: str, *, tag: str | None = None,
-                      marker: str | None = None) -> str:
+def strip_tool_markup(
+    text: str, *, tag: str | None = None, marker: str | None = None
+) -> str:
     """从文本里剥掉工具标记（标签块 / 标记 + 其 JSON），用于纯文本回退。
 
     marker 模式旧实现按行删，多行 JSON 的续行会残留在正文里；
@@ -464,14 +504,14 @@ def is_forced_tool_choice(payload: dict) -> bool:
     tc = payload.get("tool_choice")
     if tc == "required":
         return True
-    return isinstance(tc, dict) and (
-        tc.get("type") == "function" or "function" in tc)
+    return isinstance(tc, dict) and (tc.get("type") == "function" or "function" in tc)
 
 
 REQUIRED_NUDGE = (
     "上一次回复没有调用任何工具，这不符合要求。"
     "这次必须调用一个工具，不要直接用文字回答，也不要解释。"
-    "只输出一次工具调用，格式严格为：\n{example}")
+    "只输出一次工具调用，格式严格为：\n{example}"
+)
 
 
 def required_nudge(*, tag: str | None = None, marker: str | None = None) -> str:
@@ -479,8 +519,10 @@ def required_nudge(*, tag: str | None = None, marker: str | None = None) -> str:
     if tag:
         example = f'<{tag}>{{"name":"工具名","arguments":{{"参数名":值}}}}</{tag}>'
     else:
-        example = (f'{marker or "<<<TOOL_CALL>>>"}'
-                   f'{{"name":"工具名","arguments":{{"参数名":值}}}}')
+        example = (
+            f"{marker or '<<<TOOL_CALL>>>'}"
+            f'{{"name":"工具名","arguments":{{"参数名":值}}}}'
+        )
     return REQUIRED_NUDGE.format(example=example)
 
 
@@ -509,18 +551,18 @@ class ToolStreamBuffer:
                 if 0 <= i and (self._open_at < 0 or i < self._open_at):
                     self._open_at = i
         if self._open_at >= 0:
-            out = self._text[self._emitted:self._open_at]
+            out = self._text[self._emitted : self._open_at]
             self._emitted = self._open_at
             return out
         # 回扣一个完整 opener 的长度：完整出现的 opener 一定还没被发出
         hold = max((len(op) for op in self._openers), default=1)
         safe_end = max(self._emitted, len(self._text) - hold)
-        out = self._text[self._emitted:safe_end]
+        out = self._text[self._emitted : safe_end]
         self._emitted = safe_end
         return out
 
     def flush(self) -> str:
-        out = self._text[self._emitted:]
+        out = self._text[self._emitted :]
         self._emitted = len(self._text)
         return out
 
@@ -557,17 +599,17 @@ class DeltaToolBuffer:
                 if 0 <= i and (self._open_at < 0 or i < self._open_at):
                     self._open_at = i
         if self._open_at >= 0:
-            out = self._full[self._emitted:self._open_at]
+            out = self._full[self._emitted : self._open_at]
             self._emitted = self._open_at
             return out
         hold = max((len(op) for op in self._openers), default=1)
         safe_end = max(self._emitted, len(self._full) - hold)
-        out = self._full[self._emitted:safe_end]
+        out = self._full[self._emitted : safe_end]
         self._emitted = safe_end
         return out
 
     def flush(self) -> str:
-        out = self._full[self._emitted:]
+        out = self._full[self._emitted :]
         self._emitted = len(self._full)
         return out
 

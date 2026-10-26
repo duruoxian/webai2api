@@ -8,6 +8,7 @@ OpenAI 形状，复用既有网关链路（鉴权/额度/选号/重试/用量统
 四平台的上游适配（工具调用/流式/会话）完全复用，本模块只做**入口
 协议翻译**，不碰任何平台 client。
 """
+
 from __future__ import annotations
 
 import json
@@ -64,6 +65,8 @@ def anthropic_to_openai(body: dict) -> dict:
     max_tokens/temperature/top_p/stream 透传。
     """
     messages: list = []
+    aliases: dict = {}  # 工具 id 重映射记录（供网关/测试排查）
+    pending_tool_ids: list = []  # 最近一条 assistant 的 tool_call id 队列
     system = body.get("system")
     sys_text = _text_of(system) if system else ""
     if sys_text:
@@ -76,22 +79,26 @@ def anthropic_to_openai(body: dict) -> dict:
         blocks = _blocks(m.get("content"))
         tool_results = [b for b in blocks if b.get("type") == "tool_result"]
         tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
-        text = "".join(b.get("text") or "" for b in blocks
-                       if b.get("type") == "text")
+        text = "".join(b.get("text") or "" for b in blocks if b.get("type") == "text")
 
         if role == "assistant":
             msg: dict = {"role": "assistant"}
             if tool_uses:
                 msg["content"] = text or None
-                msg["tool_calls"] = [{
-                    "id": b.get("id") or f"call_{uuid.uuid4().hex[:16]}",
-                    "type": "function",
-                    "function": {
-                        "name": b.get("name") or "",
-                        "arguments": json.dumps(
-                            b.get("input") or {}, ensure_ascii=False),
-                    },
-                } for b in tool_uses]
+                msg["tool_calls"] = [
+                    {
+                        "id": b.get("id") or f"call_{uuid.uuid4().hex[:16]}",
+                        "type": "function",
+                        "function": {
+                            "name": b.get("name") or "",
+                            "arguments": json.dumps(
+                                b.get("input") or {}, ensure_ascii=False
+                            ),
+                        },
+                    }
+                    for b in tool_uses
+                ]
+                pending_tool_ids = [tc["id"] for tc in msg["tool_calls"]]
             else:
                 msg["content"] = text
             messages.append(msg)
@@ -102,11 +109,22 @@ def anthropic_to_openai(body: dict) -> dict:
         for tr in tool_results:
             rc = tr.get("content")
             tool_text = _text_of(rc) if not isinstance(rc, str) else rc
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tr.get("tool_use_id") or "",
-                "content": tool_text,
-            })
+            tid = str(tr.get("tool_use_id") or "")
+            # 上游按 assistant.tool_calls[].id 匹配回填：id 对不上时部分适配层
+            # （GLM）认不出工具结果，会原样重发上一次的 tool_call。客户端本就
+            # 应回传同一 id，错位时优先保证上游能配对：与最近一条 assistant
+            # 的 tool_call id 依序对齐。
+            if tid and pending_tool_ids:
+                paired = pending_tool_ids.pop(0)
+                aliases[tid] = paired
+                tid = paired
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "content": tool_text,
+                }
+            )
         if text:
             messages.append({"role": "user", "content": text})
         if not blocks:
@@ -126,21 +144,27 @@ def anthropic_to_openai(body: dict) -> dict:
 
     tools = body.get("tools")
     if isinstance(tools, list) and tools:
-        out["tools"] = [{
-            "type": "function",
-            "function": {
-                "name": t.get("name") or "",
-                "description": t.get("description") or "",
-                "parameters": t.get("input_schema") or {"type": "object"},
-            },
-        } for t in tools if isinstance(t, dict) and t.get("name")]
+        out["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.get("name") or "",
+                    "description": t.get("description") or "",
+                    "parameters": t.get("input_schema") or {"type": "object"},
+                },
+            }
+            for t in tools
+            if isinstance(t, dict) and t.get("name")
+        ]
 
     tc = body.get("tool_choice")
     if tc == "any":
         out["tool_choice"] = "required"
     elif isinstance(tc, dict) and tc.get("type") == "tool":
-        out["tool_choice"] = {"type": "function",
-                              "function": {"name": tc.get("name") or ""}}
+        out["tool_choice"] = {
+            "type": "function",
+            "function": {"name": tc.get("name") or ""},
+        }
     elif tc in ("auto", "none"):
         out["tool_choice"] = tc
     return out
@@ -164,21 +188,26 @@ def openai_to_anthropic(resp: dict, model: str = "") -> dict:
     content_blocks: list = []
     reasoning = msg.get("reasoning_content")
     if reasoning:
-        content_blocks.append({"type": "thinking", "thinking": reasoning,
-                               "signature": _fake_signature()})
+        content_blocks.append(
+            {"type": "thinking", "thinking": reasoning, "signature": _fake_signature()}
+        )
     text = msg.get("content")
     if text:
         content_blocks.append({"type": "text", "text": text})
     for tc in msg.get("tool_calls") or []:
-        fn = (tc.get("function") or {})
+        fn = tc.get("function") or {}
         try:
             inp = json.loads(fn.get("arguments") or "{}")
         except Exception:
             inp = {}
-        content_blocks.append({
-            "type": "tool_use", "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
-            "name": fn.get("name") or "", "input": inp,
-        })
+        content_blocks.append(
+            {
+                "type": "tool_use",
+                "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
+                "name": fn.get("name") or "",
+                "input": inp,
+            }
+        )
     if not content_blocks:
         content_blocks.append({"type": "text", "text": ""})
     fin = ch.get("finish_reason") or "stop"
@@ -207,10 +236,13 @@ def anthropic_error(status: int, err_type: str, message: str):
 def openai_error_to_anthropic(payload: dict) -> dict:
     """网关 OpenAI 错误体 → Anthropic 错误体。"""
     err = payload.get("error") or {}
-    return {"type": "error", "error": {
-        "type": err.get("type") or "api_error",
-        "message": err.get("message") or "上游错误",
-    }}
+    return {
+        "type": "error",
+        "error": {
+            "type": err.get("type") or "api_error",
+            "message": err.get("message") or "上游错误",
+        },
+    }
 
 
 def _sse(event: str, data: dict) -> str:
@@ -244,16 +276,24 @@ class AnthropicStreamTranslator:
         if self._started:
             return []
         self._started = True
-        return [_sse("message_start", {
-            "type": "message_start",
-            "message": {
-                "id": f"msg_{uuid.uuid4().hex[:24]}",
-                "type": "message", "role": "assistant",
-                "model": self._model, "content": [],
-                "stop_reason": None, "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0},
-            },
-        })]
+        return [
+            _sse(
+                "message_start",
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": f"msg_{uuid.uuid4().hex[:24]}",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": self._model,
+                        "content": [],
+                        "stop_reason": None,
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 0, "output_tokens": 0},
+                    },
+                },
+            )
+        ]
 
     def _switch(self, want: str, tool_meta: dict | None = None) -> list[str]:
         out: list[str] = []
@@ -262,30 +302,47 @@ class AnthropicStreamTranslator:
         if self._type is not None:
             if self._type == "thinking":
                 # thinking 块闭合前必须发 signature_delta（Claude 系客户端依赖）
-                out.append(self._delta({
-                    "type": "signature_delta", "signature": _fake_signature()}))
-            out.append(_sse("content_block_stop", {
-                "type": "content_block_stop", "index": self._index}))
+                out.append(
+                    self._delta(
+                        {"type": "signature_delta", "signature": _fake_signature()}
+                    )
+                )
+            out.append(
+                _sse(
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": self._index},
+                )
+            )
         self._index += 1
         if want == "text":
             block: dict = {"type": "text", "text": ""}
         elif want == "thinking":
             block = {"type": "thinking", "thinking": ""}
         else:
-            block = {"type": "tool_use",
-                     "id": (tool_meta or {}).get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
-                     "name": (tool_meta or {}).get("name") or "",
-                     "input": {}}
-        out.append(_sse("content_block_start", {
-            "type": "content_block_start", "index": self._index,
-            "content_block": block}))
+            block = {
+                "type": "tool_use",
+                "id": (tool_meta or {}).get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
+                "name": (tool_meta or {}).get("name") or "",
+                "input": {},
+            }
+        out.append(
+            _sse(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": self._index,
+                    "content_block": block,
+                },
+            )
+        )
         self._type = want
         return out
 
     def _delta(self, delta: dict) -> str:
-        return _sse("content_block_delta", {
-            "type": "content_block_delta", "index": self._index,
-            "delta": delta})
+        return _sse(
+            "content_block_delta",
+            {"type": "content_block_delta", "index": self._index, "delta": delta},
+        )
 
     # ── 对外：喂一个 OpenAI chunk ──
     def feed(self, obj: dict) -> list[str]:
@@ -320,14 +377,16 @@ class AnthropicStreamTranslator:
         for tc in d.get("tool_calls") or []:
             fn = tc.get("function") or {}
             if fn.get("id") or fn.get("name"):
-                events += self._switch("tool_use", {
-                    "id": fn.get("id"), "name": fn.get("name")})
+                events += self._switch(
+                    "tool_use", {"id": fn.get("id"), "name": fn.get("name")}
+                )
             args = fn.get("arguments")
             if args:
                 if self._type != "tool_use":
                     events += self._switch("tool_use", {})
-                events.append(self._delta({
-                    "type": "input_json_delta", "partial_json": args}))
+                events.append(
+                    self._delta({"type": "input_json_delta", "partial_json": args})
+                )
         fin = ch.get("finish_reason")
         if fin:
             self._stop_reason = STOP_REASON_MAP.get(fin, "end_turn")
@@ -340,16 +399,30 @@ class AnthropicStreamTranslator:
         events = self._start_events()
         if self._type is not None:
             if self._type == "thinking":
-                events.append(self._delta({
-                    "type": "signature_delta", "signature": _fake_signature()}))
-            events.append(_sse("content_block_stop", {
-                "type": "content_block_stop", "index": self._index}))
+                events.append(
+                    self._delta(
+                        {"type": "signature_delta", "signature": _fake_signature()}
+                    )
+                )
+            events.append(
+                _sse(
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": self._index},
+                )
+            )
             self._type = None
-        events.append(_sse("message_delta", {
-            "type": "message_delta",
-            "delta": {"stop_reason": self._stop_reason, "stop_sequence": None},
-            "usage": {"input_tokens": self._in_tokens,
-                      "output_tokens": self._out_tokens},
-        }))
+        events.append(
+            _sse(
+                "message_delta",
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": self._stop_reason, "stop_sequence": None},
+                    "usage": {
+                        "input_tokens": self._in_tokens,
+                        "output_tokens": self._out_tokens,
+                    },
+                },
+            )
+        )
         events.append(_sse("message_stop", {"type": "message_stop"}))
         return events

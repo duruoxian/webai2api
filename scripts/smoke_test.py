@@ -16,6 +16,7 @@ API Key 取值顺序：--key > 环境变量 WEBAI2API_SMOKE_KEY >
 本机开发端数据库（%LOCALAPPDATA%\\Programs\\webai2api\\data）。
 任一平台失败退出码为 1。每次调用消耗真实账号额度，消息保持最小。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -95,8 +96,9 @@ def _first_call(resp: dict) -> dict | None:
         return None
 
 
-def smoke_platform(name: str, model: str, base: str, key: str,
-                   timeout: int, with_tools: bool) -> list[str]:
+def smoke_platform(
+    name: str, model: str, base: str, key: str, timeout: int, with_tools: bool
+) -> list[str]:
     """跑一个平台，返回失败原因列表（空 = 通过）。"""
     errors: list[str] = []
     tool_path = Path(tempfile.gettempdir()) / f"webai2api_smoke_{name}.txt"
@@ -104,10 +106,17 @@ def smoke_platform(name: str, model: str, base: str, key: str,
 
     # ── 1. 最小对话 ──
     try:
-        resp, dt = _chat(base, key, {
-            "model": model, "stream": False, "max_tokens": 50,
-            "messages": [{"role": "user", "content": "请只回复两个字：OK"}],
-        }, timeout)
+        resp, dt = _chat(
+            base,
+            key,
+            {
+                "model": model,
+                "stream": False,
+                "max_tokens": 50,
+                "messages": [{"role": "user", "content": "请只回复两个字：OK"}],
+            },
+            timeout,
+        )
         content = str(resp["choices"][0]["message"].get("content") or "")
         if not content.strip():
             errors.append(f"最小对话：空回复（{dt:.1f}s）")
@@ -123,17 +132,29 @@ def smoke_platform(name: str, model: str, base: str, key: str,
     # ── 2. 工具链第一跳：模型应发起 write 调用 ──
     try:
         tool_path.unlink(missing_ok=True)
-        resp, dt = _chat(base, key, {
-            "model": model, "stream": False,
-            "messages": [{"role": "user",
-                          "content": f"请用 write 工具把「{marker}」写入文件 "
-                                     f"{tool_path}，写完文件即完成任务。"}],
-            "tools": [WRITE_TOOL],
-        }, timeout)
+        resp, dt = _chat(
+            base,
+            key,
+            {
+                "model": model,
+                "stream": False,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"请用 write 工具把「{marker}」写入文件 "
+                        f"{tool_path}，写完文件即完成任务。",
+                    }
+                ],
+                "tools": [WRITE_TOOL],
+            },
+            timeout,
+        )
         msg = resp["choices"][0]["message"]
         call = _first_call(resp)
         if not call:
-            errors.append(f"工具链：模型未发起工具调用（content={str(msg.get('content'))[:80]!r}）")
+            errors.append(
+                f"工具链：模型未发起工具调用（content={str(msg.get('content'))[:80]!r}）"
+            )
             return errors
         fn = call.get("function") or {}
         if fn.get("name") != "write":
@@ -156,18 +177,29 @@ def smoke_platform(name: str, model: str, base: str, key: str,
         except Exception as exc:
             result = f"写入失败：{exc}"
 
-        resp2, dt2 = _chat(base, key, {
-            "model": model, "stream": False,
-            "messages": [
-                {"role": "user", "content": f"请用 write 工具把「{marker}」写入文件 "
-                                            f"{tool_path}，写完文件即完成任务。"},
-                {"role": "assistant", "content": None, "tool_calls": [call]},
-                {"role": "tool", "tool_call_id": call.get("id"), "content": result},
-            ],
-            "tools": [WRITE_TOOL],
-        }, timeout)
+        resp2, dt2 = _chat(
+            base,
+            key,
+            {
+                "model": model,
+                "stream": False,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"请用 write 工具把「{marker}」写入文件 "
+                        f"{tool_path}，写完文件即完成任务。",
+                    },
+                    {"role": "assistant", "content": None, "tool_calls": [call]},
+                    {"role": "tool", "tool_call_id": call.get("id"), "content": result},
+                ],
+                "tools": [WRITE_TOOL],
+            },
+            timeout,
+        )
         final = str(resp2["choices"][0]["message"].get("content") or "")
-        if marker not in (tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""):
+        if marker not in (
+            tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""
+        ):
             errors.append("工具链：文件内容与要求不符")
         if not final.strip():
             errors.append(f"工具链：回填结果后模型未给出最终回答（{dt2:.1f}s）")
@@ -175,8 +207,10 @@ def smoke_platform(name: str, model: str, base: str, key: str,
             errors.append("工具链：最终回答里仍有工具标记")
         else:
             ok_file = tool_path.exists()
-            print(f"    多轮回填 PASS（{dt2:.1f}s）：文件真实写入={ok_file}，"
-                  f"最终回答={final.strip()[:40]!r}")
+            print(
+                f"    多轮回填 PASS（{dt2:.1f}s）：文件真实写入={ok_file}，"
+                f"最终回答={final.strip()[:40]!r}"
+            )
     except Exception as exc:
         errors.append(f"工具链异常：{exc}")
     finally:
@@ -185,13 +219,20 @@ def smoke_platform(name: str, model: str, base: str, key: str,
 
 
 def _messages(base: str, key: str, body: dict, timeout: int) -> tuple[dict, float]:
-    """打 /v1/messages（Anthropic 协议），返回 (json, 耗时)。"""
+    """打 /v1/messages（Anthropic 协议），返回 (json, 耗时)。
+
+    鉴权统一走 Authorization Bearer（端点与 x-api-key 双支持）：带工具的
+    请求里 x-api-key 头曾与工具参数 key 语义混淆，Bearer 更稳。
+    """
     req = urllib.request.Request(
         f"{base.rstrip('/')}/v1/messages",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         method="POST",
-        headers={"x-api-key": key, "anthropic-version": "2023-06-01",
-                 "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {key}",
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        },
     )
     t0 = time.time()
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -202,8 +243,11 @@ def _messages(base: str, key: str, body: dict, timeout: int) -> tuple[dict, floa
 
 
 def _anth_text(msg: dict) -> str:
-    return "".join(b.get("text") or "" for b in msg.get("content") or []
-                   if isinstance(b, dict) and b.get("type") == "text")
+    return "".join(
+        b.get("text") or ""
+        for b in msg.get("content") or []
+        if isinstance(b, dict) and b.get("type") == "text"
+    )
 
 
 def _anth_tool_use(msg: dict) -> dict | None:
@@ -214,25 +258,35 @@ def _anth_tool_use(msg: dict) -> dict | None:
 
 
 ANTHROPIC_TOOL = {
-    "name": "write", "description": "把内容写入本地文件",
-    "input_schema": {"type": "object", "properties": {
-        "filePath": {"type": "string"}, "content": {"type": "string"}},
-        "required": ["filePath", "content"]},
+    "name": "write",
+    "description": "把内容写入本地文件",
+    "input_schema": {
+        "type": "object",
+        "properties": {"filePath": {"type": "string"}, "content": {"type": "string"}},
+        "required": ["filePath", "content"],
+    },
 }
 
 
-def smoke_anthropic(model: str, base: str, key: str,
-                    timeout: int, with_tools: bool) -> list[str]:
+def smoke_anthropic(
+    model: str, base: str, key: str, timeout: int, with_tools: bool
+) -> list[str]:
     """Anthropic /v1/messages 冒烟：最小对话 + 工具链（tool_use/tool_result）。"""
     errors: list[str] = []
     tool_path = Path(tempfile.gettempdir()) / "webai2api_smoke_anthropic.txt"
     marker = f"smoke-anthropic-{int(time.time())}"
 
     try:
-        msg, dt = _messages(base, key, {
-            "model": model, "max_tokens": 100,
-            "messages": [{"role": "user", "content": "请只回复两个字：OK"}],
-        }, timeout)
+        msg, dt = _messages(
+            base,
+            key,
+            {
+                "model": model,
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "请只回复两个字：OK"}],
+            },
+            timeout,
+        )
         text = _anth_text(msg)
         if not text.strip():
             errors.append(f"最小对话：空回复（stop={msg.get('stop_reason')}）")
@@ -249,25 +303,37 @@ def smoke_anthropic(model: str, base: str, key: str,
 
     try:
         tool_path.unlink(missing_ok=True)
-        prompt = (f"请用 write 工具把「{marker}」写入文件 {tool_path}，"
-                  f"写完文件即完成任务。")
-        msg, dt = _messages(base, key, {
-            "model": model, "max_tokens": 300,
-            "messages": [{"role": "user", "content": prompt}],
-            "tools": [ANTHROPIC_TOOL],
-        }, timeout)
+        prompt = (
+            f"请用 write 工具把「{marker}」写入文件 {tool_path}，写完文件即完成任务。"
+        )
+        msg, dt = _messages(
+            base,
+            key,
+            {
+                "model": model,
+                "max_tokens": 300,
+                "messages": [{"role": "user", "content": prompt}],
+                "tools": [ANTHROPIC_TOOL],
+            },
+            timeout,
+        )
         use = _anth_tool_use(msg)
         if not use:
-            errors.append(f"工具链：无 tool_use 块（content="
-                          f"{str(msg.get('content'))[:80]!r}）")
+            errors.append(
+                f"工具链：无 tool_use 块（content={str(msg.get('content'))[:80]!r}）"
+            )
             return errors
         if use.get("name") != "write":
             errors.append(f"工具链：调用了错误工具 {use.get('name')!r}")
             return errors
         if msg.get("stop_reason") != "tool_use":
-            errors.append(f"工具链：stop_reason={msg.get('stop_reason')!r}（应为 tool_use）")
-        print(f"    tool_use PASS（{dt:.1f}s）：{use.get('name')}"
-              f"({list(use.get('input') or {})[:2]}...)")
+            errors.append(
+                f"工具链：stop_reason={msg.get('stop_reason')!r}（应为 tool_use）"
+            )
+        print(
+            f"    tool_use PASS（{dt:.1f}s）：{use.get('name')}"
+            f"({list(use.get('input') or {})[:2]}...)"
+        )
 
         args = use.get("input") or {}
         try:
@@ -276,21 +342,34 @@ def smoke_anthropic(model: str, base: str, key: str,
         except Exception as exc:
             result = f"写入失败：{exc}"
 
-        msg2, dt2 = _messages(base, key, {
-            "model": model, "max_tokens": 300,
-            "messages": [
-                {"role": "user", "content": prompt},
-                {"role": "assistant", "content": [use]},
-                {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": use.get("id"),
-                     "content": result},
-                ]},
-            ],
-            "tools": [ANTHROPIC_TOOL],
-        }, timeout)
+        msg2, dt2 = _messages(
+            base,
+            key,
+            {
+                "model": model,
+                "max_tokens": 300,
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": [use]},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": use.get("id"),
+                                "content": result,
+                            },
+                        ],
+                    },
+                ],
+                "tools": [ANTHROPIC_TOOL],
+            },
+            timeout,
+        )
         final = _anth_text(msg2)
-        if marker not in (tool_path.read_text(encoding="utf-8")
-                          if tool_path.exists() else ""):
+        if marker not in (
+            tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""
+        ):
             errors.append("工具链：文件内容与要求不符")
         if msg2.get("stop_reason") != "end_turn":
             errors.append(f"工具链：收尾 stop_reason={msg2.get('stop_reason')!r}")
@@ -304,6 +383,7 @@ def smoke_anthropic(model: str, base: str, key: str,
         tool_path.unlink(missing_ok=True)
     return errors
 
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="webai2api 发版前冒烟测试")
     ap.add_argument("--base-url", default="http://127.0.0.1:8800")
@@ -311,15 +391,23 @@ def main() -> int:
     ap.add_argument("--only", default="", help="逗号分隔平台名，如 deepseek,qwen")
     ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--skip-tools", action="store_true", help="只跑最小对话")
-    ap.add_argument("--anthropic", action="store_true",
-                    help="改打 /v1/messages（Anthropic 协议端点冒烟）")
-    ap.add_argument("--anthropic-model", default="GLM-5.3-Flash",
-                    help="anthropic 模式使用的模型（默认 GLM-5.3-Flash）")
+    ap.add_argument(
+        "--anthropic",
+        action="store_true",
+        help="改打 /v1/messages（Anthropic 协议端点冒烟）",
+    )
+    ap.add_argument(
+        "--anthropic-model",
+        default="GLM-5.3-Flash",
+        help="anthropic 模式使用的模型（默认 GLM-5.3-Flash）",
+    )
     args = ap.parse_args()
 
     key = args.key or _key_from_dev_db()
     if not key:
-        print("错误：找不到 API Key（--key / WEBAI2API_SMOKE_KEY / 本机开发端库均未命中）")
+        print(
+            "错误：找不到 API Key（--key / WEBAI2API_SMOKE_KEY / 本机开发端库均未命中）"
+        )
         return 2
     only = {s.strip().lower() for s in args.only.split(",") if s.strip()}
 
@@ -327,8 +415,9 @@ def main() -> int:
     if args.anthropic:
         model = args.anthropic_model
         print(f"\n[anthropic] {model} → /v1/messages")
-        errs = smoke_anthropic(model, args.base_url, key,
-                               args.timeout, with_tools=not args.skip_tools)
+        errs = smoke_anthropic(
+            model, args.base_url, key, args.timeout, with_tools=not args.skip_tools
+        )
         if errs:
             for e in errs:
                 print(f"    ✗ {e}")
@@ -343,8 +432,14 @@ def main() -> int:
         if only and name not in only:
             continue
         print(f"\n[{name}] {model}")
-        errs = smoke_platform(name, model, args.base_url, key,
-                              args.timeout, with_tools=not args.skip_tools)
+        errs = smoke_platform(
+            name,
+            model,
+            args.base_url,
+            key,
+            args.timeout,
+            with_tools=not args.skip_tools,
+        )
         if errs:
             failures += 1
             for e in errs:

@@ -6,11 +6,13 @@
   2. POST /chatglm/backend-api/assistant/stream 拿 SSE，逐块解析 parts
   3. 结束后（可选）删除会话，避免污染用户对话列表
 """
+
 from __future__ import annotations
 
 import hashlib
 import http.client
 import json
+import os
 import random
 import threading
 import time
@@ -90,7 +92,7 @@ def _build_headers(
         **BASE_HEADERS,
         "User-Agent": ua,
         "X-Device-Id": did,
-        "X-Request-Id": uuid.uuid4().hex,   # 每请求唯一是正常的
+        "X-Request-Id": uuid.uuid4().hex,  # 每请求唯一是正常的
         "X-Sign": sign,
         "X-Timestamp": ts,
         "X-Nonce": nonce,
@@ -135,7 +137,11 @@ def _prepare_content(messages: list[dict]) -> str:
     """
     if len(messages) < 2:
         return "".join(_text_of(m) + "\n" for m in messages)
-    role_map = {"system": "<|system|>", "assistant": "<|assistant|>", "user": "<|user|>"}
+    role_map = {
+        "system": "<|system|>",
+        "assistant": "<|assistant|>",
+        "user": "<|user|>",
+    }
     id2name = tool_bridge.tool_name_by_id(messages)
     parts = []
     for m in messages:
@@ -145,7 +151,13 @@ def _prepare_content(messages: list[dict]) -> str:
             body = tool_bridge.render_tool_result(name, _text_of(m), tag="tool_result")
             parts.append(f"<|user|>\n{body}\n")
             continue
-        parts.append(f"{role_map.get(role, role)}\n{_text_of(m)}\n")
+        text = _text_of(m)
+        if role == "assistant" and m.get("tool_calls"):
+            # 工具调用轮的 assistant.content 通常是 None，只写角色标签会把
+            # 整轮压成空行：模型看不到自己发过什么调用，也就认不出后面的
+            # <tool_result> 是给谁的，于是把同一个工具再调一遍。
+            text = tool_bridge.render_assistant_tool_calls(m["tool_calls"], text)
+        parts.append(f"{role_map.get(role, role)}\n{text}\n")
     return "".join(parts) + "<|assistant|>\n"
 
 
@@ -186,7 +198,9 @@ def _tools_prompt(tools: list) -> str:
             for k, v in props.items():
                 typ = (v or {}).get("type", "string")
                 mark = "（必填）" if k in req else ""
-                lines.append(f"    参数 {k} ({typ}){mark}: {(v or {}).get('description','')}")
+                lines.append(
+                    f"    参数 {k} ({typ}){mark}: {(v or {}).get('description', '')}"
+                )
     return "\n".join(lines)
 
 
@@ -205,6 +219,32 @@ def _inject_tools(messages: list, tools: list) -> list:
             return msgs
     msgs.insert(0, {"role": "system", "content": instruction})
     return msgs
+
+
+def _collapse_cached_text(content: str, messages: list) -> str:
+    """上游会话被复用、但本轮仍带工具历史时，给增量补一句「已执行」提示。
+
+    模型在上游会话里看到自己刚发过工具调用，而会话里还没有结果（增量
+    只发新的一轮）时，实测会原样重调同一个工具。这里在增量前面加一行
+    明确的完成声明，把「调用 → 结果」闭合掉。
+    """
+    if not content:
+        return content
+    names = []
+    for m in messages or []:
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            for c in m.get("tool_calls") or []:
+                fn = (c or {}).get("function") or {}
+                if fn.get("name"):
+                    names.append(fn["name"])
+    if not names:
+        return content
+    head = (
+        "[已完成] 上文工具调用（"
+        + ", ".join(dict.fromkeys(names))
+        + "）均已执行并返回结果，无需再次调用同一工具，请基于结果直接给出最终回答。\n"
+    )
+    return head + content
 
 
 def _strip_tool_block(text: str) -> str:
@@ -235,7 +275,6 @@ def _dedup_repeated(text: str) -> str:
     if n >= _DUP_MIN_BLOCK and core[:n] == core[n:]:
         return core[:n]
     return text
-
 
 
 def _estimate_tokens(text: str) -> int:
@@ -276,12 +315,20 @@ def _render_part(part: dict, is_silent: bool = False) -> tuple[str, str]:
         elif t == "code":
             code = item.get("code") or ""
             text += "```python\n" + code + ("\n```\n" if status == "finish" else "")
-        elif t == "execution_output" and isinstance(item.get("content"), str) and status == "finish":
+        elif (
+            t == "execution_output"
+            and isinstance(item.get("content"), str)
+            and status == "finish"
+        ):
             text += item["content"] + "\n"
-        elif t == "image" and isinstance(item.get("image"), list) and status == "finish":
+        elif (
+            t == "image" and isinstance(item.get("image"), list) and status == "finish"
+        ):
             for img in item["image"]:
                 u = img.get("image_url") if isinstance(img, dict) else None
-                if isinstance(u, str) and (u.startswith("http://") or u.startswith("https://")):
+                if isinstance(u, str) and (
+                    u.startswith("http://") or u.startswith("https://")
+                ):
                     text += f"![图像]({u})"
             text += "\n"
     return text, reasoning
@@ -317,12 +364,12 @@ class _GlmParts:
 
     def __init__(self, is_silent: bool = False) -> None:
         self._is_silent = is_silent
-        self._order: list[str] = []         # lid 首见序
-        self._text: dict[str, str] = {}     # lid -> 正文累计
-        self._think: dict[str, str] = {}    # lid -> 思考累计
-        self._extra: dict[str, str] = {}    # lid -> code/image 等一次性渲染
-        self.text = ""                      # 全量正文
-        self.reasoning = ""                 # 全量思考
+        self._order: list[str] = []  # lid 首见序
+        self._text: dict[str, str] = {}  # lid -> 正文累计
+        self._think: dict[str, str] = {}  # lid -> 思考累计
+        self._extra: dict[str, str] = {}  # lid -> code/image 等一次性渲染
+        self.text = ""  # 全量正文
+        self.reasoning = ""  # 全量思考
 
     @staticmethod
     def _calibrate(buf: str, piece: str, status) -> str:
@@ -341,8 +388,7 @@ class _GlmParts:
             content = part.get("content")
             if not isinstance(content, list):
                 continue
-            lid = str(part.get("logic_id")
-                      or f"\x00anon:{len(self._order)}:{id(part)}")
+            lid = str(part.get("logic_id") or f"\x00anon:{len(self._order)}:{id(part)}")
             if lid not in self._text:
                 self._order.append(lid)
                 self._text[lid] = ""
@@ -355,21 +401,25 @@ class _GlmParts:
                 t = item.get("type")
                 if t == "text":
                     self._text[lid] = self._calibrate(
-                        self._text[lid], item.get("text") or "", status)
+                        self._text[lid], item.get("text") or "", status
+                    )
                     dirty = True
                 elif t == "think" and not self._is_silent:
                     self._think[lid] = self._calibrate(
-                        self._think[lid], item.get("think") or "", status)
+                        self._think[lid], item.get("think") or "", status
+                    )
                     dirty = True
                 else:
                     rendered, _ = _render_part(
-                        {"content": [item], "status": status}, self._is_silent)
+                        {"content": [item], "status": status}, self._is_silent
+                    )
                     if rendered:
                         self._extra[lid] += rendered
                         dirty = True
         if dirty:
             self.text = "".join(
-                self._text[lid] + self._extra[lid] for lid in self._order)
+                self._text[lid] + self._extra[lid] for lid in self._order
+            )
             self.reasoning = "".join(self._think[lid] for lid in self._order)
 
 
@@ -472,8 +522,10 @@ class ChatGlmWebClient:
     def _conv_key(self, payload: dict) -> str:
         """会话指纹（tool_bridge.conv_fingerprint），首条 assistant 防串台。"""
         return tool_bridge.conv_fingerprint(
-            payload.get("messages") or [], payload.get("model") or "",
-            payload.get("_wapi_key_id") or "")
+            payload.get("messages") or [],
+            payload.get("model") or "",
+            payload.get("_wapi_key_id") or "",
+        )
 
     def _cached_conv(self, key: str) -> str:
         if not self.config.session_cache_enabled:
@@ -505,8 +557,11 @@ class ChatGlmWebClient:
         with self._conv_lock:
             total = len(self._conv_cache)
             now = time.time()
-            active = sum(1 for (_c, ts, _t) in self._conv_cache.values()
-                         if now - ts <= self.config.session_cache_ttl)
+            active = sum(
+                1
+                for (_c, ts, _t) in self._conv_cache.values()
+                if now - ts <= self.config.session_cache_ttl
+            )
             hit = getattr(self, "_stat_hit", 0)
             miss = getattr(self, "_stat_miss", 0)
             return {
@@ -546,7 +601,7 @@ class ChatGlmWebClient:
     def _split(url: str) -> tuple[str, str]:
         parts = urlsplit(url)
         host = parts.hostname or "chatglm.cn"
-        if parts.port:                     # 非默认端口（本地/自建环境）必须带上
+        if parts.port:  # 非默认端口（本地/自建环境）必须带上
             host = f"{host}:{parts.port}"
         path = parts.path or "/"
         if parts.query:
@@ -556,9 +611,11 @@ class ChatGlmWebClient:
     def _conn(self, url: str, timeout: int):
         host, _ = self._split(url)
         # base_url 可配（自建/测试环境），按 scheme 分派；默认仍是 https
-        factory = (http.client.HTTPConnection
-                   if url.lower().startswith("http://")
-                   else http.client.HTTPSConnection)
+        factory = (
+            http.client.HTTPConnection
+            if url.lower().startswith("http://")
+            else http.client.HTTPSConnection
+        )
         conn = factory(host, timeout=max(int(timeout), 30))
         from ...egress import (
             EGRESS_CUSTOM,
@@ -571,6 +628,7 @@ class ChatGlmWebClient:
         if mode == EGRESS_CUSTOM:
             proxy_url = str(getattr(self.config, "proxy", "") or "")
             from ...proxy import ProxyConfigError, parse_proxy
+
             try:
                 px = parse_proxy(proxy_url)
                 if px is not None:
@@ -589,13 +647,17 @@ class ChatGlmWebClient:
         conn = self._conn(url, timeout)
         try:
             _, path = self._split(url)
-            conn.request("POST", path, body=json.dumps(body).encode("utf-8"), headers=headers)
+            conn.request(
+                "POST", path, body=json.dumps(body).encode("utf-8"), headers=headers
+            )
             resp = conn.getresponse()
             raw = resp.read()
             if resp.status >= 400:
                 if resp.status == 429:
                     self._bump("rate_limit")
-                raise GlmError(f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
+                raise GlmError(
+                    f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}"
+                )
             try:
                 return json.loads(raw.decode("utf-8"))
             except Exception as exc:  # noqa: BLE001
@@ -609,14 +671,18 @@ class ChatGlmWebClient:
     def _open_stream(self, url: str, body: dict, headers: dict, timeout: int):
         conn = self._conn(url, timeout)
         _, path = self._split(url)
-        conn.request("POST", path, body=json.dumps(body).encode("utf-8"), headers=headers)
+        conn.request(
+            "POST", path, body=json.dumps(body).encode("utf-8"), headers=headers
+        )
         resp = conn.getresponse()
         if resp.status >= 400:
             if resp.status == 429:
                 self._bump("rate_limit")
             raw = resp.read()
             conn.close()
-            raise GlmError(f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
+            raise GlmError(
+                f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}"
+            )
         return conn, resp
 
     # ── token ──────────────────────────────────────────
@@ -627,7 +693,8 @@ class ChatGlmWebClient:
             if not self.config.refresh_token:
                 raise GlmError("缺少 refresh_token，请先在面板登录智谱清言账号", 401)
             data = self._post_json(
-                self.config.refresh_url, {},
+                self.config.refresh_url,
+                {},
                 _headers_for(self.config, self.config.refresh_token),
                 min(self.config.request_timeout, 30),
             )
@@ -675,7 +742,9 @@ class ChatGlmWebClient:
             return "zero", "max"
         return "zero", "high"
 
-    def _body(self, content: str, model: str, conv_id: str = "", effort: str = "") -> dict:
+    def _body(
+        self, content: str, model: str, conv_id: str = "", effort: str = ""
+    ) -> dict:
         chat_mode, effort = self._resolve_mode(model, effort)
         meta = {
             "channel": "",
@@ -696,7 +765,9 @@ class ChatGlmWebClient:
             "conversation_id": conv_id,
             "project_id": "",
             "chat_type": "user_chat",
-            "messages": [{"role": "user", "content": [{"type": "text", "text": content}]}],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": content}]}
+            ],
             "meta_data": meta,
         }
 
@@ -726,6 +797,7 @@ class ChatGlmWebClient:
             delay = random.uniform(20, 60)
         else:
             import math
+
             mid = max(0.1, (lo + hi) / 2)
             delay = random.lognormvariate(math.log(mid), 0.6)
         delay = min(max(delay, lo), max(1.0, hi * 3))
@@ -809,8 +881,11 @@ class ChatGlmWebClient:
         # 命中会话缓存则复用 conversation_id（与 DeepSeek 的多轮增量行为一致）；
         # 首轮绝不复用——新客户端会话的首轮指纹常与旧会话相同，复用会串上下文
         conv_key = self._conv_key(payload)
-        cached_conv = "" if tool_bridge.is_first_turn(payload.get("messages")) \
+        cached_conv = (
+            ""
+            if tool_bridge.is_first_turn(payload.get("messages"))
             else (self._cached_conv(conv_key) or "")
+        )
         if not cached_conv:
             self._bump("miss")
         # 复用上游会话时只发增量（最后一条 assistant 之后的 tool 结果与新
@@ -821,14 +896,18 @@ class ChatGlmWebClient:
             content = tool_bridge.increment_text(messages, result_tag="tool_result")
             if not content.strip():
                 content = _prepare_content(messages)
+            content = _collapse_cached_text(content, messages)
         else:
             content = _prepare_content(messages)
         conn, resp = self._open_stream(
             self.config.stream_url,
             self._body(
-                content, model,
+                content,
+                model,
                 conv_id=cached_conv,
-                effort=str(payload.get("reasoning_effort") or self.config.default_effort),
+                effort=str(
+                    payload.get("reasoning_effort") or self.config.default_effort
+                ),
             ),
             _headers_for(self.config, token),
             self.config.request_timeout,
@@ -862,17 +941,25 @@ class ChatGlmWebClient:
             if self.config.session_cache_enabled:
                 # store key 与客户端多轮回传的查询 key 一致（含本轮 assistant 指纹）
                 calls = _parse_tool_calls(text, payload.get("tools") or [])
-                asst = {"role": "assistant",
-                        "content": None if calls else text,
-                        "tool_calls": calls or None}
+                asst = {
+                    "role": "assistant",
+                    "content": None if calls else text,
+                    "tool_calls": calls or None,
+                }
                 store_key = tool_bridge.conv_fingerprint(
                     (payload.get("messages") or []) + [asst],
                     payload.get("model") or "",
-                    payload.get("_wapi_key_id") or "")
+                    payload.get("_wapi_key_id") or "",
+                )
                 self._store_conv(store_key, conv_id)
             elif self.config.delete_conversation:
                 self._delete_conversation(conv_id, token)
-        yield {"__done__": True, "text": text, "reasoning": reasoning, "conv_id": conv_id}
+        yield {
+            "__done__": True,
+            "text": text,
+            "reasoning": reasoning,
+            "conv_id": conv_id,
+        }
 
     def _delete_conversation(self, conv_id: str, token: str) -> None:
         try:
@@ -890,10 +977,12 @@ class ChatGlmWebClient:
         """tool_choice=required 强校验重试：加强指令再问一次（上限 1 次）。"""
         self.logger.info("GLM tool_choice=required 首轮未调用工具，加强指令重试一次")
         retry = dict(payload)
-        retry["messages"] = list(payload.get("messages") or []) + [{
-            "role": "user",
-            "content": tool_bridge.required_nudge(marker=TOOL_MARKER),
-        }]
+        retry["messages"] = list(payload.get("messages") or []) + [
+            {
+                "role": "user",
+                "content": tool_bridge.required_nudge(marker=TOOL_MARKER),
+            }
+        ]
         text = reasoning = ""
         for ev in self._stream_events(retry):
             text, reasoning = ev["text"], ev["reasoning"]
@@ -901,7 +990,8 @@ class ChatGlmWebClient:
         if not calls:
             raise GlmError(
                 "工具调用强校验失败：重试一次后模型仍未按要求调用工具"
-                "（tool_choice=required）")
+                "（tool_choice=required）"
+            )
         return text, reasoning, calls
 
     def chat_completion(self, payload: dict) -> dict:
@@ -922,33 +1012,42 @@ class ChatGlmWebClient:
                 "object": "chat.completion",
                 "created": int(time.time()),
                 "model": model,
-                "choices": [{
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": _strip_tool_block(text) or None,
-                        "tool_calls": calls,
-                    },
-                    "finish_reason": "tool_calls",
-                }],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": _strip_tool_block(text) or None,
+                            "tool_calls": calls,
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
                 "usage": _usage(payload, text),
             }
 
         # 整段重复折叠 + 空正文兜底（思考里就是答案时顶上来）
         content, reasoning = reasoning_bridge.finalize_reasoning(
-            _strip_tool_block(_dedup_repeated(text)), reasoning,
-            legacy=self.config.legacy_reasoning_in_content)
+            _strip_tool_block(_dedup_repeated(text)),
+            reasoning,
+            legacy=self.config.legacy_reasoning_in_content,
+        )
         return {
             "id": completion_id,
             "object": "chat.completion",
             "created": int(time.time()),
             "model": model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": content,
-                            "reasoning_content": reasoning or None},
-                "finish_reason": "stop",
-            }],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                        "reasoning_content": reasoning or None,
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
             "usage": _usage(payload, text),
         }
 
@@ -960,8 +1059,10 @@ class ChatGlmWebClient:
 
         def chunk(delta: dict, finish=None, usage=None) -> str:
             obj = {
-                "id": completion_id, "object": "chat.completion.chunk",
-                "created": created, "model": model,
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
             }
             if usage is not None:
@@ -982,7 +1083,9 @@ class ChatGlmWebClient:
                     text, reasoning = ev["text"], ev["reasoning"]
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning("智谱流式请求失败: %s", exc)
-                err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
+                err = {
+                    "error": {"message": f"上游错误: {exc}", "type": "upstream_error"}
+                }
                 yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
@@ -990,14 +1093,18 @@ class ChatGlmWebClient:
             if not calls:
                 try:
                     text, reasoning, calls = self._forced_retry(
-                        payload, payload.get("tools") or [])
+                        payload, payload.get("tools") or []
+                    )
                 except GlmError as exc:
-                    err = {"error": {"message": str(exc), "type": "tool_required_error"}}
+                    err = {
+                        "error": {"message": str(exc), "type": "tool_required_error"}
+                    }
                     yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
             rs = reasoning_bridge.ReasoningStream(
-                legacy=self.config.legacy_reasoning_in_content)
+                legacy=self.config.legacy_reasoning_in_content
+            )
             out_r, out_c = rs.feed(reasoning, "")
             if out_r:
                 yield chunk({"reasoning_content": out_r})
@@ -1007,14 +1114,18 @@ class ChatGlmWebClient:
             if tail:
                 yield chunk({"content": tail})
             for i, c in enumerate(calls):
-                yield chunk({
-                    "tool_calls": [{
-                        "index": i,
-                        "id": c["id"],
-                        "type": "function",
-                        "function": c["function"],
-                    }]
-                })
+                yield chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": i,
+                                "id": c["id"],
+                                "type": "function",
+                                "function": c["function"],
+                            }
+                        ]
+                    }
+                )
             yield chunk({}, usage=_usage(payload, text))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
@@ -1027,13 +1138,14 @@ class ChatGlmWebClient:
         sent_text = ""
         sent_reasoning = ""
         rs = reasoning_bridge.ReasoningStream(
-            legacy=self.config.legacy_reasoning_in_content)
+            legacy=self.config.legacy_reasoning_in_content
+        )
         try:
             for ev in self._stream_events(payload):
-                d_reason = ev["reasoning"][len(sent_reasoning):]
+                d_reason = ev["reasoning"][len(sent_reasoning) :]
                 if d_reason:
                     sent_reasoning = ev["reasoning"]
-                d_text = ev["text"][len(sent_text):]
+                d_text = ev["text"][len(sent_text) :]
                 sent_text = ev["text"]
                 d_out = buf.feed_delta(d_text) if buf is not None else d_text
                 out_r, out_c = rs.feed(d_reason, d_out)
@@ -1055,14 +1167,18 @@ class ChatGlmWebClient:
                 if tail:
                     yield chunk({"content": tail})
                 for i, c in enumerate(calls):
-                    yield chunk({
-                        "tool_calls": [{
-                            "index": i,
-                            "id": c["id"],
-                            "type": "function",
-                            "function": c["function"],
-                        }]
-                    })
+                    yield chunk(
+                        {
+                            "tool_calls": [
+                                {
+                                    "index": i,
+                                    "id": c["id"],
+                                    "type": "function",
+                                    "function": c["function"],
+                                }
+                            ]
+                        }
+                    )
                 yield chunk({}, usage=_usage(payload, sent_text))
                 yield chunk({}, finish="tool_calls")
                 yield "data: [DONE]\n\n"
@@ -1089,6 +1205,3 @@ class ChatGlmWebClient:
         yield chunk({}, usage=_usage(payload, sent_text))
         yield chunk({}, finish="stop")
         yield "data: [DONE]\n\n"
-
-
-
