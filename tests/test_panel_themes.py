@@ -141,3 +141,51 @@ def test_both_panels_share_critical_features():
                    "renderKeys", "THEMES"):
         assert marker in pro, f"pro 面板缺关键标记: {marker}"
         assert marker in lite, f"lite 面板缺关键标记: {marker}"
+
+
+def test_primary_button_follows_theme_accent():
+    """主按钮渐变必须走 --accent-grad 变量，且 neon/terminal/paper/sakura
+    各自定义了渐变——否则深色主题里残留亮色蓝按钮（0.1.33 实测问题）。"""
+    css = (ROOT / "app.css").read_text(encoding="utf-8")
+    assert "background:var(--accent-grad)" in css, ".btn 必须使用 --accent-grad"
+    for theme in ("neon", "terminal", "paper", "sakura"):
+        block = re.search(rf"html\[data-theme={theme}\]\{{(.*?)\}}", css, re.S)
+        assert block, f"{theme} 变量块缺失"
+        assert "--accent-grad:" in block.group(1), f"{theme} 缺 --accent-grad"
+
+
+def test_dark_family_inputs_have_visible_border():
+    """深色家族输入框必须有可见描边（无边框时与卡片融成低对比团块）。"""
+    css = (ROOT / "app.css").read_text(encoding="utf-8")
+    for theme in ("dark", "neon", "terminal"):
+        assert (f"html[data-theme={theme}] input" in css
+                and "border-color:rgba(255,255,255,.17)" in css), \
+            f"{theme} 输入框描边缺失"
+
+
+def test_pattern_system_exists_and_off_by_default():
+    """纹理系统：dots/grid/lines 三种，默认必须 display:none（不选不显示）。"""
+    css = (ROOT / "app.css").read_text(encoding="utf-8")
+    for pat in ("dots", "grid", "lines"):
+        assert f"html[data-pattern={pat}] body::before" in css, f"纹理 {pat} 缺失"
+    assert "body::before{content:\"\";position:fixed;inset:0;pointer-events:none;z-index:0;display:none}" in css
+
+
+def test_accent_override_presets_exist():
+    """调色板换色：7 个强调色预设必须同时覆盖 --accent 与 --accent-grad。"""
+    css = (ROOT / "app.css").read_text(encoding="utf-8")
+    for acc in ("violet", "pink", "red", "green", "orange", "cyan"):
+        block = re.search(rf"html\[data-accent={acc}\]\{{(.*?)\}}", css, re.S)
+        assert block, f"强调色预设 {acc} 缺失"
+        assert "--accent:" in block.group(1) and "--accent-grad:" in block.group(1)
+
+
+def test_both_panels_have_look_and_row_controls():
+    """外观三件套（主题/强调色/纹理）与账号行降噪控件必须双面板同步。"""
+    pro = (ROOT / "index.html").read_text(encoding="utf-8")
+    lite = (ROOT / "lite_panel.html").read_text(encoding="utf-8")
+    for marker in ("accentChips", "patternChips", "applyAccent", "applyPattern",
+                   "wapi_accent", "wapi_pattern", "toggleAccMenu",
+                   "class=\"switch\"", "row-menu"):
+        assert marker in pro, f"pro 面板缺: {marker}"
+        assert marker in lite, f"lite 面板缺: {marker}"

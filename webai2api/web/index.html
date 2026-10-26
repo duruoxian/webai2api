@@ -14,6 +14,12 @@
     var KNOWN = ['light','dark','paper','sakura','neon','terminal','mono-light','mono-dark'];
     if (KNOWN.indexOf(t) < 0) t = 'light';
     document.documentElement.setAttribute('data-theme', t);
+    var a = localStorage.getItem('wapi_accent');
+    if (['blue','violet','pink','red','green','orange','cyan'].indexOf(a) >= 0)
+      document.documentElement.setAttribute('data-accent', a);
+    var p = localStorage.getItem('wapi_pattern');
+    if (['lines','grid','dots'].indexOf(p) >= 0)
+      document.documentElement.setAttribute('data-pattern', p);
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
@@ -488,8 +494,13 @@
         <button class="btn" onclick="saveGeneralSettings()">保存</button>
 
         <div class="set-group" style="margin-top:18px">
-          <div class="set-group-title">外观</div>
+          <div class="set-group-title">主题</div>
           <div class="theme-row" id="themeChips"></div>
+          <div class="set-group-title" style="margin-top:16px">强调色</div>
+          <div class="accent-row" id="accentChips" style="margin-top:8px"></div>
+          <div class="hint" style="display:block;margin-top:8px">默认 = 跟随主题；选择后所有主题统一使用该强调色</div>
+          <div class="set-group-title" style="margin-top:16px">背景纹理</div>
+          <div class="theme-row" id="patternChips" style="margin-top:8px"></div>
         </div>
 
         <div class="set-group" style="margin-top:18px">
@@ -1335,14 +1346,18 @@ function renderAccounts(s){
     else if(lg.status==='success') loginBadge='<span class="tag on">登录成功</span>';
     else if(lg.status==='error') loginBadge='<span class="tag err">'+esc(lg.message||'失败')+'</span>';
     tb.innerHTML+=`<tr><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
-      <td class="muted mono">${cred} ${loginBadge} ${healthBadge} ${cdBadge} ${egressTag(a.egress)}</td>
-      <td><span class="tag ${a.enabled?'on':'off'}">${a.enabled?'启用':'停用'}</span></td>
+      <td class="muted mono">${cred} ${loginBadge} ${healthBadge} ${egressTag(a.egress)}</td>
+      <td><label class="switch" title="${a.enabled?'点击停用':'点击启用'}"><input type="checkbox" ${a.enabled?'checked':''} onchange="toggleAcc('${a.id}',${a.enabled?0:1})"><span class="knob"></span></label>${cdBadge}</td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn sm" onclick="browserLogin('${a.id}')">浏览器登录</button>
-        <button class="btn gray sm" onclick="checkAcc('${a.id}')">检查</button>
-        <button class="btn gray sm" onclick="toggleAcc('${a.id}',${a.enabled?0:1})">${a.enabled?'停用':'启用'}</button>
-        <button class="btn gray sm" onclick='editAcc(${JSON.stringify(a).replace(/'/g,"&#39;")})'>编辑</button>
-        <button class="btn danger sm" onclick="delAcc('${a.id}')">删除</button></td></tr>`;});
+        <span class="row-menu-wrap">
+          <button class="btn gray sm" onclick="toggleAccMenu(this,event)">⋯</button>
+          <div class="row-menu">
+            <button onclick="checkAcc('${a.id}')">检查凭证</button>
+            <button onclick='editAcc(${JSON.stringify(a).replace(/'/g,"&#39;")})'>编辑账号</button>
+            <button class="danger" onclick="delAcc('${a.id}')">删除账号</button>
+          </div>
+        </span></td></tr>`;});
   if(!s.accounts.length)tb.innerHTML=empty('还没有账号，点右上角添加');
 }
 async function browserLogin(id){
@@ -2124,6 +2139,64 @@ function _wapi(){ try{ return window.pywebview && window.pywebview.api; }catch(e
 function winMinimize(){ const a=_wapi(); if(a&&a.minimize) a.minimize(); }
 function winMaximize(){ const a=_wapi(); if(a&&a.toggle_max) a.toggle_max(); }
 document.addEventListener('DOMContentLoaded',renderThemeChips);
+
+/* ── 强调色（调色板换色）与背景纹理 ── */
+const ACCENTS=[
+  {id:"",name:"默认（跟随主题）",sw:""},
+  {id:"blue",name:"天蓝",sw:"#0a7cff"},
+  {id:"violet",name:"星紫",sw:"#7c68ff"},
+  {id:"pink",name:"樱粉",sw:"#f062a4"},
+  {id:"red",name:"绛红",sw:"#ff5d5d"},
+  {id:"green",name:"松绿",sw:"#2fce7e"},
+  {id:"orange",name:"暖橙",sw:"#ff9f43"},
+  {id:"cyan",name:"青碧",sw:"#22c8e6"},
+];
+const PATTERNS=[
+  {id:"",name:"无纹理"},
+  {id:"lines",name:"线条"},
+  {id:"grid",name:"方格"},
+  {id:"dots",name:"圆点"},
+];
+function currentAccent(){try{return localStorage.getItem('wapi_accent')||''}catch(e){return ''}}
+function applyAccent(id){
+  if(id)document.documentElement.setAttribute('data-accent',id);
+  else document.documentElement.removeAttribute('data-accent');
+  try{localStorage.setItem('wapi_accent',id)}catch(e){}
+  renderAccentChips();
+}
+function renderAccentChips(){
+  const host=document.getElementById('accentChips');
+  if(!host) return;
+  const cur=currentAccent();
+  host.innerHTML=ACCENTS.map(x=>
+    `<button class="accent-dot${x.id===cur?' on':''}${x.id?'':' def'}" onclick="applyAccent('${x.id}')" title="${x.name}"></button>`).join('');
+}
+function currentPattern(){try{return localStorage.getItem('wapi_pattern')||''}catch(e){return ''}}
+function applyPattern(id){
+  if(id)document.documentElement.setAttribute('data-pattern',id);
+  else document.documentElement.removeAttribute('data-pattern');
+  try{localStorage.setItem('wapi_pattern',id)}catch(e){}
+  renderPatternChips();
+}
+function renderPatternChips(){
+  const host=document.getElementById('patternChips');
+  if(!host) return;
+  const cur=currentPattern();
+  host.innerHTML=PATTERNS.map(x=>
+    `<button class="theme-chip${x.id===cur?' on':''}" onclick="applyPattern('${x.id}')">${x.name}</button>`).join('');
+}
+document.addEventListener('DOMContentLoaded',renderAccentChips);
+document.addEventListener('DOMContentLoaded',renderPatternChips);
+function toggleAccMenu(btn,ev){
+  ev.stopPropagation();
+  const menu=btn.parentElement.querySelector('.row-menu');
+  const wasOpen=menu.classList.contains('open');
+  document.querySelectorAll('.row-menu.open').forEach(m=>m.classList.remove('open'));
+  if(!wasOpen)menu.classList.add('open');
+}
+document.addEventListener('click',()=>{
+  document.querySelectorAll('.row-menu.open').forEach(m=>m.classList.remove('open'));
+});
 function winClose(){ const a=_wapi(); if(a&&a.close) a.close(); else window.close(); }
 function copyText(t){navigator.clipboard.writeText(t).then(()=>toast('已复制'));}
 

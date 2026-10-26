@@ -33,6 +33,9 @@
   --heat3:rgba(120,128,140,.68);
   --heat4:#5b6068;
   --radius:22px;
+  --accent-grad:linear-gradient(180deg,#3aa0ff,#0a7cff 60%,#0071e3);
+  --accent-glow:rgba(10,124,255,.55);
+  --pat-ink:rgba(70,90,130,.16);
   --shadow:0 1px 1px rgba(16,24,40,.04),0 16px 40px -18px rgba(16,24,40,.28),inset 0 1px 0 rgba(255,255,255,.85);
   --shadow-lg:0 2px 6px rgba(16,24,40,.06),0 30px 70px -14px rgba(16,24,40,.30),inset 0 1px 0 rgba(255,255,255,.72);
   --glass-blur:34px;
@@ -280,14 +283,14 @@ td{letter-spacing:-.01em}
 
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:7px;
-  background:linear-gradient(180deg,#3aa0ff,#0a7cff 60%,#0071e3);
+  background:var(--accent-grad);
   color:#fff;font-size:14px;font-weight:500;
   padding:9px 18px;border-radius:11px;letter-spacing:-.01em;
-  box-shadow:0 1px 2px rgba(0,90,200,.30),0 6px 16px -8px rgba(10,124,255,.55),inset 0 1px 0 rgba(255,255,255,.32);
+  box-shadow:0 1px 2px rgba(0,90,200,.30),0 6px 16px -8px var(--accent-glow),inset 0 1px 0 rgba(255,255,255,.32);
   transition:all .18s cubic-bezier(.4,0,.2,1);
 }
 .btn:hover{filter:brightness(1.05);transform:translateY(-1px);
-  box-shadow:0 2px 4px rgba(0,90,200,.28),0 12px 24px -10px rgba(10,124,255,.6),inset 0 1px 0 rgba(255,255,255,.38)}
+  box-shadow:0 2px 4px rgba(0,90,200,.28),0 12px 24px -10px var(--accent-glow),inset 0 1px 0 rgba(255,255,255,.38)}
 .btn:active{transform:translateY(0);filter:brightness(.97)}
 .btn .ic{width:15px;height:15px}
 .btn.gray{background:var(--surface-flat);color:var(--text);
@@ -806,6 +809,8 @@ html[data-theme=paper]{
   --accent:#b23a2f;
   --accent-hover:#992f26;
   --accent-soft:rgba(178,58,47,.12);
+  --accent-grad:linear-gradient(180deg,#c4483c,#b23a2f 55%,#98302a);
+  --accent-glow:rgba(178,58,47,.42);
   --green:#5a7d4f;
   --red:#b23a2f;
   --hairline:rgba(80,70,55,.14);
@@ -851,6 +856,8 @@ html[data-theme=sakura]{
   --accent:#c9568b;
   --accent-hover:#ad4578;
   --accent-soft:rgba(201,86,139,.13);
+  --accent-grad:linear-gradient(180deg,#e07aa8,#c9568b 55%,#ad4578);
+  --accent-glow:rgba(201,86,139,.42);
   --green:#4fa07a;
   --red:#d24a5e;
   --hairline:rgba(120,80,100,.12);
@@ -894,8 +901,10 @@ html[data-theme=neon]{
   --text2:#9aa3c7;
   --text3:#6b74a0;
   --accent:#00e5ff;
-  --accent-hover:#4dedff;
+  --accent-hover:#4deaff;
   --accent-soft:rgba(0,229,255,.16);
+  --accent-grad:linear-gradient(180deg,#4deaff,#00e5ff 55%,#00b8d4);
+  --accent-glow:rgba(0,229,255,.45);
   --green:#3dffb0;
   --red:#ff4d8d;
   --hairline:rgba(140,160,255,.14);
@@ -941,6 +950,8 @@ html[data-theme=terminal]{
   --accent:#2fe66b;
   --accent-hover:#5cf591;
   --accent-soft:rgba(47,230,107,.15);
+  --accent-grad:linear-gradient(180deg,#5cf591,#2fe66b 55%,#1fc357);
+  --accent-glow:rgba(47,230,107,.42);
   --green:#2fe66b;
   --red:#ff5f56;
   --hairline:rgba(47,230,107,.16);
@@ -1115,3 +1126,84 @@ html[data-theme=mono-dark] .btn.danger{
   background:rgba(255,138,128,.1);color:#ff8a80;
   border:1px solid rgba(255,138,128,.3);box-shadow:none;
 }
+
+/* ── 主题一致性补齐（0.1.34）────────────────────────── */
+/* 深色家族输入框：1px 描边 + 去掉亮色主题的 inset 高光 */
+html[data-theme=dark] input,html[data-theme=dark] textarea,html[data-theme=dark] select,
+html[data-theme=neon] input,html[data-theme=neon] textarea,html[data-theme=neon] select,
+html[data-theme=terminal] input,html[data-theme=terminal] textarea,html[data-theme=terminal] select,
+html[data-theme=mono-dark] input,html[data-theme=mono-dark] textarea,html[data-theme=mono-dark] select{
+  border-color:rgba(255,255,255,.17);box-shadow:none}
+html[data-theme=dark] input:focus,html[data-theme=dark] textarea:focus,html[data-theme=dark] select:focus,
+html[data-theme=neon] input:focus,html[data-theme=neon] textarea:focus,html[data-theme=neon] select:focus,
+html[data-theme=terminal] input:focus,html[data-theme=terminal] textarea:focus,html[data-theme=terminal] select:focus,
+html[data-theme=mono-dark] input:focus,html[data-theme=mono-dark] textarea:focus,html[data-theme=mono-dark] select:focus{
+  border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+
+/* 纸墨书卷：衬线标题（正文仍用无衬线，保证可读性） */
+html[data-theme=paper] .card-head h2,html[data-theme=paper] .brand,
+html[data-theme=paper] .stat .num,html[data-theme=paper] h1{
+  font-family:"Noto Serif SC","Source Han Serif SC","STZhongsong","SimSun",serif;
+  letter-spacing:.02em}
+
+/* ── 背景纹理（与任意主题组合）──────────────────────── */
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;display:none}
+html[data-pattern=dots] body::before{display:block;
+  background-image:radial-gradient(var(--pat-ink) 1.1px,transparent 1.1px);
+  background-size:20px 20px}
+html[data-pattern=grid] body::before{display:block;
+  background-image:linear-gradient(var(--pat-ink) 1px,transparent 1px),
+                   linear-gradient(90deg,var(--pat-ink) 1px,transparent 1px);
+  background-size:32px 32px}
+html[data-pattern=lines] body::before{display:block;
+  background-image:repeating-linear-gradient(-45deg,var(--pat-ink) 0 1px,transparent 1px 11px)}
+html[data-theme=dark] body,html[data-theme=neon] body,html[data-theme=terminal] body,
+html[data-theme=mono-dark] body{--pat-ink:rgba(255,255,255,.10)}
+.wrap{position:relative;z-index:1}
+.card{position:relative;z-index:1}
+
+/* ── 强调色覆盖（调色板换色，data-accent）────────────── */
+html[data-accent=violet]{--accent:#8b7cff;--accent-hover:#a79dff;--accent-soft:rgba(139,124,255,.18);
+  --accent-grad:linear-gradient(180deg,#9d8dff,#7c68ff 60%,#6a55f0);--accent-glow:rgba(124,104,255,.5)}
+html[data-accent=pink]{--accent:#f062a4;--accent-hover:#ff7fb8;--accent-soft:rgba(240,98,164,.18);
+  --accent-grad:linear-gradient(180deg,#ff7fb8,#f062a4 60%,#e04a90);--accent-glow:rgba(240,98,164,.5)}
+html[data-accent=red]{--accent:#ff5d5d;--accent-hover:#ff7b7b;--accent-soft:rgba(255,93,93,.18);
+  --accent-grad:linear-gradient(180deg,#ff7b7b,#ff5d5d 60%,#ee4444);--accent-glow:rgba(255,93,93,.5)}
+html[data-accent=green]{--accent:#2fce7e;--accent-hover:#4fe098;--accent-soft:rgba(47,206,126,.18);
+  --accent-grad:linear-gradient(180deg,#4fe098,#2fce7e 60%,#23b56c);--accent-glow:rgba(47,206,126,.5)}
+html[data-accent=orange]{--accent:#ff9f43;--accent-hover:#ffb86b;--accent-soft:rgba(255,159,67,.18);
+  --accent-grad:linear-gradient(180deg,#ffb86b,#ff9f43 60%,#f08a24);--accent-glow:rgba(255,159,67,.5)}
+html[data-accent=cyan]{--accent:#22c8e6;--accent-hover:#4ddaff;--accent-soft:rgba(34,200,230,.18);
+  --accent-grad:linear-gradient(180deg,#4ddaff,#22c8e6 60%,#12afca);--accent-glow:rgba(34,200,230,.5)}
+
+/* ── 强调色 / 纹理选择器 ────────────────────────────── */
+.accent-row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+.accent-dot{width:26px;height:26px;border-radius:50%;cursor:pointer;
+  border:2px solid transparent;transition:transform .15s}
+.accent-dot:hover{transform:scale(1.12)}
+.accent-dot.on{border-color:var(--text);box-shadow:0 0 0 2px var(--bg)}
+.accent-dot.def{background:
+  linear-gradient(135deg,#3aa0ff 0 25%,#8b7cff 0 50%,#f062a4 0 75%,#2fce7e 0)}
+
+/* ── 账号行开关与行内菜单 ──────────────────────────── */
+.switch{position:relative;display:inline-block;width:36px;height:20px;vertical-align:middle}
+.switch input{position:absolute;opacity:0;width:0;height:0}
+.switch .knob{position:absolute;inset:0;background:var(--seg-bg);
+  border-radius:999px;transition:.18s;box-shadow:inset 0 1px 2px rgba(0,0,0,.14);cursor:pointer}
+.switch .knob::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;
+  border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:.18s}
+.switch input:checked+.knob{background:var(--accent)}
+.switch input:checked+.knob::after{transform:translateX(16px)}
+.switch input:focus-visible+.knob{outline:2px solid var(--accent);outline-offset:2px}
+
+.row-menu-wrap{position:relative;display:inline-block}
+.row-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:300;min-width:132px;
+  background:var(--menu-top);border:1px solid var(--hairline);border-radius:12px;
+  box-shadow:var(--shadow-lg);padding:5px;display:none;text-align:left}
+.row-menu.open{display:block}
+.row-menu button{display:block;width:100%;text-align:left;padding:8px 11px;
+  border-radius:8px;font-size:13.5px;color:var(--text);background:none}
+.row-menu button:hover{background:var(--row-hover)}
+.row-menu button.danger{color:#d70015}
+html[data-theme=dark] .row-menu button.danger,html[data-theme=neon] .row-menu button.danger,
+html[data-theme=terminal] .row-menu button.danger,html[data-theme=mono-dark] .row-menu button.danger{color:#ff6961}
