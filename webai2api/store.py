@@ -541,12 +541,6 @@ class Store:
         if account_id:
             conds.append("account_id = ?")
             args.append(account_id)
-        if key_id:
-            conds.append("api_key_id = ?")
-            args.append(key_id)
-        if account_id:
-            conds.append("account_id = ?")
-            args.append(account_id)
         where = (" WHERE " + " AND ".join(conds)) if conds else ""
         args.extend([max(1, int(limit)), max(0, int(offset))])
         with self._conn() as c:
