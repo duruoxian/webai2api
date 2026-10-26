@@ -99,8 +99,8 @@ def test_conv_cache_turn_limit_and_ttl() -> None:
 
     c2 = _client(cfg)
     c2._store_conv("k2", "conv-2")
-    with c2._conv_lock:
-        c2._conv_cache["k2"] = ("conv-2", 0.0, 1)
+    with c2._conv_cache._lock:
+        c2._conv_cache._cache["k2"] = ("conv-2", 0.0, 1, "")
     assert c2._cached_conv("k2") == ""      # 过期 → 新建
 
 
@@ -146,15 +146,15 @@ def test_cleanup_stale_sessions_removes_expired(tmp_path) -> None:
                     session_cache_ttl=10, max_turns_per_session=40)
     c = _client(cfg)
     c._store_conv("fresh", "conv-fresh")
-    with c._conv_lock:
-        c._conv_cache["old"] = ("conv-old", 0.0, 1)
-        c._conv_cache["full"] = ("conv-full", time.time(), 40)
+    with c._conv_cache._lock:
+        c._conv_cache._cache["old"] = ("conv-old", 0.0, 1, "")
+        c._conv_cache._cache["full"] = ("conv-full", time.time(), 40, "")
     # 打桩：不真的发删除请求
     deleted: list[str] = []
     c._access = lambda: "tok"                     # type: ignore[assignment]
     c._delete_conversation = lambda cid, tok: deleted.append(cid)  # type: ignore[assignment]
     c.cleanup_stale_sessions()
-    assert "old" not in c._conv_cache
-    assert "full" not in c._conv_cache
-    assert "fresh" in c._conv_cache
+    assert "old" not in c._conv_cache._cache
+    assert "full" not in c._conv_cache._cache
+    assert "fresh" in c._conv_cache._cache
     assert set(deleted) == {"conv-old", "conv-full"}

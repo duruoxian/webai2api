@@ -94,8 +94,8 @@ def test_conv_cache_persist_and_ttl() -> None:
 
     c2 = _qwen(cfg)
     c2._store_conv("e", "chat-2")
-    with c2._conv_lock:
-        c2._conv_cache["e"] = ("chat-2", 0.0, 1, "")
+    with c2._conv_cache._lock:
+        c2._conv_cache._cache["e"] = ("chat-2", 0.0, 1, "")
     assert c2._cached_conv("e") == ""                        # 过期
 
 
