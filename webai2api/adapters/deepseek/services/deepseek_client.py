@@ -2216,10 +2216,27 @@ class DeepSeekWebClient:
                 status_code=502, message=f"获取 PoW challenge 网络失败: {exc}"
             ) from exc
 
-        biz_data = payload.get("data", {}).get("biz_data", {}).get("challenge", {})
+        # 上游异常时 data 可能是 None（账号受限/未登录/被风控），
+        # 必须容错成清晰的上游错误，不能冒出 AttributeError。
+        data_field = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data_field, dict):
+            msg = payload.get("msg") if isinstance(payload, dict) else ""
+            code = payload.get("code") if isinstance(payload, dict) else ""
+            raise UpstreamAPIError(
+                status_code=403 if code in (40003, 403) else 500,
+                message=f"获取 PoW challenge 失败: 上游返回 data 为空"
+                f"（code={code}, msg={msg or '无'}）",
+                payload=payload if isinstance(payload, dict) else {},
+            )
+
+        biz_data = data_field.get("biz_data", {})
+        if not isinstance(biz_data, dict):
+            biz_data = {}
+        biz_data = biz_data.get("challenge", {})
         if not biz_data:
-            biz_data = payload.get("data", {})
-            if not biz_data.get("challenge"):
+            biz_data = data_field
+            challenge_field = biz_data.get("challenge")
+            if not challenge_field:
                 raise UpstreamAPIError(
                     status_code=500,
                     message=f"PoW challenge 响应格式异常: {json.dumps(payload, ensure_ascii=False)[:300]}",
