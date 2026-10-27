@@ -417,6 +417,92 @@ def create_admin_router(
 
         return await run_in_threadpool(cleanup_browser_residue)
 
+    @router.get("/sessions")
+    async def list_sessions(request: Request, provider: str = "", account_id: str = ""):
+        """列出各账号的上游会话数量与标题（只读，用于预览要清理什么）。"""
+        g = _guard(request)
+        if g:
+            return g
+        prov = (provider or "deepseek").strip().lower()
+        if prov != "deepseek":
+            return {"ok": False, "error": "目前仅支持 deepseek 上游会话清理"}
+
+        pool = registry.pool_for_model("deepseek-chat")
+
+        def _collect():
+            out = []
+            for ac in pool.available():
+                if account_id and ac.account["id"] != account_id:
+                    continue
+                row = {
+                    "account_id": ac.account["id"],
+                    "account": ac.account.get("name", ""),
+                }
+                try:
+                    sessions = ac.client.list_upstream_sessions()
+                    row["total"] = len(sessions)
+                    row["sessions"] = [
+                        {"id": s.get("id"), "title": s.get("title") or ""}
+                        for s in sessions[:200]
+                    ]
+                except Exception as exc:  # noqa: BLE001
+                    row["total"] = -1
+                    row["error"] = str(exc)[:200]
+                out.append(row)
+            return out
+
+        rows = await run_in_threadpool(_collect)
+        return {"ok": True, "accounts": rows}
+
+    @router.post("/sessions/purge")
+    async def purge_sessions(
+        request: Request, provider: str = "", account_id: str = ""
+    ):
+        """删除上游历史会话。
+
+        参数：provider=deepseek、account_id（可空=全部账号）、
+        dry_run（true 只统计）、keep_titles（逗号分隔，命中标题的保留）。
+        """
+        g = _guard(request)
+        if g:
+            return g
+        prov = (provider or "deepseek").strip().lower()
+        if prov != "deepseek":
+            return {"ok": False, "error": "目前仅支持 deepseek 上游会话清理"}
+
+        body = await _json(request) or {}
+        dry_run = bool(body.get("dry_run"))
+        keep = [
+            str(x).strip()
+            for x in str(body.get("keep_titles") or "").split(",")
+            if str(x).strip()
+        ]
+
+        pool = registry.pool_for_model("deepseek-chat")
+
+        def _purge():
+            out = []
+            for ac in pool.available():
+                if account_id and ac.account["id"] != account_id:
+                    continue
+                row = {
+                    "account_id": ac.account["id"],
+                    "account": ac.account.get("name", ""),
+                }
+                try:
+                    row.update(
+                        ac.client.purge_upstream_sessions(
+                            keep_titles=tuple(keep), dry_run=dry_run
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    row["error"] = str(exc)[:200]
+                out.append(row)
+            return out
+
+        rows = await run_in_threadpool(_purge)
+        return {"ok": True, "dry_run": dry_run, "accounts": rows}
+
     # ── Key ──
     @router.post("/keys")
     async def add_key(request: Request):

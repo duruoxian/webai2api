@@ -92,6 +92,11 @@ class AppConfig:
         return f"{self.base_url}/api/v0/chat_session/delete"
 
     @property
+    def session_list_url(self) -> str:
+        """上游会话历史列表（分页，has_more 驱动）。"""
+        return f"{self.base_url}/api/v0/chat_session/fetch_page"
+
+    @property
     def hif_leim_url(self) -> str:
         return "https://hif-leim.deepseek.com/query"
 

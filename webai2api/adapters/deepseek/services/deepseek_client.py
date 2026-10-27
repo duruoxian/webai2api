@@ -2313,6 +2313,130 @@ class DeepSeekWebClient:
         self.logger.info("Session ID 提取成功: %s", session_id)
         return session_id
 
+    # ═══════════════════════════════════════════════════════
+    # 上游会话历史管理（面板「清理会话」用）
+    # ═══════════════════════════════════════════════════════
+
+    def list_upstream_sessions(self, limit_pages: int = 20) -> list[dict]:
+        """拉取该账号在上游的全部会话（分页直到 has_more=False）。
+
+        返回 [{id, title, ...}]。接口与网页版一致：
+        GET /api/v0/chat_session/fetch_page?count=50[&lte_cursor=<last_id>]
+        响应形状：data.biz_data.{chat_sessions, has_more}
+        """
+        out: list[dict] = []
+        cursor = ""
+        for _ in range(max(1, int(limit_pages))):
+            url = f"{self.config.session_list_url}?count=50"
+            if cursor:
+                url += f"&lte_cursor={urllib.parse.quote(cursor)}"
+            request = urllib.request.Request(
+                url, method="GET", headers=self.auth.get_auth_headers()
+            )
+            with self._urlopen(request, timeout=20) as response:
+                self.auth.absorb_response_cookies(response)
+                payload = json.loads(response.read() or b"{}")
+            if payload.get("code") not in (0, None):
+                raise UpstreamAPIError(
+                    status_code=403,
+                    message=(
+                        f"拉取会话列表失败: code={payload.get('code')} "
+                        f"msg={payload.get('msg') or ''}"
+                    ),
+                    payload=payload,
+                )
+            biz = (payload.get("data") or {}).get("biz_data") or {}
+            items = biz.get("chat_sessions") or []
+            out.extend(items)
+            if not biz.get("has_more") or not items:
+                break
+            cursor = str(items[-1].get("id") or "")
+            if not cursor:
+                break
+        return out
+
+    def purge_upstream_sessions(
+        self, *, keep_titles: tuple = (), dry_run: bool = False
+    ) -> dict:
+        """删除该账号上游的全部历史会话。
+
+        keep_titles：标题命中这些关键字的会话保留（便于留下有用的对话）。
+        dry_run=True 只统计不删除。
+
+        删除走已有的 /chat_session/delete（单次可传多个 id）。删除后本地
+        会话缓存里指向这些会话的条目一并失效，避免下次请求复用一个已删
+        会话而报错。
+        """
+        sessions = self.list_upstream_sessions()
+        doomed: list[str] = []
+        kept: list[dict] = []
+        for s in sessions:
+            title = str(s.get("title") or "")
+            if any(k and k in title for k in keep_titles):
+                kept.append({"id": s.get("id"), "title": title})
+                continue
+            sid = s.get("id")
+            if sid:
+                doomed.append(str(sid))
+
+        result = {
+            "total": len(sessions),
+            "matched": len(doomed),
+            "kept": len(kept),
+            "deleted": 0,
+            "failed": 0,
+            "dry_run": bool(dry_run),
+        }
+        if dry_run or not doomed:
+            return result
+
+        # 分批删除，每批 20 个，避免单请求体过大
+        for i in range(0, len(doomed), 20):
+            batch = doomed[i : i + 20]
+            try:
+                body = json.dumps({"chat_session_ids": batch}).encode("utf-8")
+                headers = {
+                    **self.auth.get_auth_headers(),
+                    "Content-Type": "application/json",
+                }
+                request = urllib.request.Request(
+                    self.config.session_delete_url,
+                    data=body,
+                    method="POST",
+                    headers=headers,
+                )
+                with self._urlopen(request, timeout=30) as response:
+                    self.auth.absorb_response_cookies(response)
+                    response.read()
+                result["deleted"] += len(batch)
+                with self._proxy_sessions_lock:
+                    for sid in batch:
+                        self._proxy_sessions.discard(sid)
+            except Exception as exc:  # noqa: BLE001
+                result["failed"] += len(batch)
+                self.logger.warning(
+                    "批量删除上游会话失败（%d 个）: %s", len(batch), exc
+                )
+
+        # 本地会话缓存里引用了已删会话的条目全部失效
+        try:
+            removed = 0
+            for sid in doomed:
+                removed += self.session_cache.delete_by_session_id(sid)
+            if removed:
+                self.logger.info("已失效 %d 条本地会话缓存条目", removed)
+        except Exception:  # noqa: BLE001
+            pass
+
+        self.logger.info(
+            "上游会话清理完成 total=%d deleted=%d failed=%d kept=%d",
+            result["total"],
+            result["deleted"],
+            result["failed"],
+            result["kept"],
+        )
+        return result
+
     def _delete_session(self, session_id: str) -> None:
         if not session_id:
             return
