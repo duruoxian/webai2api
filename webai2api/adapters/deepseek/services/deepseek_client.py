@@ -92,7 +92,9 @@ def _drop_trailing_partial_markup(text: str) -> str:
 
 
 class UpstreamAPIError(RuntimeError):
-    def __init__(self, status_code: int, message: str, payload: dict[str, object] | None = None) -> None:
+    def __init__(
+        self, status_code: int, message: str, payload: dict[str, object] | None = None
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.payload = payload or {}
@@ -141,11 +143,18 @@ class ConcurrentRequestQueue:
         with self._condition:
             ticket = self._next_ticket
             self._next_ticket += 1
-            queue_ahead = max(0, ticket - (self._serving_ticket + self.max_concurrency) + 1)
+            queue_ahead = max(
+                0, ticket - (self._serving_ticket + self.max_concurrency) + 1
+            )
             start = time.monotonic()
 
             if queue_ahead > 0:
-                self.logger.info("请求进入队列 ticket=%s ahead=%s request=%s", ticket, queue_ahead, request_name)
+                self.logger.info(
+                    "请求进入队列 ticket=%s ahead=%s request=%s",
+                    ticket,
+                    queue_ahead,
+                    request_name,
+                )
 
             while ticket >= self._serving_ticket + self.max_concurrency:
                 remaining = self.wait_timeout - (time.monotonic() - start)
@@ -154,15 +163,16 @@ class ConcurrentRequestQueue:
                     # 关键修复：超时必须把 ticket 标记为已跳过，否则
                     # _serving_ticket 永远卡在这里，后续所有请求永久饿死。
                     self._skip(ticket)
-                    raise QueueTimeoutError(
-                        f"队列等待超时，前方仍有 {ahead} 个请求。"
-                    )
+                    raise QueueTimeoutError(f"队列等待超时，前方仍有 {ahead} 个请求。")
                 self._condition.wait(timeout=remaining)
 
             active_slots = ticket - self._serving_ticket + 1
             self.logger.info(
                 "请求获得执行槽位 ticket=%s active=%s/%s request=%s",
-                ticket, active_slots, self.max_concurrency, request_name,
+                ticket,
+                active_slots,
+                self.max_concurrency,
+                request_name,
             )
             return QueueLease(ticket=ticket, release_callback=self._release)
 
@@ -195,6 +205,7 @@ class ConcurrentRequestQueue:
 # Conversation helpers
 # ═══════════════════════════════════════════════════════════
 
+
 def _strip_image_messages(payload: dict) -> dict:
     """返回去掉所有 image_url 的多模态内容后的 payload 副本（纯文本降级用）。"""
     messages = payload.get("messages")
@@ -209,7 +220,11 @@ def _strip_image_messages(payload: dict) -> dict:
         if not isinstance(content, list):
             new_messages.append(m)
             continue
-        kept = [p for p in content if not (isinstance(p, dict) and p.get("type") == "image_url")]
+        kept = [
+            p
+            for p in content
+            if not (isinstance(p, dict) and p.get("type") == "image_url")
+        ]
         if not kept:
             kept = [{"type": "text", "text": "[图片已忽略：上游解析失败]"}]
         new_m = dict(m)
@@ -299,55 +314,85 @@ def _make_content_chunk(
         "created": int(time.time()),
         "model": model,
         "system_fingerprint": "",
-        "choices": [{
-            "index": 0,
-            "delta": delta,
-            "finish_reason": None,
-            "logprobs": None,
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "delta": delta,
+                "finish_reason": None,
+                "logprobs": None,
+            }
+        ],
     }
     return _sse(chunk)
 
 
 def _make_tool_call_chunks(
-    calls: list[ParsedToolCall], model: str, completion_id: str
+    calls: list[ParsedToolCall],
+    model: str,
+    completion_id: str,
+    base_index: int = 0,
 ) -> list[str]:
-    """按 OpenAI 流式规范：id+name 一个 chunk，arguments 一个 chunk。"""
+    """按 OpenAI 流式规范：id+name 一个 chunk，arguments 一个 chunk。
+
+    base_index：本轮之前**已经发出**的工具调用条数。流式检测器按
+    `</invoke>` 逐条切块（一次 action 只含一条调用），若每条 action 都从
+    index=0 起编，客户端会把后续调用的 arguments 全部追加到第 0 个槽位，
+    表现为「N 个调用的 JSON 首尾相接塞进一个调用」。必须全局递增。
+    """
     chunks: list[str] = []
     for i, call in enumerate(calls):
+        idx = base_index + i
         cid = completion_id
         created = int(time.time())
 
         head = {
-            "id": cid, "object": "chat.completion.chunk",
-            "created": created, "model": model, "system_fingerprint": "",
-            "choices": [{
-                "index": 0,
-                "delta": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "index": i, "id": call.id, "type": "function",
-                        "function": {"name": call.name, "arguments": ""},
-                    }],
-                },
-                "finish_reason": None, "logprobs": None,
-            }],
+            "id": cid,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "system_fingerprint": "",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "index": idx,
+                                "id": call.id,
+                                "type": "function",
+                                "function": {"name": call.name, "arguments": ""},
+                            }
+                        ],
+                    },
+                    "finish_reason": None,
+                    "logprobs": None,
+                }
+            ],
         }
         chunks.append(_sse(head))
 
         args = {
-            "id": cid, "object": "chat.completion.chunk",
-            "created": created, "model": model, "system_fingerprint": "",
-            "choices": [{
-                "index": 0,
-                "delta": {
-                    "tool_calls": [{
-                        "index": i,
-                        "function": {"arguments": call.arguments},
-                    }],
-                },
-                "finish_reason": None, "logprobs": None,
-            }],
+            "id": cid,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "system_fingerprint": "",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": idx,
+                                "function": {"arguments": call.arguments},
+                            }
+                        ],
+                    },
+                    "finish_reason": None,
+                    "logprobs": None,
+                }
+            ],
         }
         chunks.append(_sse(args))
     return chunks
@@ -360,12 +405,14 @@ def _make_finish_chunk(finish_reason: str, model: str, completion_id: str) -> st
         "created": int(time.time()),
         "model": model,
         "system_fingerprint": "",
-        "choices": [{
-            "index": 0,
-            "delta": {},
-            "finish_reason": finish_reason,
-            "logprobs": None,
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "delta": {},
+                "finish_reason": finish_reason,
+                "logprobs": None,
+            }
+        ],
     }
     return _sse(chunk)
 
@@ -461,7 +508,11 @@ class DeepSeekWebClient:
         conn = self._http_conn
         egress = str(getattr(self.config, "egress", "system") or "system")
         proxy_url = str(getattr(self.config, "proxy", "") or "")
-        if conn is None or self._http_host != host or self._http_proxy != f"{egress}|{proxy_url}":
+        if (
+            conn is None
+            or self._http_host != host
+            or self._http_proxy != f"{egress}|{proxy_url}"
+        ):
             conn = http.client.HTTPSConnection(host, timeout=max(int(timeout), 30))
             from ....egress import (
                 EGRESS_CUSTOM,
@@ -469,9 +520,11 @@ class DeepSeekWebClient:
                 apply_system_proxy,
                 normalize_egress,
             )
+
             mode = normalize_egress(egress)
             if mode == EGRESS_CUSTOM:
                 from ....proxy import ProxyConfigError, parse_proxy
+
                 try:
                     px = parse_proxy(proxy_url)
                     if px is not None:
@@ -610,7 +663,10 @@ class DeepSeekWebClient:
             batch_v = event.get("v")
             if isinstance(batch_v, list):
                 for item in batch_v:
-                    if isinstance(item, dict) and item.get("p") == "accumulated_token_usage":
+                    if (
+                        isinstance(item, dict)
+                        and item.get("p") == "accumulated_token_usage"
+                    ):
                         try:
                             return int(item.get("v", 0))
                         except (TypeError, ValueError):
@@ -631,8 +687,7 @@ class DeepSeekWebClient:
 
         full_prefix, last_message = _split_messages(messages)
         last_content = (
-            last_message.get("content", "")
-            if isinstance(last_message, dict) else ""
+            last_message.get("content", "") if isinstance(last_message, dict) else ""
         )
         model = str(payload.get("model", self.config.default_model))
         p_hash = prefix_hash(full_prefix, model=model)
@@ -650,7 +705,9 @@ class DeepSeekWebClient:
         if cached and cached.msg_count and msg_count < cached.msg_count:
             self.logger.info(
                 "Cache STALE | conv=%s... | history rewritten (msgs=%d < %d) → fresh",
-                conv[:12], msg_count, cached.msg_count,
+                conv[:12],
+                msg_count,
+                cached.msg_count,
             )
             self._bump("cache_stale")
             self.session_cache.delete(conv)
@@ -662,7 +719,9 @@ class DeepSeekWebClient:
             if cached.turn_count >= max_turns:
                 self.logger.info(
                     "Cache STALE | conv=%s... | max turns reached (%d >= %d) → fresh",
-                    conv[:12], cached.turn_count, max_turns,
+                    conv[:12],
+                    cached.turn_count,
+                    max_turns,
                 )
                 self.session_cache.delete(conv)
                 self._bump("cache_stale")
@@ -671,14 +730,16 @@ class DeepSeekWebClient:
         if cached:
             ds_payload = convert_openai_to_deepseek_incremental(payload, self.config)
             ds_payload["chat_session_id"] = cached.session_id
-            if ref_file_ids:                        # ← 注入
+            if ref_file_ids:  # ← 注入
                 ds_payload["ref_file_ids"] = ref_file_ids
 
             self.logger.info(
                 "Cache HIT  | conv=%s... | session=%s... | turn=%d | "
                 "prompt_len=%d | files=%d",
-                conv[:12], cached.session_id[:12],
-                cached.turn_count + 1, len(ds_payload.get("prompt", "")),
+                conv[:12],
+                cached.session_id[:12],
+                cached.turn_count + 1,
+                len(ds_payload.get("prompt", "")),
                 len(ref_file_ids),
             )
             self._bump("cache_hit")
@@ -696,7 +757,7 @@ class DeepSeekWebClient:
             }
 
         ds_payload = convert_openai_to_deepseek(payload, self.config)
-        if ref_file_ids:                            # ← 注入
+        if ref_file_ids:  # ← 注入
             ds_payload["ref_file_ids"] = ref_file_ids
 
         self.logger.info(
@@ -742,9 +803,14 @@ class DeepSeekWebClient:
         if isinstance(last_msg, dict):
             new_prefix.append(dict(last_msg))
         else:
-            new_prefix.append({"role": "user", "content": resolved.get("last_content", "")})
+            new_prefix.append(
+                {"role": "user", "content": resolved.get("last_content", "")}
+            )
 
-        assistant_entry: dict = {"role": "assistant", "content": assistant_content or ""}
+        assistant_entry: dict = {
+            "role": "assistant",
+            "content": assistant_content or "",
+        }
         if tool_calls:
             assistant_entry["tool_calls"] = [
                 {
@@ -775,8 +841,11 @@ class DeepSeekWebClient:
 
         self.logger.info(
             "Cached     | %s → conv=%s... | history=%s... | session=%s... | turn=%d | tools=%d | msg_id=%s",
-            resolved["mode"], str(resolved.get("cache_key", ""))[:12], new_hash[:12],
-            session_id[:12], next_turn,
+            resolved["mode"],
+            str(resolved.get("cache_key", ""))[:12],
+            new_hash[:12],
+            session_id[:12],
+            next_turn,
             len(tool_calls) if tool_calls else 0,
             (request_message_id or "N/A")[:12] if request_message_id else "N/A",
         )
@@ -802,7 +871,8 @@ class DeepSeekWebClient:
             if removed:
                 self.logger.info(
                     "Cache purge | session=%s... | removed=%d entries",
-                    session_id[:12], removed,
+                    session_id[:12],
+                    removed,
                 )
         self._invalidate_cache_for_resolved(resolved)
 
@@ -827,7 +897,9 @@ class DeepSeekWebClient:
         if stale_list:
             self.logger.info(
                 "Cleanup    | %d stale session(s) deleted | %d tracked | %d active",
-                len(stale_list), len(self._proxy_sessions), len(active),
+                len(stale_list),
+                len(self._proxy_sessions),
+                len(active),
             )
 
     def chat_completion(self, payload: dict[str, object]) -> dict[str, object]:
@@ -892,7 +964,10 @@ class DeepSeekWebClient:
                                 accumulated_tokens = usage
 
                             openai_chunk = convert_deepseek_to_openai_chunk(
-                                event, resolved["model"], state, completion_id,
+                                event,
+                                resolved["model"],
+                                state,
+                                completion_id,
                             )
                             if openai_chunk:
                                 choices = openai_chunk.get("choices", [])
@@ -905,21 +980,28 @@ class DeepSeekWebClient:
                                     if r:
                                         full_reasoning += r
 
-                        if saw_upstream_finish or _cont_rounds >= MAX_AUTO_CONTINUATIONS:
+                        if (
+                            saw_upstream_finish
+                            or _cont_rounds >= MAX_AUTO_CONTINUATIONS
+                        ):
                             break
-                        if not (last_response_message_id
-                                and str(last_response_message_id).isdigit()
-                                and session_id):
+                        if not (
+                            last_response_message_id
+                            and str(last_response_message_id).isdigit()
+                            and session_id
+                        ):
                             break
                         # 工具标记被截断：截掉残块，续写轮会重发完整调用块
                         trimmed = _drop_trailing_partial_markup(full_text)
                         if trimmed != full_text:
                             self.logger.warning(
-                                "上游断流且工具标记被截断，丢弃残块（续写轮会重发完整调用）")
+                                "上游断流且工具标记被截断，丢弃残块（续写轮会重发完整调用）"
+                            )
                             full_text = trimmed
                         self.logger.warning(
                             "上游流提前中断（未收到 finish 帧），自动续写 %d/%d",
-                            _cont_rounds, MAX_AUTO_CONTINUATIONS,
+                            _cont_rounds,
+                            MAX_AUTO_CONTINUATIONS,
                         )
                         self._bump("auto_continued")
                         _cont_rounds += 1
@@ -929,7 +1011,8 @@ class DeepSeekWebClient:
                             except Exception:
                                 pass
                             cont_resolved = self._continuation_resolved(
-                                resolved, session_id, last_response_message_id)
+                                resolved, session_id, last_response_message_id
+                            )
                             response, session_id = self._open_chat_stream(cont_resolved)
                         except Exception as exc:  # noqa: BLE001
                             # 续写失败按截断收场
@@ -948,8 +1031,11 @@ class DeepSeekWebClient:
                             ", ".join(c.name for c in parsed.calls),
                         )
                         self._store_after_response(
-                            resolved, session_id, parsed.clean_text,
-                            last_response_message_id, tool_calls=parsed.calls,
+                            resolved,
+                            session_id,
+                            parsed.clean_text,
+                            last_response_message_id,
+                            tool_calls=parsed.calls,
                         )
                         if (
                             self.config.delete_conversation
@@ -958,7 +1044,10 @@ class DeepSeekWebClient:
                         ):
                             self._delete_session(session_id)
                         return self._build_tool_call_result(
-                            payload, resolved, parsed.calls, accumulated_tokens,
+                            payload,
+                            resolved,
+                            parsed.calls,
+                            accumulated_tokens,
                             completion_id,
                         )
 
@@ -973,7 +1062,8 @@ class DeepSeekWebClient:
                     if not saw_upstream_finish:
                         self.logger.warning(
                             "上游流提前中断（未收到 finish 帧）text=%d reasoning=%d，按截断返回 finish=length",
-                            len(full_text), len(full_reasoning),
+                            len(full_text),
+                            len(full_reasoning),
                         )
 
                     # JSON 模式校验（截断时跳过：半截 JSON 必然校验失败，
@@ -983,13 +1073,23 @@ class DeepSeekWebClient:
                     if saw_upstream_finish:
                         self._validate_response_format(payload, full_text)
 
-                    self._store_after_response(resolved, session_id, full_text, last_response_message_id)
+                    self._store_after_response(
+                        resolved, session_id, full_text, last_response_message_id
+                    )
 
-                    if self.config.delete_conversation and resolved["mode"] == "fresh" and session_id:
+                    if (
+                        self.config.delete_conversation
+                        and resolved["mode"] == "fresh"
+                        and session_id
+                    ):
                         self._delete_session(session_id)
 
                     return self._build_non_stream_result(
-                        payload, resolved, full_text, full_reasoning, accumulated_tokens,
+                        payload,
+                        resolved,
+                        full_text,
+                        full_reasoning,
+                        accumulated_tokens,
                         completion_id,
                         finish_reason="length" if not saw_upstream_finish else "stop",
                     )
@@ -998,7 +1098,8 @@ class DeepSeekWebClient:
                     context_retries += 1
                     self.logger.warning(
                         "上下文超限 (attempt=%d/%d)，从缓存移除并删除会话，使用完整历史重开新对话",
-                        context_retries, MAX_CONTEXT_LENGTH_RETRIES,
+                        context_retries,
+                        MAX_CONTEXT_LENGTH_RETRIES,
                     )
                     self._invalidate_and_delete_session(resolved)
                     if context_retries >= MAX_CONTEXT_LENGTH_RETRIES:
@@ -1010,7 +1111,9 @@ class DeepSeekWebClient:
                     file_retries += 1
                     self.logger.warning(
                         "上游文件解析失败 (attempt=%d/%d): %s",
-                        file_retries, MAX_FILE_PARSE_RETRIES, exc,
+                        file_retries,
+                        MAX_FILE_PARSE_RETRIES,
+                        exc,
                     )
                     self._invalidate_and_delete_session(resolved)
                     if file_retries >= MAX_FILE_PARSE_RETRIES:
@@ -1029,7 +1132,8 @@ class DeepSeekWebClient:
                     if rate_limit_retries >= MAX_RATE_LIMIT_RETRIES:
                         self.logger.error(
                             "上游限流重试次数耗尽 (%d/%d)",
-                            rate_limit_retries, MAX_RATE_LIMIT_RETRIES,
+                            rate_limit_retries,
+                            MAX_RATE_LIMIT_RETRIES,
                         )
                         raise UpstreamAPIError(
                             status_code=429,
@@ -1038,8 +1142,10 @@ class DeepSeekWebClient:
 
                     self.logger.warning(
                         "上游限流 (%d/%d)，%d 秒后重试（已释放队列槽位）... 原因: %s",
-                        rate_limit_retries, MAX_RATE_LIMIT_RETRIES,
-                        RATE_LIMIT_COOLDOWN_SECONDS, exc,
+                        rate_limit_retries,
+                        MAX_RATE_LIMIT_RETRIES,
+                        RATE_LIMIT_COOLDOWN_SECONDS,
+                        exc,
                     )
                     # 先释放槽位再 sleep：60 秒的空等不应占着并发槽位，
                     # 睡醒后重新排队拿槽位。
@@ -1060,7 +1166,8 @@ class DeepSeekWebClient:
             lease.release()
 
     def _upload_images_from_messages(
-        self, messages: list[dict],
+        self,
+        messages: list[dict],
     ) -> list[str]:
         """把消息里所有 image_url 上传成 DeepSeek file_id。"""
         if not self.file_upload_enabled:
@@ -1075,7 +1182,8 @@ class DeepSeekWebClient:
         for i, img in enumerate(images):
             name_hint = f"image_{i}.png"
             file_id = self.file_uploader.upload_from_openai_image(
-                img["url"], name_hint=name_hint,
+                img["url"],
+                name_hint=name_hint,
             )
             if file_id:
                 file_ids.append(file_id)
@@ -1111,9 +1219,13 @@ class DeepSeekWebClient:
                     full_text = ""
                     full_reasoning = ""
                     try:
-                        response, current_session_id = self._open_chat_stream(current_resolved)
+                        response, current_session_id = self._open_chat_stream(
+                            current_resolved
+                        )
 
-                        stripper = CitationStripper() if self.config.strip_citations else None
+                        stripper = (
+                            CitationStripper() if self.config.strip_citations else None
+                        )
                         last_response_message_id: str | None = None
                         accumulated_tokens = 0
 
@@ -1155,7 +1267,10 @@ class DeepSeekWebClient:
                             """
                             nonlocal full_text, full_reasoning
                             nonlocal last_response_message_id, accumulated_tokens
-                            nonlocal tool_calls_emitted, emitted_calls, upstream_finish_reason
+                            nonlocal \
+                                tool_calls_emitted, \
+                                emitted_calls, \
+                                upstream_finish_reason
                             nonlocal content_emitted, anything_yielded
                             st = StreamState()
                             for event in self._iter_sse_events(resp):
@@ -1174,7 +1289,9 @@ class DeepSeekWebClient:
                                     accumulated_tokens = usage
 
                                 openai_chunk = convert_deepseek_to_openai_chunk(
-                                    event, current_resolved["model"], st,
+                                    event,
+                                    current_resolved["model"],
+                                    st,
                                     completion_id,
                                 )
 
@@ -1211,16 +1328,28 @@ class DeepSeekWebClient:
                                     full_text += c
                                     for action in detector.feed(c):
                                         if action.kind == "text" and action.text:
-                                            out = stripper.feed(action.text) if stripper else action.text
+                                            out = (
+                                                stripper.feed(action.text)
+                                                if stripper
+                                                else action.text
+                                            )
                                             if out:
-                                                yield _make_content_chunk(out, current_resolved["model"], completion_id)
+                                                yield _make_content_chunk(
+                                                    out,
+                                                    current_resolved["model"],
+                                                    completion_id,
+                                                )
                                                 content_emitted = True
                                                 anything_yielded = True
-                                        elif action.kind == "tool_calls" and action.tool_calls:
+                                        elif (
+                                            action.kind == "tool_calls"
+                                            and action.tool_calls
+                                        ):
                                             for ch in _make_tool_call_chunks(
                                                 action.tool_calls,
                                                 current_resolved["model"],
                                                 completion_id,
+                                                base_index=len(emitted_calls),
                                             ):
                                                 yield ch
                                             tool_calls_emitted = True
@@ -1262,21 +1391,26 @@ class DeepSeekWebClient:
                             self._bump("auto_continued")
                             if detector.pending_markup:
                                 self.logger.warning(
-                                    "上游断流且工具标记被截断，丢弃残块（续写轮会重发完整调用）")
+                                    "上游断流且工具标记被截断，丢弃残块（续写轮会重发完整调用）"
+                                )
                                 detector = StreamingToolDetector(
                                     payload.get("tools"),
                                     require_marker=not has_tools,
                                 )
                             self.logger.warning(
                                 "上游流提前中断（未收到 finish 帧），自动续写 %d/%d",
-                                _cont_rounds, MAX_AUTO_CONTINUATIONS,
+                                _cont_rounds,
+                                MAX_AUTO_CONTINUATIONS,
                             )
                             try:
                                 cont_resolved = self._continuation_resolved(
-                                    current_resolved, current_session_id,
+                                    current_resolved,
+                                    current_session_id,
                                     last_response_message_id,
                                 )
-                                cont_resp, cont_session = self._open_chat_stream(cont_resolved)
+                                cont_resp, cont_session = self._open_chat_stream(
+                                    cont_resolved
+                                )
                                 if cont_session:
                                     current_session_id = cont_session
                                 try:
@@ -1292,7 +1426,9 @@ class DeepSeekWebClient:
                                         pass
                             except Exception as exc:  # noqa: BLE001
                                 # 续写失败按截断收场，绝不能把已输出的流变成报错
-                                self.logger.warning("自动续写失败（按截断返回）: %s", exc)
+                                self.logger.warning(
+                                    "自动续写失败（按截断返回）: %s", exc
+                                )
                                 break
                             if saw or upstream_finish_reason is not None:
                                 saw_upstream_finish = True
@@ -1301,9 +1437,15 @@ class DeepSeekWebClient:
                         # 1. 检测器残余
                         for action in detector.finalize():
                             if action.kind == "text" and action.text:
-                                out = stripper.feed(action.text) if stripper else action.text
+                                out = (
+                                    stripper.feed(action.text)
+                                    if stripper
+                                    else action.text
+                                )
                                 if out:
-                                    yield _make_content_chunk(out, current_resolved["model"], completion_id)
+                                    yield _make_content_chunk(
+                                        out, current_resolved["model"], completion_id
+                                    )
                                     content_emitted = True
                                     anything_yielded = True
                             elif action.kind == "tool_calls" and action.tool_calls:
@@ -1311,6 +1453,7 @@ class DeepSeekWebClient:
                                     action.tool_calls,
                                     current_resolved["model"],
                                     completion_id,
+                                    base_index=len(emitted_calls),
                                 ):
                                     yield ch
                                 tool_calls_emitted = True
@@ -1321,7 +1464,9 @@ class DeepSeekWebClient:
                         if stripper is not None:
                             tail = stripper.finalize()
                             if tail:
-                                yield _make_content_chunk(tail, current_resolved["model"], completion_id)
+                                yield _make_content_chunk(
+                                    tail, current_resolved["model"], completion_id
+                                )
                                 content_emitted = True
                                 anything_yielded = True
 
@@ -1329,7 +1474,11 @@ class DeepSeekWebClient:
                         #     正文一个字都没发、思考里有货——上游把答案整个写进
                         #     思考，或思考中途被上游掐流时，把思考顶成正文，
                         #     否则客户端只看得到空消息或「全部藏在思考里」。
-                        if not tool_calls_emitted and not content_emitted and full_reasoning:
+                        if (
+                            not tool_calls_emitted
+                            and not content_emitted
+                            and full_reasoning
+                        ):
                             yield _make_content_chunk(
                                 full_reasoning, current_resolved["model"], completion_id
                             )
@@ -1346,9 +1495,17 @@ class DeepSeekWebClient:
                         # 4. usage chunk（无条件发送：客户端即使没传 include_usage，
                         #    opencode 等也需要它才能统计用量）
                         if True:
-                            prompt_text = current_resolved["ds_payload"].get("prompt", "")
-                            prompt_tokens = max(1, _estimate_tokens(prompt_text)) if prompt_text else 0
-                            completion_tokens = accumulated_tokens or max(1, _estimate_tokens(full_text))
+                            prompt_text = current_resolved["ds_payload"].get(
+                                "prompt", ""
+                            )
+                            prompt_tokens = (
+                                max(1, _estimate_tokens(prompt_text))
+                                if prompt_text
+                                else 0
+                            )
+                            completion_tokens = accumulated_tokens or max(
+                                1, _estimate_tokens(full_text)
+                            )
                             usage_chunk = {
                                 "id": completion_id,
                                 "object": "chat.completion.chunk",
@@ -1375,12 +1532,15 @@ class DeepSeekWebClient:
                         elif not saw_upstream_finish:
                             self.logger.warning(
                                 "上游流提前中断（未收到 finish 帧）text=%d reasoning=%d，按截断返回 finish=length",
-                                len(full_text), len(full_reasoning),
+                                len(full_text),
+                                len(full_reasoning),
                             )
                             final_finish = "length"
                         else:
                             final_finish = upstream_finish_reason or "stop"
-                        yield _make_finish_chunk(final_finish, current_resolved["model"], completion_id)
+                        yield _make_finish_chunk(
+                            final_finish, current_resolved["model"], completion_id
+                        )
 
                         yield "data: [DONE]\n\n"
 
@@ -1412,10 +1572,15 @@ class DeepSeekWebClient:
                         context_retries += 1
                         self.logger.warning(
                             "流式上下文超限 (attempt=%d/%d, yielded=%s)",
-                            context_retries, MAX_CONTEXT_LENGTH_RETRIES, anything_yielded,
+                            context_retries,
+                            MAX_CONTEXT_LENGTH_RETRIES,
+                            anything_yielded,
                         )
                         self._invalidate_and_delete_session(current_resolved)
-                        if anything_yielded or context_retries >= MAX_CONTEXT_LENGTH_RETRIES:
+                        if (
+                            anything_yielded
+                            or context_retries >= MAX_CONTEXT_LENGTH_RETRIES
+                        ):
                             raise
                         current_resolved = self._resolve_conversation(payload)
                         current_session_id = current_resolved.get("session_id") or ""
@@ -1424,7 +1589,10 @@ class DeepSeekWebClient:
                         file_retries += 1
                         self.logger.warning(
                             "上游文件解析失败 (attempt=%d/%d, yielded=%s): %s",
-                            file_retries, MAX_FILE_PARSE_RETRIES, anything_yielded, exc,
+                            file_retries,
+                            MAX_FILE_PARSE_RETRIES,
+                            anything_yielded,
+                            exc,
                         )
                         self._invalidate_and_delete_session(current_resolved)
                         if anything_yielded or file_retries >= MAX_FILE_PARSE_RETRIES:
@@ -1435,7 +1603,8 @@ class DeepSeekWebClient:
                         # 清掉可能已损坏的 file_id 缓存，去掉图片重发（纯文本降级）
                         cleared = self.file_uploader.clear_cache()
                         self.logger.warning(
-                            "已清空 %d 条文件缓存，去掉附件后重试", cleared,
+                            "已清空 %d 条文件缓存，去掉附件后重试",
+                            cleared,
                         )
                         payload = _strip_image_messages(payload)
                         current_resolved = self._resolve_conversation(payload)
@@ -1446,7 +1615,8 @@ class DeepSeekWebClient:
                         if anything_yielded:
                             self.logger.error(
                                 "流式已 yield %d 字节内容，无法重试限流: %s",
-                                len(full_text), exc,
+                                len(full_text),
+                                exc,
                             )
                             raise UpstreamAPIError(
                                 status_code=429,
@@ -1456,7 +1626,8 @@ class DeepSeekWebClient:
                         if rate_limit_retries >= MAX_RATE_LIMIT_RETRIES:
                             self.logger.error(
                                 "上游限流重试次数耗尽 (%d/%d)",
-                                rate_limit_retries, MAX_RATE_LIMIT_RETRIES,
+                                rate_limit_retries,
+                                MAX_RATE_LIMIT_RETRIES,
                             )
                             raise UpstreamAPIError(
                                 status_code=429,
@@ -1465,8 +1636,10 @@ class DeepSeekWebClient:
 
                         self.logger.warning(
                             "上游限流 (%d/%d)，%d 秒后重试（已释放队列槽位）... 原因: %s",
-                            rate_limit_retries, MAX_RATE_LIMIT_RETRIES,
-                            RATE_LIMIT_COOLDOWN_SECONDS, exc,
+                            rate_limit_retries,
+                            MAX_RATE_LIMIT_RETRIES,
+                            RATE_LIMIT_COOLDOWN_SECONDS,
+                            exc,
                         )
                         # 先释放槽位再 sleep：60 秒的空等不应占着并发槽位，
                         # 睡醒后重新排队拿槽位。
@@ -1501,7 +1674,9 @@ class DeepSeekWebClient:
     def risk_stats(self) -> dict:
         with self._stats_lock:
             data = dict(self._stats)
-        cache_size = self.session_cache.size if hasattr(self.session_cache, "size") else 0
+        cache_size = (
+            self.session_cache.size if hasattr(self.session_cache, "size") else 0
+        )
         active = 0
         try:
             active = len(self.session_cache.active_session_ids())
@@ -1520,7 +1695,7 @@ class DeepSeekWebClient:
             "active_sessions": active,
             "upstream_requests": data.get("upstream", 0),
             "rate_limit_hits": data.get("rate_limit", 0),
-            "daily_count": 0,   # 由池层填充
+            "daily_count": 0,  # 由池层填充
             "daily_limit": int(getattr(self.config, "daily_request_limit", 0) or 0),
         }
 
@@ -1558,7 +1733,8 @@ class DeepSeekWebClient:
             if wait > 0:
                 self.logger.info(
                     "AntiRateLimit | min-interval sleep=%.2fs%s",
-                    wait, f" ({context})" if context else "",
+                    wait,
+                    f" ({context})" if context else "",
                 )
                 time.sleep(wait)
 
@@ -1633,7 +1809,10 @@ class DeepSeekWebClient:
                 self.logger.info("Step 1/4: 获取 PoW challenge (session)...")
                 pow_challenge = self._get_pow_challenge()
 
-                self.logger.info("Step 2/4: 求解 PoW (difficulty=%s)...", pow_challenge.get("difficulty"))
+                self.logger.info(
+                    "Step 2/4: 求解 PoW (difficulty=%s)...",
+                    pow_challenge.get("difficulty"),
+                )
                 session_pow_header = self.pow_solver.solve(
                     challenge=pow_challenge["challenge"],
                     salt=pow_challenge["salt"],
@@ -1668,12 +1847,17 @@ class DeepSeekWebClient:
                     self.logger.info("使用 parent_message_id=%d", parent_id)
 
         model = ds_payload.get("model_type", self.config.default_model)
-        self.logger.info("Step 4/4: 发送 completion 请求 model=%s mode=%s...", model, mode)
+        self.logger.info(
+            "Step 4/4: 发送 completion 请求 model=%s mode=%s...", model, mode
+        )
 
         self.logger.info("获取 PoW challenge (completion)...")
         completion_pow_challenge = self._get_pow_challenge()
 
-        self.logger.info("求解 PoW (completion, difficulty=%s)...", completion_pow_challenge.get("difficulty"))
+        self.logger.info(
+            "求解 PoW (completion, difficulty=%s)...",
+            completion_pow_challenge.get("difficulty"),
+        )
         completion_pow_header = self.pow_solver.solve(
             challenge=completion_pow_challenge["challenge"],
             salt=completion_pow_challenge["salt"],
@@ -1682,8 +1866,9 @@ class DeepSeekWebClient:
             expire_at=completion_pow_challenge.get("expire_at", 0),
             signature=completion_pow_challenge.get("signature", ""),
             target_path=completion_pow_challenge.get(
-                "target_path", "/api/v0/chat/completion",
-            ),                                       # ← 新增
+                "target_path",
+                "/api/v0/chat/completion",
+            ),  # ← 新增
         )
         self.logger.info("Completion PoW 求解完成")
 
@@ -1694,8 +1879,15 @@ class DeepSeekWebClient:
             content_type="application/json",
         )
 
-        debug_dump(self.logger, self.config.debug_dump_all, "DeepSeek completion 请求体", body)
-        debug_dump(self.logger, self.config.debug_dump_all, "DeepSeek completion 请求头", headers)
+        debug_dump(
+            self.logger, self.config.debug_dump_all, "DeepSeek completion 请求体", body
+        )
+        debug_dump(
+            self.logger,
+            self.config.debug_dump_all,
+            "DeepSeek completion 请求头",
+            headers,
+        )
 
         try:
             request = urllib.request.Request(
@@ -1705,7 +1897,8 @@ class DeepSeekWebClient:
                 headers=headers,
             )
             response = self._open_with_egress(
-                request, timeout=self.config.request_timeout)
+                request, timeout=self.config.request_timeout
+            )
             self.auth.absorb_response_cookies(response)
         except urllib.error.HTTPError as exc:
             error_payload = self._read_error_payload(exc)
@@ -1713,11 +1906,17 @@ class DeepSeekWebClient:
 
             if mode == "cached":
                 self.session_cache.delete(resolved["cache_key"])
-                self.logger.warning("缓存 session 失效，已从缓存移除: %s", resolved["cache_key"][:12])
+                self.logger.warning(
+                    "缓存 session 失效，已从缓存移除: %s", resolved["cache_key"][:12]
+                )
 
-            raise UpstreamAPIError(status_code=exc.code, message=message, payload=error_payload) from exc
+            raise UpstreamAPIError(
+                status_code=exc.code, message=message, payload=error_payload
+            ) from exc
         except urllib.error.URLError as exc:
-            raise UpstreamAPIError(status_code=502, message=f"网络连接失败: {exc}") from exc
+            raise UpstreamAPIError(
+                status_code=502, message=f"网络连接失败: {exc}"
+            ) from exc
 
         # 非 SSE 响应处理
         content_type = response.headers.get("Content-Type", "").lower()
@@ -1897,9 +2096,11 @@ class DeepSeekWebClient:
     # ═══════════════════════════════════════════════════════
 
     def _get_pow_challenge(self) -> dict[str, object]:
-        body = json.dumps({
-            "target_path": "/api/v0/chat/completion",
-        }).encode("utf-8")
+        body = json.dumps(
+            {
+                "target_path": "/api/v0/chat/completion",
+            }
+        ).encode("utf-8")
 
         headers = {
             **self.auth.get_auth_headers(),
@@ -1924,7 +2125,9 @@ class DeepSeekWebClient:
                 payload=error_payload,
             ) from exc
         except urllib.error.URLError as exc:
-            raise UpstreamAPIError(status_code=502, message=f"获取 PoW challenge 网络失败: {exc}") from exc
+            raise UpstreamAPIError(
+                status_code=502, message=f"获取 PoW challenge 网络失败: {exc}"
+            ) from exc
 
         biz_data = payload.get("data", {}).get("biz_data", {}).get("challenge", {})
         if not biz_data:
@@ -1946,7 +2149,9 @@ class DeepSeekWebClient:
             "target_path": biz_data.get("target_path", "/api/v0/chat/completion"),
         }
 
-        debug_dump(self.logger, self.config.debug_dump_all, "PoW challenge 响应", challenge)
+        debug_dump(
+            self.logger, self.config.debug_dump_all, "PoW challenge 响应", challenge
+        )
         return challenge
 
     def _create_session(self, pow_header: str) -> str:
@@ -1975,7 +2180,9 @@ class DeepSeekWebClient:
                 payload=error_payload,
             ) from exc
         except urllib.error.URLError as exc:
-            raise UpstreamAPIError(status_code=502, message=f"创建 session 网络失败: {exc}") from exc
+            raise UpstreamAPIError(
+                status_code=502, message=f"创建 session 网络失败: {exc}"
+            ) from exc
 
         data = payload.get("data", {}) if isinstance(payload, dict) else {}
         biz_data = data.get("biz_data", {}) if isinstance(data, dict) else {}
@@ -2027,7 +2234,9 @@ class DeepSeekWebClient:
             self.logger.info("已删除 DeepSeek 会话 session_id=%s", session_id)
             self._bump("session_deleted")
         except Exception as exc:
-            self.logger.warning("删除 DeepSeek 会话失败 session_id=%s error=%s", session_id, exc)
+            self.logger.warning(
+                "删除 DeepSeek 会话失败 session_id=%s error=%s", session_id, exc
+            )
 
     def _is_finish_event(self, event: dict) -> bool:
         data = event.get("data")
@@ -2038,14 +2247,22 @@ class DeepSeekWebClient:
                 batch_v = data.get("v")
                 if isinstance(batch_v, list):
                     for item in batch_v:
-                        if isinstance(item, dict) and item.get("p") == "quasi_status" and item.get("v") == "FINISHED":
+                        if (
+                            isinstance(item, dict)
+                            and item.get("p") == "quasi_status"
+                            and item.get("v") == "FINISHED"
+                        ):
                             return True
         if event.get("_event_type") == "close":
             return True
         # 裸 v 快照深处嵌 FINISHED（完整响应快照形态，可能没有 close 帧）——
         # 认不出它会把已完成回答误判为断流并追加续写
-        for v in (event.get("v"), (event.get("data") or {}).get("v")
-                  if isinstance(event.get("data"), dict) else None):
+        for v in (
+            event.get("v"),
+            (event.get("data") or {}).get("v")
+            if isinstance(event.get("data"), dict)
+            else None,
+        ):
             if isinstance(v, dict):
                 resp = v.get("response")
                 if isinstance(resp, dict) and resp.get("status") == "FINISHED":
@@ -2073,7 +2290,12 @@ class DeepSeekWebClient:
                 return None
 
             payload_str = "\n".join(data_lines)
-            debug_dump(self.logger, self.config.debug_dump_all, "DeepSeek 原始 SSE block", block)
+            debug_dump(
+                self.logger,
+                self.config.debug_dump_all,
+                "DeepSeek 原始 SSE block",
+                block,
+            )
 
             if event_type in ("ready", "title", "close", "hint"):
                 try:
@@ -2091,7 +2313,12 @@ class DeepSeekWebClient:
                 parsed = json.loads(payload_str)
                 if event_type:
                     parsed["_event_type"] = event_type
-                debug_dump(self.logger, self.config.debug_dump_all, "DeepSeek 解析后的 SSE payload", parsed)
+                debug_dump(
+                    self.logger,
+                    self.config.debug_dump_all,
+                    "DeepSeek 解析后的 SSE payload",
+                    parsed,
+                )
                 return parsed
             except json.JSONDecodeError:
                 self.logger.debug("忽略无法解析的 SSE 片段: %s", payload_str[:200])
@@ -2104,7 +2331,9 @@ class DeepSeekWebClient:
                 raw_chunk = response.read1(4096)
             except http.client.IncompleteRead as exc:
                 raw_chunk = exc.partial or b""
-                self.logger.warning("上游 SSE 连接提前断开(IncompleteRead) bytes=%s", len(raw_chunk))
+                self.logger.warning(
+                    "上游 SSE 连接提前断开(IncompleteRead) bytes=%s", len(raw_chunk)
+                )
                 if raw_chunk:
                     pending += decoder.decode(raw_chunk, False).replace("\r\n", "\n")
                     while "\n\n" in pending:
@@ -2113,14 +2342,20 @@ class DeepSeekWebClient:
                         if event:
                             yield event
                 break
-            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as exc:
+            except (
+                ConnectionResetError,
+                ConnectionAbortedError,
+                BrokenPipeError,
+            ) as exc:
                 self.logger.warning("上游 SSE 连接被重置(%s)", type(exc).__name__)
                 break
             except (socket.timeout, TimeoutError) as exc:
                 self.logger.warning("上游 SSE 读取超时(%s)", type(exc).__name__)
                 break
             except OSError as exc:
-                self.logger.warning("上游 SSE 网络 IO 异常(%s: %s)", type(exc).__name__, exc)
+                self.logger.warning(
+                    "上游 SSE 网络 IO 异常(%s: %s)", type(exc).__name__, exc
+                )
                 break
 
             if not raw_chunk:
