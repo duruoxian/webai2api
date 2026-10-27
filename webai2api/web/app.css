@@ -1250,7 +1250,7 @@ html[data-theme=dark] .alert-bar .alert-x:hover,html[data-theme=neon] .alert-bar
 .err-chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .err-chip{
   display:inline-flex;align-items:center;gap:7px;padding:4px 10px;border-radius:10px;
-  border:1px solid var(--line,rgba(0,0,0,.08));background:var(--card-bg,transparent);
+  border:1px solid var(--hairline,rgba(0,0,0,.08));background:var(--menu-top,transparent);
   cursor:pointer;font-size:12.5px;color:var(--text2);
   transition:all .2s cubic-bezier(.4,0,.2,1);
 }
@@ -1267,7 +1267,7 @@ html[data-theme=dark] .alert-bar .alert-x:hover,html[data-theme=neon] .alert-bar
 .hint-dot:hover svg,.hint-dot:focus-visible svg{opacity:1}
 .hint-pop{
   display:none;position:absolute;z-index:40;top:calc(100% + 8px);left:0;max-width:640px;
-  background:var(--card-bg,#fff);border:1px solid var(--line,rgba(0,0,0,.08));
+  background:var(--menu-top,#fff);border:1px solid var(--hairline,rgba(0,0,0,.08));
   border-radius:12px;box-shadow:0 14px 36px -14px rgba(16,24,40,.32);
   padding:12px 14px;font-size:12.5px;line-height:1.9;color:var(--text2);text-align:left;
 }
@@ -1313,7 +1313,7 @@ input[type=color]::-webkit-color-swatch{border:1px solid var(--line,rgba(0,0,0,.
 /* ── 第五批：三步引导卡 ── */
 .guide-steps{display:flex;gap:14px;flex-wrap:wrap}
 .guide-step{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-radius:12px;
-  border:1px solid var(--line,rgba(0,0,0,.08));flex:1 1 200px;background:var(--card-bg,transparent)}
+  border:1px solid var(--hairline,rgba(0,0,0,.08));flex:1 1 200px;background:var(--menu-top,transparent)}
 .guide-step .gs-n{flex:0 0 auto;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;
   justify-content:center;font-size:13px;font-weight:600;background:var(--accent-soft);color:var(--accent)}
 .guide-step.done{opacity:.62}
@@ -1323,7 +1323,7 @@ input[type=color]::-webkit-color-swatch{border:1px solid var(--line,rgba(0,0,0,.
 .plat-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .plat-chip{
   display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;
-  border:1px solid var(--line,rgba(0,0,0,.08));background:var(--card-bg,transparent);
+  border:1px solid var(--hairline,rgba(0,0,0,.08));background:var(--menu-top,transparent);
   font-size:12.5px;color:var(--text2);cursor:pointer;transition:all .2s cubic-bezier(.4,0,.2,1);
 }
 .plat-chip:hover{color:var(--text);border-color:var(--accent)}

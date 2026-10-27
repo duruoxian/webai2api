@@ -796,7 +796,10 @@ async function api(path,method='GET',body=null){
   if(body){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body);}
   const r=await fetch('/admin/api'+path,opt);
   if(r.status===401){showLogin();throw new Error('未登录');}
-  return r.json();
+  let j;
+  try{ j=await r.json(); }
+  catch(e){ throw new Error('服务异常（HTTP '+r.status+'）'); }
+  return j;
 }
 function showLogin(){document.body.classList.add('no-scroll');document.getElementById('loginView').style.display='flex';
   document.getElementById('mainView').style.display='none';}
@@ -838,7 +841,7 @@ if(document.fonts&&document.fonts.ready) document.fonts.ready.then(()=>document.
 
 function switchTab(name){
   segSet('tabs',name);
-  document.querySelectorAll('.seg button').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  document.querySelectorAll('.seg button[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active',p.id==='tab-'+name));
   requestAnimationFrame(()=>document.querySelectorAll('.seg').forEach(segSlide));
   if(name==='accounts') loadRisk();
@@ -926,7 +929,7 @@ function animateNum(id, html, num){
   el.dataset.num=String(num);
   animateNumTo(el, html, num, prev);
 }
-function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function fmtTime(ts){if(!ts)return '–';const d=new Date(ts*1000);
   return d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
 
@@ -1049,13 +1052,14 @@ document.addEventListener('mousedown', e=>{
   closeDatePicker();
 });
 
+let RANGE_BEFORE_CUSTOM=null;
 function setRange(r){
-  RANGE=r;
-  segSet('rangeSeg',r);
   document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range===r));
   const box=document.getElementById('customRange');
   box.classList.toggle('show', r==='custom');
   if(r==='custom'){
+    // 打开编辑器期间数据仍按当前范围轮询；点「应用」才切换并写入记忆
+    if(RANGE_BEFORE_CUSTOM===null) RANGE_BEFORE_CUSTOM=RANGE;
     if(!RANGE_START){
       const d=new Date(); d.setDate(d.getDate()-30);
       RANGE_START=ymdLocal(d);
@@ -1064,6 +1068,9 @@ function setRange(r){
     }
     return;
   }
+  RANGE_BEFORE_CUSTOM=null;
+  RANGE=r;
+  segSet('rangeSeg',r);
   RANGE_START=''; RANGE_END='';
   document.getElementById('rangeStartText').textContent='选择日期';
   document.getElementById('rangeEndText').textContent='选择日期';
@@ -1074,8 +1081,9 @@ function setRange(r){
 function cancelCustomRange(){
   closeDatePicker();
   document.getElementById('customRange').classList.remove('show');
-  RANGE='all'; RANGE_START=''; RANGE_END='';
-  segSet('rangeSeg','all');
+  RANGE=RANGE_BEFORE_CUSTOM!==null?RANGE_BEFORE_CUSTOM:'all';
+  RANGE_BEFORE_CUSTOM=null;
+  segSet('rangeSeg',RANGE);
   document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range==='all'));
   refreshData(true);
 }
@@ -1083,6 +1091,7 @@ function applyCustomRange(){
   if(!RANGE_START){ toast('请选择开始日期'); return; }
   if(RANGE_END && RANGE_END<RANGE_START){ toast('结束日期不能早于开始日期'); return; }
   RANGE='custom';
+  RANGE_BEFORE_CUSTOM=null;
   segSet('rangeSeg','custom');
   try{ localStorage.setItem('ui.seg.customRange',JSON.stringify({s:RANGE_START,e:RANGE_END})); }catch(e){}
   closeDatePicker();
@@ -1429,6 +1438,8 @@ function onDailyKeyChange(){
 function syncDailyKey(s){
   const sel=document.getElementById('dailyKey');
   if(!sel) return;
+  const dhost=document.getElementById('sel-dailyKey');
+  if(dhost && dhost.classList.contains('open')) return;  // 菜单展开时不重建，避免打断
   // 只列出仍然存在的 Key（已删除的 Key 不出现在下拉里，也不计入「全部 Key」）
   const names={};
   (s.keys||[]).forEach(k=>{names[k.id]=k.name;});
@@ -1520,7 +1531,7 @@ function renderAccounts(s){
           <button class="btn gray sm" onclick="toggleAccMenu(this,event)">⋯</button>
           <div class="row-menu">
             <button onclick="checkAcc('${a.id}')">检查凭证</button>
-            <button onclick='editAcc(${JSON.stringify(a).replace(/'/g,"&#39;")})'>编辑账号</button>
+            <button onclick="editAcc('${a.id}')">编辑账号</button>
             <button class="danger" onclick="delAcc('${a.id}')">删除账号</button>
           </div>
         </span></td></tr>`;});
@@ -1702,8 +1713,12 @@ function syncRecentFilters(s){
   }
 }
 function recentPage(dir){
+  if(dir>0 && LAST_STATE){
+    const total=Number(LAST_STATE.recent_total||0);
+    if(total && RECENT_OFFSET+RECENT_LIMIT>=total) return;
+  }
   RECENT_OFFSET=Math.max(0, RECENT_OFFSET + dir*RECENT_LIMIT);
-  refresh();
+  refreshData(true);
 }
 function renderSettings(s){
   const av=document.getElementById('aboutVer');
@@ -1875,7 +1890,10 @@ function openAccModal(acc){
   openModal('accModal');
   setTimeout(()=>document.getElementById('accName').focus(),30);
 }
-function editAcc(a){openAccModal(a);}
+function editAcc(id){
+  const a=((LAST_STATE&&LAST_STATE.accounts)||[]).find(x=>x.id===id);
+  if(a) openAccModal(a);
+}
 function onEgressChange(){
   const mode=document.getElementById('accEgress').value;
   const wrap=document.getElementById('accProxyWrap');
@@ -1911,6 +1929,7 @@ let _confirmResolve=null,_confirmYes=false;
 function uiConfirm(msg,opts){
   opts=opts||{};
   return new Promise(resolve=>{
+    if(_confirmResolve){ const prev=_confirmResolve; _confirmResolve=null; _confirmYes=false; prev(false); }
     _confirmResolve=resolve;_confirmYes=false;
     const t=document.getElementById('confirmTitle');
     if(t) t.textContent=opts.title||'确认操作';
@@ -2117,7 +2136,8 @@ async function openKeyDetail(id){
   const s=LAST_STATE; if(!s) return;
   const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
   document.getElementById('kdTitle').textContent='Key 详情 · '+k.name;
-  const qs=RANGE==='all'?'':('?range='+encodeURIComponent(RANGE));
+  const qs=RANGE==='all'?'':('?range='+encodeURIComponent(RANGE)
+    +'&start='+encodeURIComponent(RANGE_START)+'&end='+encodeURIComponent(RANGE_END));
   const j=await api('/keys/'+id+'/detail'+qs);
   const t=(j&&j.total)||{n:0,t:0,ok:0};
   document.getElementById('kdTotals').innerHTML=`

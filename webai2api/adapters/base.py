@@ -48,7 +48,9 @@ class AccountClient:
         self.daily_limit = int(getattr(config, "daily_request_limit", 0) or 0)
         self._daily_day = time.strftime("%Y-%m-%d")
         self._daily_count = 0
+        self._daily_base = self._load_daily()
         self._risk_last_read: dict | None = None
+        self._risk_lock = threading.Lock()
 
     def _account_id(self) -> str:
         return str(self.account.get("id") or "")
@@ -57,20 +59,26 @@ class AccountClient:
     def _today() -> str:
         return time.strftime("%Y-%m-%d")
 
+    def _load_daily(self) -> int:
+        if self.store is None or not self._account_id():
+            return 0
+        try:
+            return int(self.store.get_stat(self._account_id(), self._daily_day, "requests"))
+        except Exception:  # noqa: BLE001
+            return 0
+
     def _roll_day(self) -> None:
         today = time.strftime("%Y-%m-%d")
         if today != self._daily_day:
             self._daily_day = today
             self._daily_count = 0
+            self._daily_base = self._load_daily()
 
     def daily_used(self) -> int:
-        """当日已用请求数：有 store 用持久值（重启后仍正确），否则退回内存计数。"""
+        """当日已用请求数：持久起点 + 本进程增量（读路径不落库，安全用于 pick() 热路径）。"""
         self._roll_day()
         if self.store is not None and self._account_id():
-            try:
-                return int(self.store.get_stat(self._account_id(), self._today(), "requests"))
-            except Exception:  # noqa: BLE001
-                pass
+            return int(self._daily_base) + int(self._daily_count)
         return int(self._daily_count)
 
     def daily_exhausted(self) -> bool:
@@ -104,7 +112,11 @@ class AccountClient:
     def persist_and_display_risk(self) -> dict:
         """风险指标：把内存计数相对上次读取的增量持久化到 acc_stats（当日），
         返回「当日持久累计值」供面板展示——跨重启保留、按自然日归零。
-        内存计数在重启后从 0 开始，差量为负/零时以持久值兜底。"""
+        账号级锁防止 /risk 并发读取导致同一差量重复入库。"""
+        with self._risk_lock:
+            return self._persist_and_display_risk_locked()
+
+    def _persist_and_display_risk_locked(self) -> dict:
         stats: dict = {}
         try:
             stats = dict(self.client.risk_stats() or {}) if self.client is not None else {}
@@ -133,6 +145,26 @@ class AccountClient:
         except Exception:  # noqa: BLE001
             pass
         return stats
+
+
+def dispose_client(client) -> None:
+    """账号池重建时释放旧客户端独占资源。只关实例自有的对象
+    （如 DeepSeek 的 _browser）；模块级共享缓存一律不动。"""
+    if client is None:
+        return
+    close = getattr(client, "close", None)
+    if callable(close):
+        try:
+            close()
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    browser = getattr(client, "_browser", None)
+    if browser is not None and hasattr(browser, "close"):
+        try:
+            browser.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class GenericClientPool:
@@ -192,6 +224,7 @@ class GenericClientPool:
                 if old:
                     ac.cooldown_until = old.cooldown_until
                     ac.rate_hits = old.rate_hits
+                    dispose_client(old.client)
                 self._clients[a["id"]] = ac
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning("账号 %s 初始化失败: %s", a.get("name"), exc)

@@ -552,21 +552,10 @@ def create_admin_router(
             accounts,
             models,
         )
-        owner = str(b.get("owner") or "").strip()
         note = str(b.get("note") or "").strip()
-        exp = float(b.get("expires_at") or 0)
-        qd = int(b.get("quota_daily") or 0)
-        qm = int(b.get("quota_monthly") or 0)
-        if owner or note or exp or qd or qm:
-            await run_in_threadpool(
-                store.update_key,
-                k["id"],
-                owner=owner,
-                note=note,
-                expires_at=exp,
-                quota_daily=qd,
-                quota_monthly=qm,
-            )
+        # 归属人/到期/额度四字段已退役：不再读取请求值，也不再写入
+        if note:
+            await run_in_threadpool(store.update_key, k["id"], note=note)
         return {"ok": True, "key": k}
 
     @router.put("/keys/{key_id}")
@@ -748,7 +737,7 @@ def create_admin_router(
             "qwen_anti_min",
             "qwen_anti_max",
         ):
-            if k in b and str(b[k]).strip():
+            if k in b:
                 await run_in_threadpool(store.set_setting, k, str(b[k]).strip())
         # 额度类：夹到该模型允许的上限内，防止填出荒谬值
         for k in (

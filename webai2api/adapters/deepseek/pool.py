@@ -18,7 +18,7 @@ from logging import Logger
 
 from ...store import Store
 from ...paths import user_data_dir
-from ..base import account_ready
+from ..base import account_ready, AccountClient as BaseAccountClient, dispose_client
 from . import config as ds_config
 from .services.deepseek_client import DeepSeekWebClient
 
@@ -152,38 +152,9 @@ def build_pool(store: Store, logger: Logger) -> "ClientPool":
     return ClientPool(store, logger)
 
 
-class AccountClient:
-    """一个账号 + 它的客户端。"""
-
-    def __init__(
-        self, account: dict, client: DeepSeekWebClient, config: ds_config.AppConfig
-    ) -> None:
-        self.account = account
-        self.client = client
-        self.config = config
-        self.cooldown_until = 0.0
-        self.rate_hits = 0
-        # ── 日请求配额（跨进程只做本进程内计数）──
-        self.daily_limit = int(getattr(config, "daily_request_limit", 0) or 0)
-        self._daily_day = time.strftime("%Y-%m-%d")
-        self._daily_count = 0
-
-    def _roll_day(self) -> None:
-        today = time.strftime("%Y-%m-%d")
-        if today != self._daily_day:
-            self._daily_day = today
-            self._daily_count = 0
-
-    def daily_exhausted(self) -> bool:
-        """当日请求数已达上限则不可用；跨天自动归零。"""
-        self._roll_day()
-        return self.daily_limit > 0 and self._daily_count >= self.daily_limit
-
-    def healthy(self) -> bool:
-        return self.cooldown_until < time.time()
-
-    def cooldown_left(self) -> int:
-        return max(0, int(self.cooldown_until - time.time()))
+class AccountClient(BaseAccountClient):
+    """DeepSeek 版账号客户端：叠加封禁长冷却；日配额/风险指标持久化
+    复用 adapters.base 的通用实现（acc_stats，跨重启保留、按自然日归零）。"""
 
     def mark_bad(
         self, seconds: int = COOLDOWN_SECONDS, exc: Exception | None = None
@@ -191,16 +162,7 @@ class AccountClient:
         if exc is not None and _is_banned_exc(exc):
             self.cooldown_until = time.time() + BAN_COOLDOWN_SECONDS
             return
-        if exc is not None and _is_rate_limited(exc):
-            self.rate_hits += 1
-            seconds = min(900, 60 * (2 ** (self.rate_hits - 1)))
-        self.cooldown_until = time.time() + seconds
-
-    def mark_ok(self) -> None:
-        self.cooldown_until = 0.0
-        self.rate_hits = 0
-        self._roll_day()
-        self._daily_count += 1
+        super().mark_bad(seconds=seconds, exc=exc)
 
 
 class ClientPool:
@@ -242,6 +204,7 @@ class ClientPool:
                 if old:
                     ac.cooldown_until = old.cooldown_until
                     ac.rate_hits = old.rate_hits
+                    dispose_client(old.client)
                 self._clients[a["id"]] = ac
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning("账号 %s 初始化失败: %s", a.get("name"), exc)

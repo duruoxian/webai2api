@@ -159,8 +159,11 @@ class Store:
         if not retain_days or retain_days <= 0:
             return 0
         cutoff = _now() - retain_days * 86400
+        import datetime as _dt
+        day_cut = (_dt.datetime.now() - _dt.timedelta(days=max(1, retain_days))).strftime("%Y-%m-%d")
         with self._conn() as c:
             cur = c.execute("DELETE FROM usage_log WHERE ts < ?", (cutoff,))
+            c.execute("DELETE FROM acc_stats WHERE day < ?", (day_cut,))
             return cur.rowcount or 0
 
     def usage_db_size(self) -> dict:
@@ -266,7 +269,8 @@ class Store:
 
     def update_account(self, account_id: str, **fields: Any) -> None:
         allowed = {"name", "auth_token", "device_id", "settings_token", "cookie",
-                   "enabled", "note", "profile", "proxy", "egress"}
+                   "enabled", "note", "profile", "proxy", "egress",
+                   "health", "checked_at"}
         sets, vals = [], []
         for k, v in fields.items():
             if k in allowed:

@@ -533,7 +533,12 @@ def create_gateway_router(
             )
             return _error(503, msg, "unavailable")
 
-        await run_in_threadpool(store.touch_key, key_row["id"])
+        try:
+            await run_in_threadpool(store.touch_key, key_row["id"])
+        except Exception as exc:  # noqa: BLE001
+            _quota_release(key_row["id"], reserve)
+            logger.error("touch_key 失败: %s", exc)
+            return _error(500, "内部错误：状态更新失败", "internal_error")
         base = dict(
             api_key_id=key_row["id"],
             api_key_name=key_row["name"],

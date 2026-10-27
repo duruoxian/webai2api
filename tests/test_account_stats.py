@@ -80,3 +80,25 @@ def test_risk_delta_persist_and_display(tmp_path):
     ac2 = AccountClient({"id": "a1"}, client2, _cfg(), store=s)
     st3 = ac2.persist_and_display_risk()
     assert st3["sessions_created"] == 5 and st3["cache_hit"] == 9
+
+
+def test_deepseek_accountclient_uses_base_persistence():
+    """回归护栏（第二轮审查 P1）：deepseek 池的 AccountClient 必须是 base
+    子类且接受 store 形参——此前独立类不接受 store= → TypeError 被
+    _sync 的 except 静默吞掉 → DeepSeek 账号池为空、全平台 503。"""
+    from webai2api.adapters.base import AccountClient as BaseAC
+    from webai2api.adapters.deepseek.pool import AccountClient as DSAC
+
+    ac = DSAC({"id": "a1"}, None, _cfg(3), store=None)
+    assert isinstance(ac, BaseAC)
+
+
+def test_update_account_health_whitelisted(tmp_path):
+    """回归护栏（第二轮审查 P2）：凭证变更后的 health/checked_at 重置
+    必须真正落库（此前白名单不含这两列，赋值被静默丢弃）。"""
+    s = _store(tmp_path)
+    s.add_account("deepseek", "x", {"auth_token": "t"})
+    acc = s.list_accounts("deepseek")[0]
+    s.update_account(acc["id"], health="expired", checked_at=123.0)
+    acc2 = s.get_account(acc["id"])
+    assert acc2["health"] == "expired" and acc2["checked_at"] == 123.0
