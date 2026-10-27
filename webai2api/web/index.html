@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.45">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.46">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -25,7 +25,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.45"></script>
+<script src="/admin/static/hyalite.js?v=0.1.46"></script>
 </head>
 <body>
 
@@ -82,6 +82,7 @@
         <div class="card-head"><h2>开始使用</h2><div class="sp"></div><span class="muted" style="font-size:12.5px">三步接入客户端，完成后自动收起</span></div>
         <div class="guide-steps" id="guideSteps"></div>
       </div>
+      <div id="platformChips" class="plat-row" style="display:none;margin-bottom:14px"></div>
       <div class="card">
         <div class="card-head"><h2>用量总览</h2><div class="sp"></div>
           <div class="seg seg-sm" id="rangeSeg">
@@ -191,6 +192,7 @@
           <button class="btn sm" id="checkAllBtn" onclick="checkAllAcc()">检查全部凭证</button>
           <button class="btn sm" onclick="openAccModal()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>添加账号</button>
         </div>
+        <div id="accProvChips" class="plat-row" style="display:none;margin-bottom:10px"></div>
         <div class="tbl-scroll tall">
           <table id="accTable"><thead><tr><th>名称</th><th>平台</th><th>凭证</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
         </div>
@@ -284,11 +286,6 @@
 
     <div id="tab-usage" class="tabpane">
       <div class="card">
-        <div class="card-head"><h2>今日概览</h2><div class="sp"></div>
-          <button class="btn gray sm" onclick="exportCsv()">导出 CSV</button></div>
-        <div class="today-grid" id="todayGrid"></div>
-      </div>
-      <div class="card">
         <div class="card-head"><h2>按 Key 用量</h2></div>
         <div class="tbl-scroll">
           <table id="keyUsageTable"><thead><tr><th>API Key</th><th>请求数</th><th>Token 合计</th></tr></thead><tbody></tbody></table>
@@ -321,6 +318,7 @@
           <span class="muted" id="recentInfo" style="font-size:12.5px"></span>
           <button class="btn gray sm" onclick="recentPage(-1)">上一页</button>
           <button class="btn gray sm" onclick="recentPage(1)">下一页</button>
+          <button class="btn gray sm" onclick="exportCsv()">导出 CSV</button>
         </div>
         <div id="errChips" class="err-chips" style="display:none"></div>
         <div class="tbl-scroll tall">
@@ -1194,10 +1192,30 @@ function renderOverview(s){
   animateNum('ovReqs', fmt(t.n), t.n);
   const ok=Number(t.ok)||0;
   const rate = t.n ? (ok/t.n*100) : 0;
+  // 平台健康摘要 chips（方案A：总览即驾驶舱），点击跳账号页
+  const pc=document.getElementById('platformChips');
+  if(pc){
+    const by={};
+    (s.accounts||[]).forEach(a=>{
+      if(!a.enabled) return;
+      const pr=a.provider||'other';
+      by[pr]=by[pr]||{ok:0,bad:0};
+      if(a.health==='expired'||a.health==='error') by[pr].bad++;
+      else if(a.health==='ok') by[pr].ok++;
+    });
+    const names={deepseek:'DeepSeek',chatglm:'GLM',kimi:'Kimi',qwen:'千问'};
+    const entries=Object.entries(by);
+    pc.style.display=entries.length?'':'none';
+    pc.innerHTML=entries.map(([pr,v])=>
+      `<button type="button" class="plat-chip${v.bad?' warn':''}" onclick="switchTab('accounts')" title="查看账号">${esc(names[pr]||pr)} ${v.ok} 可用${v.bad?` · ${v.bad} 异常`:''}</button>`).join('');
+  }
+  // 今日/昨日对比并入统计卡 foot（用量页重复卡已删）
+  const td0=(s.today&&s.today.today)||{n:0,t:0};
+  const yd0=(s.today&&s.today.yesterday)||{n:0,t:0};
   document.getElementById('ovReqsFoot').textContent =
-    `${RANGE_LABEL()} · 成功率 ${t.n?rate.toFixed(1)+'%':'–'}`;
+    `${RANGE_LABEL()} · 成功率 ${t.n?rate.toFixed(1)+'%':'–'} · 今日 ${fmt(td0.n)}（昨日 ${fmt(yd0.n)}）`;
   document.getElementById('ovTokFoot').textContent =
-    `输入 ${fmtTok(t.p)} · 输出 ${fmtTok(t.c)}`;
+    `输入 ${fmtTok(t.p)} · 输出 ${fmtTok(t.c)} · 今日 ${fmtTok(td0.t)}`;
   animateNum('ov24', fmtTokHTML((s.usage.last24h||{}).t),
              Number((s.usage.last24h||{}).t||0));
   animateNum('ovAcc', String(s.accounts.filter(a=>a.enabled).length),
@@ -1438,10 +1456,31 @@ function renderHeatmap(s){
 }
 
 
+let ACC_PROV_FILTER='';
+function setAccProvFilter(p){
+  ACC_PROV_FILTER=ACC_PROV_FILTER===p?'':p;
+  if(LAST_STATE) renderAccounts(LAST_STATE);
+}
 function renderAccounts(s){
   const tb=document.querySelector('#accTable tbody');
   const cd=s.cooldowns||{};
   let __rows='';let __sig='';
+  // 平台维度 chips（P4）：可点筛选
+  const pcA=document.getElementById('accProvChips');
+  if(pcA){
+    const cnt={};
+    (s.accounts||[]).forEach(a=>{
+      const pr=a.provider||'other';
+      cnt[pr]=cnt[pr]||{total:0,ok:0};
+      cnt[pr].total++;
+      if(a.enabled&&a.health==='ok') cnt[pr].ok++;
+    });
+    const names={deepseek:'DeepSeek',chatglm:'GLM',kimi:'Kimi',qwen:'千问'};
+    const entries=Object.entries(cnt);
+    pcA.style.display=entries.length?'':'none';
+    pcA.innerHTML=entries.map(([pr,v])=>
+      `<button type="button" class="plat-chip${ACC_PROV_FILTER===pr?' on':''}" onclick="setAccProvFilter('${esc(pr)}')">${esc(names[pr]||pr)} ${v.ok}/${v.total}</button>`).join('');
+  }
   // 排序：启用且正常在前，未检查/未使用居中，验证不通过与停用沉底
   const usedIds=new Set(((s.usage&&s.usage.by_account)||[]).map(x=>x.account_id));
   const rank=a=>{
@@ -1451,7 +1490,8 @@ function renderAccounts(s){
     if(!usedIds.has(a.id)) return 3;
     return 0;
   };
-  [...s.accounts].sort((a,b)=>rank(a)-rank(b)||String(a.name).localeCompare(String(b.name))).forEach(a=>{
+  [...s.accounts].filter(a=>!ACC_PROV_FILTER||a.provider===ACC_PROV_FILTER)
+    .sort((a,b)=>rank(a)-rank(b)||String(a.name).localeCompare(String(b.name))).forEach(a=>{
     const credEmpty=!(a.has_token||a.has_device||a.has_settings||a.has_cookie);
     const pr=a.profile||{};
     const who=pr.email||pr.phone||pr.nickname||'';
@@ -1482,7 +1522,7 @@ function renderAccounts(s){
             <button class="danger" onclick="delAcc('${a.id}')">删除账号</button>
           </div>
         </span></td></tr>`;});
-  if(!__rows)__rows=empty('还没有账号，点右上角添加',5);
+  if(!__rows)__rows=empty(ACC_PROV_FILTER?'该平台暂无账号':'还没有账号，点右上角添加',5);
   const same = tb.dataset.sig === __sig;
   tb.dataset.sig = __sig;
   // 5s 轮询重渲染会销毁打开的 ⋯ 菜单：重建后按行回填打开态
@@ -1542,15 +1582,6 @@ function renderKeys(s){
 }
 function renderUsage(s){
   syncRecentFilters(s);
-  const td=(s.today&&s.today.today)||{n:0,t:0,ok:0};
-  const yd=(s.today&&s.today.yesterday)||{n:0,t:0,ok:0};
-  const diff=(a,b)=>b?(((a-b)/b)*100).toFixed(0):'–';
-  const tg=document.getElementById('todayGrid');
-  if(tg) tg.innerHTML=`
-    <div class="today-item"><span>今日请求</span><b>${fmt(td.n)}</b><em>昨日 ${fmt(yd.n)} · ${diff(td.n,yd.n)}%</em></div>
-    <div class="today-item"><span>今日 Token</span><b>${fmtTok(td.t)}</b><em>昨日 ${fmtTok(yd.t)} · ${diff(td.t,yd.t)}%</em></div>
-    <div class="today-item"><span>成功率</span><b>${td.n?((td.ok/td.n*100).toFixed(1)+'%'):'–'}</b><em>昨日 ${yd.n?((yd.ok/yd.n*100).toFixed(1)+'%'):'–'}</em></div>
-    <div class="today-item"><span>平均耗时</span><b>${td.avg_ms?((td.avg_ms/1000).toFixed(2)+'s'):'–'}</b><em>首 Token ${td.avg_ttft?((td.avg_ttft/1000).toFixed(2)+'s'):'–'}</em></div>`;
   const ec=document.getElementById('errChips');
   if(ec){
     const errs=s.usage.errors||[];
