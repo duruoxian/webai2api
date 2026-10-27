@@ -1108,7 +1108,9 @@ function stateQs(){
 /* 只刷数据（总览+用量）：段选切换与轮询走这条路径，不再整页重画 */
 async function refreshData(cue){
   if(cue) document.body.classList.add('loading');
-  const s=await api('/state'+stateQs());
+  let s;
+  try{ s=await api('/state'+stateQs()); }
+  catch(e){ document.body.classList.remove('loading'); return; }  // 401等异常：api内已跳登录
   document.body.classList.remove('loading');
   if(!s||!s.ok)return;
   LAST_STATE=s;
