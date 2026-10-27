@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.39">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.40">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -23,7 +23,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.39"></script>
+<script src="/admin/static/hyalite.js?v=0.1.40"></script>
 </head>
 <body>
 
@@ -210,7 +210,7 @@
         <div class="card-head"><h2>API Key</h2><div class="sp"></div>
           <button class="btn sm" onclick="openKeyModal()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>生成 Key</button>
         </div>
-        <p class="card-sub">把 Key 发给朋友，填进 opencode 等客户端即可。接口地址：<b id="baseHint">/v1</b></p>
+        <p class="card-sub">生成 Key 后填进你的客户端（opencode / Claude Code / ZCode 等）即可使用。接口地址：<b id="baseHint">/v1</b></p>
         <div class="tbl-scroll tall">
           <table id="keyTable"><thead><tr><th>名称</th><th>创建时间</th><th>状态</th><th>最近使用</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
         </div>
@@ -618,8 +618,8 @@
         <svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </div>
-    <p class="modal-sub">生成后把这个 Key 发给要用的人，填进 opencode 等客户端即可。</p>
-    <label class="fld"><span>备注（发给谁用）</span><input id="keyName" placeholder="例如：小明"></label>
+    <p class="modal-sub">生成后填进你的客户端（opencode / Claude Code / ZCode 等）即可使用。</p>
+    <label class="fld"><span>备注（用途）</span><input id="keyName" placeholder="例如：opencode-笔记本"></label>
     <div class="modal-foot">
       <button class="btn gray" onclick="closeModal('keyModal')">取消</button>
       <button class="btn" id="keyGenBtn" onclick="createKey()">生成</button>
@@ -814,7 +814,7 @@ async function loadRisk(){
       <td>${egressTag(x.egress)}</td>
     </tr>`;
   });
-  if(!j.accounts.length) tb.innerHTML=empty('还没有账号');
+  if(!j.accounts.length) tb.innerHTML=empty('还没有账号',8);
 }
 function fmt(n){n=Number(n)||0;return n.toLocaleString('zh-CN');}
 
@@ -1045,7 +1045,6 @@ async function refresh(){
   document.getElementById('navKey').innerHTML =
     `Key <b>${s.keys.length}</b>`;
   renderOverview(s);renderAccounts(s);renderKeys(s);renderUsage(s);renderSettings(s);
-  document.body.classList.remove('loading');
   bindLimitInputs();
   loadSystem();
   if(window.__setLimits) window.__setLimits(s.settings||{});
@@ -1058,7 +1057,7 @@ async function refresh(){
     }
   }catch(e){}
 }
-function empty(msg){return `<tr><td colspan="9" class="empty">${msg}</td></tr>`;}
+function empty(msg,cols){return `<tr><td colspan="${cols||9}" class="empty">${msg}</td></tr>`;}
 
 function RANGE_LABEL(){
   if(RANGE==='today') return '今天';
@@ -1134,11 +1133,6 @@ function renderOverview(s){
   renderHeatmap(s);
 }
 let MODEL_SORT='token';
-function setModelSort(k){
-  MODEL_SORT=k;
-  document.querySelectorAll('#modelSortSeg button').forEach(b=>b.classList.toggle('active',b.dataset.sort===k));
-  if(LAST_STATE) renderOverview(LAST_STATE);
-}
 function setModelSort(k){
   MODEL_SORT=k;
   document.querySelectorAll('#modelSortSeg button').forEach(b=>b.classList.toggle('active',b.dataset.sort===k));
@@ -1369,7 +1363,7 @@ function renderAccounts(s){
             <button class="danger" onclick="delAcc('${a.id}')">删除账号</button>
           </div>
         </span></td></tr>`;});
-  if(!__rows)__rows=empty('还没有账号，点右上角添加');
+  if(!__rows)__rows=empty('还没有账号，点右上角添加',5);
   const same = tb.dataset.sig === __sig;
   tb.dataset.sig = __sig;
   // 5s 轮询重渲染会销毁打开的 ⋯ 菜单：重建后按行回填打开态
@@ -1420,7 +1414,7 @@ function renderKeys(s){
   tb.dataset.sig = __ksig;
   tb.innerHTML = __krows;
   tb.classList.toggle('no-anim', ksame);
-  if(!s.keys.length)tb.innerHTML=empty('还没有 Key，点右上角生成');
+  if(!s.keys.length)tb.innerHTML=empty('还没有 Key，点右上角生成',5);
   if(typeof rebuildOcSel==='function') rebuildOcSel();
 }
 function renderUsage(s){
@@ -1440,10 +1434,13 @@ function renderUsage(s){
     el.innerHTML=errs.length?errs.map(e=>`<div class="err-row"><span class="tag err">${esc(e.code)}</span><b>${fmt(e.n)}</b></div>`).join(''):'<div class="muted">当前时间范围内没有失败请求</div>';
   }
   const kids=new Set((s.keys||[]).map(k=>k.id));
+  const accIds=new Set((s.accounts||[]).map(a=>a.id));
   const keyName=(id,name)=>keyNameHTML(id,name,kids);
   const ku=s.key_usage||{};
   let tb=document.querySelector('#keyUsageTable tbody');tb.innerHTML='';
-  (s.usage.by_key||[]).forEach(k=>{
+  // 已删除的 Key/账号不再出现在用量明细与最近请求里（统计卡总量仍含其历史用量）
+  const byKeyAlive=(s.usage.by_key||[]).filter(k=>kids.has(k.api_key_id));
+  byKeyAlive.forEach(k=>{
     const u=ku[k.api_key_id]||{today:0,month:0};
     const kk=(s.keys||[]).find(x=>x.id===k.api_key_id)||{};
     const dq=kk.quota_daily||0, mq=kk.quota_monthly||0;
@@ -1459,19 +1456,22 @@ function renderUsage(s){
       <td class="num-t">${fmt(k.n)}</td><td class="num-t"><b>${fmtTok(k.t)}</b></td>
       <td class="num-t">${fmtTok(u.today)}</td><td class="num-t">${fmtTok(u.month)}</td>
       <td style="min-width:150px">${quota}</td></tr>`;});
-  if(!(s.usage.by_key||[]).length)tb.innerHTML='<tr><td colspan="6" class="empty">暂无数据</td></tr>';
+  if(!byKeyAlive.length)tb.innerHTML='<tr><td colspan="6" class="empty">暂无数据</td></tr>';
   tb=document.querySelector('#accUsageTable tbody');tb.innerHTML='';
-  (s.usage.by_account||[]).forEach(a=>{tb.innerHTML+=`<tr><td><b>${esc(a.account_name||'–')}</b></td>
+  const byAccAlive=(s.usage.by_account||[]).filter(a=>accIds.has(a.account_id));
+  byAccAlive.forEach(a=>{tb.innerHTML+=`<tr><td><b>${esc(a.account_name||'–')}</b></td>
     <td class="muted">${esc(a.provider||'')}</td><td class="num-t">${fmt(a.n)}</td><td class="num-t"><b>${fmtTok(a.t)}</b></td></tr>`;});
-  if(!(s.usage.by_account||[]).length)tb.innerHTML=empty('暂无数据');
+  if(!byAccAlive.length)tb.innerHTML=empty('暂无数据',4);
   tb=document.querySelector('#recentTable tbody');tb.innerHTML='';
-  (s.recent||[]).forEach(r=>{tb.innerHTML+=`<tr><td class="muted">${fmtTime(r.ts)}</td>
+  const recentAlive=(s.recent||[]).filter(r=>
+    !(r.api_key_id&&!kids.has(r.api_key_id)) && !(r.account_id&&!accIds.has(r.account_id)));
+  recentAlive.forEach(r=>{tb.innerHTML+=`<tr><td class="muted">${fmtTime(r.ts)}</td>
     <td>${keyName(r.api_key_id,r.api_key_name)}</td><td>${esc(r.account_name||'–')}</td>
     <td class="mono">${esc(r.model)}</td><td class="num-t">${fmtTok(r.prompt_tokens)}</td>
     <td class="num-t">${fmtTok(r.completion_tokens)}</td><td class="num-t"><b>${fmtTok(r.total_tokens)}</b></td>
     <td class="num-t">${r.latency_ms?((r.latency_ms/1000).toFixed(1)+'s'):'–'}</td>
     <td>${r.status==='ok'?'<span class="tag on">成功</span>':'<span class="tag err">'+esc(r.error_code||r.status)+'</span>'}</td></tr>`;});
-  if(!(s.recent||[]).length)tb.innerHTML=empty('暂无记录');
+  if(!recentAlive.length)tb.innerHTML=empty('暂无记录');
   const info=document.getElementById('recentInfo');
   if(info){
     const total=Number(s.recent_total)||0;
@@ -1494,18 +1494,14 @@ function syncRecentFilters(s){
   const keySel=document.getElementById('recentKey');
   if(!keySel) return;
   const kids=new Set((s.keys||[]).map(k=>k.id));
+  const accIds=new Set((s.accounts||[]).map(a=>a.id));
   const byKey=s.usage.by_key||[];
-  if(RECENT_KEY && !byKey.some(k=>k.api_key_id===RECENT_KEY)) RECENT_KEY='';
+  if(RECENT_KEY && !kids.has(RECENT_KEY)) RECENT_KEY='';
   let opts='<option value="">全部 Key</option>';
-  // 仍存在的排前面，已删除的排后面
-  const keyAlive=[], keyGone=[];
+  // 只列仍存在的 Key（已删除的不再出现）
   byKey.forEach(k=>{
-    if(!k.api_key_id) return;
-    const del=kids.size && !kids.has(k.api_key_id);
-    (del?keyGone:keyAlive).push({...k, _del:del});
-  });
-  [...keyAlive, ...keyGone].forEach(k=>{
-    opts+=`<option value="${esc(k.api_key_id)}">${esc(k.api_key_name||'–')}${k._del?'（已删除）':''}</option>`;
+    if(!k.api_key_id||!kids.has(k.api_key_id)) return;
+    opts+=`<option value="${esc(k.api_key_id)}">${esc(k.api_key_name||'–')}</option>`;
   });
   const keyHost=document.getElementById('sel-recentKey');
   if(!keyHost.classList.contains('open')){
@@ -1518,22 +1514,16 @@ function syncRecentFilters(s){
 
   const accSel=document.getElementById('recentAcc');
   const byAcc=s.usage.by_account||[];
-  if(RECENT_ACC && !byAcc.some(a=>a.account_id===RECENT_ACC)) RECENT_ACC='';
-  const accIds=new Set((s.accounts||[]).map(a=>a.id));
+  if(RECENT_ACC && !accIds.has(RECENT_ACC)) RECENT_ACC='';
   const nameCount={};
   byAcc.forEach(a=>{const n=a.account_name||'–';nameCount[n]=(nameCount[n]||0)+1;});
   let aopts='<option value="">全部账号</option>';
-  // 仍存在的排前面，已删除的排后面
-  const accAlive=[], accGone=[];
+  // 只列仍存在的账号（已删除的不再出现）
   byAcc.forEach(a=>{
-    if(!a.account_id) return;
+    if(!a.account_id||!accIds.has(a.account_id)) return;
     const n=a.account_name||'–';
-    const del=!accIds.has(a.account_id);
     const dup=nameCount[n]>1?' · '+a.account_id.slice(-4):'';
-    (del?accGone:accAlive).push({...a, _n:n, _del:del, _dup:dup});
-  });
-  [...accAlive, ...accGone].forEach(a=>{
-    aopts+=`<option value="${esc(a.account_id)}">${esc(a._n)}${a._del?'（已删除）':''}${esc(a._dup)}</option>`;
+    aopts+=`<option value="${esc(a.account_id)}">${esc(n)}${esc(dup)}</option>`;
   });
   const accHost=document.getElementById('sel-recentAcc');
   if(!accHost.classList.contains('open')){
@@ -1553,34 +1543,38 @@ function renderSettings(s){
   if(av) av.textContent=s.version?('v'+s.version):'—';
   const gb=document.getElementById('guideBase');
   if(gb) gb.textContent=location.origin+'/v1';
-  const tr=document.getElementById('setTray');
-  if(tr) tr.checked=(s.settings.tray_enabled||'true')!=='false';
-  document.getElementById('setWasm').value=s.settings.deepseek_wasm_path||'';
-  document.getElementById('setCache').checked=(s.settings.deepseek_session_cache||'true')!=='false';
-  const se=document.getElementById('setSearch'); if(se) se.checked=(s.settings.deepseek_search||'false')==='true';
-  document.getElementById('setAntiMin').value=s.settings.deepseek_anti_min||'1.5';
-  document.getElementById('setAntiMax').value=s.settings.deepseek_anti_max||'3.0';
-  const rt=document.getElementById('setRetain'); if(rt) rt.value=s.settings.usage_retain_days||'0';
-  const dc=document.getElementById('setDsContext'); if(dc) dc.value=s.settings.deepseek_context_limit||'1000000';
-  const dof=document.getElementById('setDsOutput'); if(dof) dof.value=s.settings.deepseek_output_limit||'384000';
-  const gc2=document.getElementById('setGlmContext'); if(gc2) gc2.value=s.settings.glm_context_limit||'1000000';
-  const go2=document.getElementById('setGlmOutput'); if(go2) go2.value=s.settings.glm_output_limit||'128000';
-  const gn=document.getElementById('setGlmAntiMin'); if(gn) gn.value=s.settings.glm_anti_min||'1.5';
-  const gx=document.getElementById('setGlmAntiMax'); if(gx) gx.value=s.settings.glm_anti_max||'3.0';
-  const gs=document.getElementById('setGlmSearch'); if(gs) gs.checked=(s.settings.glm_search||'false')==='true';
-  const gc=document.getElementById('setGlmCache'); if(gc) gc.checked=(s.settings.glm_session_cache||'true')!=='false';
-  const kc=document.getElementById('setKimiContext'); if(kc) kc.value=s.settings.kimi_context_limit||'262144';
-  const ko=document.getElementById('setKimiOutput'); if(ko) ko.value=s.settings.kimi_output_limit||'32768';
-  const kan=document.getElementById('setKimiAntiMin'); if(kan) kan.value=s.settings.kimi_anti_min||'1.5';
-  const kax=document.getElementById('setKimiAntiMax'); if(kax) kax.value=s.settings.kimi_anti_max||'3.0';
-  const kas=document.getElementById('setKimiSearch'); if(kas) kas.checked=(s.settings.kimi_search||'false')==='true';
-  const kac=document.getElementById('setKimiCache'); if(kac) kac.checked=(s.settings.kimi_session_cache||'true')!=='false';
-  const qc=document.getElementById('setQwenContext'); if(qc) qc.value=s.settings.qwen_context_limit||'262144';
-  const qo=document.getElementById('setQwenOutput'); if(qo) qo.value=s.settings.qwen_output_limit||'65536';
-  const qan=document.getElementById('setQwenAntiMin'); if(qan) qan.value=s.settings.qwen_anti_min||'1.5';
-  const qax=document.getElementById('setQwenAntiMax'); if(qax) qax.value=s.settings.qwen_anti_max||'3.0';
-  const qas=document.getElementById('setQwenSearch'); if(qas) qas.checked=(s.settings.qwen_search||'false')==='true';
-  const qac=document.getElementById('setQwenCache'); if(qac) qac.checked=(s.settings.qwen_session_cache||'true')!=='false';
+  // 轮询回填时跳过用户正在编辑的控件，避免打字被重置
+  const ae=document.activeElement;
+  const sv=(el,v)=>{ if(!el||(ae&&ae===el)) return; el.value=v; };
+  const sb=(el,v)=>{ if(!el||(ae&&ae===el)) return; el.checked=v; };
+  const $=id=>document.getElementById(id);
+  sb($('setTray'),(s.settings.tray_enabled||'true')!=='false');
+  sv($('setWasm'),s.settings.deepseek_wasm_path||'');
+  sb($('setCache'),(s.settings.deepseek_session_cache||'true')!=='false');
+  sb($('setSearch'),(s.settings.deepseek_search||'false')==='true');
+  sv($('setAntiMin'),s.settings.deepseek_anti_min||'1.5');
+  sv($('setAntiMax'),s.settings.deepseek_anti_max||'3.0');
+  sv($('setRetain'),s.settings.usage_retain_days||'0');
+  sv($('setDsContext'),s.settings.deepseek_context_limit||'1000000');
+  sv($('setDsOutput'),s.settings.deepseek_output_limit||'384000');
+  sv($('setGlmContext'),s.settings.glm_context_limit||'1000000');
+  sv($('setGlmOutput'),s.settings.glm_output_limit||'128000');
+  sv($('setGlmAntiMin'),s.settings.glm_anti_min||'1.5');
+  sv($('setGlmAntiMax'),s.settings.glm_anti_max||'3.0');
+  sb($('setGlmSearch'),(s.settings.glm_search||'false')==='true');
+  sb($('setGlmCache'),(s.settings.glm_session_cache||'true')!=='false');
+  sv($('setKimiContext'),s.settings.kimi_context_limit||'262144');
+  sv($('setKimiOutput'),s.settings.kimi_output_limit||'32768');
+  sv($('setKimiAntiMin'),s.settings.kimi_anti_min||'1.5');
+  sv($('setKimiAntiMax'),s.settings.kimi_anti_max||'3.0');
+  sb($('setKimiSearch'),(s.settings.kimi_search||'false')==='true');
+  sb($('setKimiCache'),(s.settings.kimi_session_cache||'true')!=='false');
+  sv($('setQwenContext'),s.settings.qwen_context_limit||'262144');
+  sv($('setQwenOutput'),s.settings.qwen_output_limit||'65536');
+  sv($('setQwenAntiMin'),s.settings.qwen_anti_min||'1.5');
+  sv($('setQwenAntiMax'),s.settings.qwen_anti_max||'3.0');
+  sb($('setQwenSearch'),(s.settings.qwen_search||'false')==='true');
+  sb($('setQwenCache'),(s.settings.qwen_session_cache||'true')!=='false');
 }
 
 /* 恢复默认：只改表单，点保存才真正写入 */
@@ -1813,10 +1807,7 @@ document.addEventListener('keydown',e=>{
   if(e.key!=='Escape') return;
   const open=document.querySelectorAll('.sel.open');
   if(open.length){ open.forEach(host=>host.classList.remove('open')); return; }
-  ['accModal','keyModal'].forEach(id=>{
-    const el=document.getElementById(id);
-    if(el && el.classList.contains('show')) closeModal(id);
-  });
+  document.querySelectorAll('.modal-bg.show').forEach(el=>{ if(el.id) closeModal(el.id); });
 });
 async function saveAccount(){
   const id=document.getElementById('accId').value;
@@ -2081,7 +2072,6 @@ function bindLimitInputs(){
 function _wapi(){ try{ return window.pywebview && window.pywebview.api; }catch(e){ return null; } }
 function winMinimize(){ const a=_wapi(); if(a&&a.minimize) a.minimize(); }
 function winMaximize(){ const a=_wapi(); if(a&&a.toggle_max) a.toggle_max(); }
-document.addEventListener('DOMContentLoaded',renderThemeChips);
 
 /* ── 强调色（调色板换色）与背景纹理 ── */
 const ACCENTS=[
@@ -2128,8 +2118,7 @@ function renderPatternChips(){
   host.innerHTML=PATTERNS.map(x=>
     `<button class="theme-chip${x.id===cur?' on':''}" onclick="applyPattern('${x.id}')">${x.name}</button>`).join('');
 }
-document.addEventListener('DOMContentLoaded',renderAccentChips);
-document.addEventListener('DOMContentLoaded',renderPatternChips);
+document.addEventListener('DOMContentLoaded',()=>{renderThemeChips();renderAccentChips();renderPatternChips();});
 function placeMenuByRow(btn){
   // 按行在滚动容器中的位置选择展开方向（绝对定位随行滚动，天然不被
   // overflow 裁剪）：下半区向上展开，上半区向下展开。不要用 fixed——
@@ -2370,7 +2359,7 @@ ${lines.join(',\n')}
     let m=document.getElementById('ocResultModal');
     if(!m){
       m=document.createElement('div'); m.id='ocResultModal'; m.className='modal-bg';
-      m.innerHTML=`<div class="modal"><div class="modal-head"><h3 id="ocResultTitle"></h3><button class="modal-x" onclick="closeModal('ocResultModal')" aria-label="关闭"></button></div><pre id="ocResultPre" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace;max-height:60vh"></pre><div class="modal-foot"><button class="btn" onclick="copyText(document.getElementById('ocResultPre').textContent);closeModal('ocResultModal')">复制并关闭</button></div></div>`;
+      m.innerHTML=`<div class="modal"><div class="modal-head"><h3 id="ocResultTitle"></h3><button class="modal-x" onclick="closeModal('ocResultModal')" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><pre id="ocResultPre" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace;max-height:60vh"></pre><div class="modal-foot"><button class="btn" onclick="copyText(document.getElementById('ocResultPre').textContent);closeModal('ocResultModal')">复制并关闭</button></div></div>`;
       document.body.appendChild(m);
     }
     document.getElementById('ocResultTitle').textContent=title||'结果';
