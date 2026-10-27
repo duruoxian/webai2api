@@ -211,6 +211,21 @@ class ConversationCache:
             if first_time:
                 self._bump("created")
 
+    def delete_by_session_id(self, session_id: str) -> int:
+        """删除所有指向给定上游会话的缓存条目，返回删除数量。
+
+        删掉上游会话后必须调用，否则下一轮会拿旧 id 去请求已删会话。
+        """
+        if not session_id:
+            return 0
+        with self._lock:
+            keys = [k for k, item in self._cache.items() if item[0] == session_id]
+            for k in keys:
+                self._cache.pop(k, None)
+            if keys:
+                self._persist(force=True)
+            return len(keys)
+
     def flush(self) -> None:
         """强制落盘（关机前调用）。"""
         with self._lock:

@@ -417,6 +417,15 @@ def create_admin_router(
 
         return await run_in_threadpool(cleanup_browser_residue)
 
+    # 会话管理支持的平台 → (注册表模型名, 平台 provider)
+    _SESSION_PROVIDERS = {
+        "deepseek": "deepseek-chat",
+        "glm": "GLM-5.3-Flash",
+        "chatglm": "GLM-5.3-Flash",
+        "kimi": "kimi-k2.6",
+        # qwen：列表接口未探明（被阿里云 WAF 拦截），暂不支持
+    }
+
     @router.get("/sessions")
     async def list_sessions(request: Request, provider: str = "", account_id: str = ""):
         """列出各账号的上游会话数量与标题（只读，用于预览要清理什么）。"""
@@ -424,10 +433,14 @@ def create_admin_router(
         if g:
             return g
         prov = (provider or "deepseek").strip().lower()
-        if prov != "deepseek":
-            return {"ok": False, "error": "目前仅支持 deepseek 上游会话清理"}
+        model_key = _SESSION_PROVIDERS.get(prov)
+        if not model_key:
+            return {
+                "ok": False,
+                "error": f"暂不支持 {prov} 的会话清理（支持：deepseek / glm / kimi）",
+            }
 
-        pool = registry.pool_for_model("deepseek-chat")
+        pool = registry.pool_for_model(model_key)
 
         def _collect():
             out = []
@@ -467,8 +480,12 @@ def create_admin_router(
         if g:
             return g
         prov = (provider or "deepseek").strip().lower()
-        if prov != "deepseek":
-            return {"ok": False, "error": "目前仅支持 deepseek 上游会话清理"}
+        model_key = _SESSION_PROVIDERS.get(prov)
+        if not model_key:
+            return {
+                "ok": False,
+                "error": f"暂不支持 {prov} 的会话清理（支持：deepseek / glm / kimi）",
+            }
 
         body = await _json(request) or {}
         dry_run = bool(body.get("dry_run"))
@@ -478,7 +495,7 @@ def create_admin_router(
             if str(x).strip()
         ]
 
-        pool = registry.pool_for_model("deepseek-chat")
+        pool = registry.pool_for_model(model_key)
 
         def _purge():
             out = []

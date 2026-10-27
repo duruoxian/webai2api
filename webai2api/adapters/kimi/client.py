@@ -719,6 +719,80 @@ class KimiWebClient:
         self.logger.info("AntiRateLimit | sleep=%.2fs before upstream request", delay)
         time.sleep(delay)
 
+    # ── 上游会话管理（面板「会话管理」用）──────────────
+    def list_upstream_sessions(self, max_pages: int = 20) -> list[dict]:
+        """拉取该账号在 Kimi 的上游会话列表。
+
+        接口（实测）：RPC 方法 ``ListChats`` → {"chats": [...]}，
+        每项含 id / name / createTime / updateTime / status。
+        """
+        out: list[dict] = []
+        page_token = ""
+        for _ in range(max(1, int(max_pages))):
+            body: dict = {"pageSize": 50}
+            if page_token:
+                body["pageToken"] = page_token
+            try:
+                res = self._rpc("ListChats", body, timeout=20)
+            except Exception as exc:  # noqa: BLE001
+                raise KimiError(f"拉取 Kimi 会话列表失败: {exc}", 502) from exc
+            chats = res.get("chats") or []
+            out.extend(chats)
+            page_token = str(res.get("nextPageToken") or "")
+            if not page_token or not chats:
+                break
+        return out
+
+    def purge_upstream_sessions(
+        self, *, keep_titles: tuple = (), dry_run: bool = False
+    ) -> dict:
+        """删除该账号上游全部会话（可保留标题命中的）。"""
+        sessions = self.list_upstream_sessions()
+        doomed: list[str] = []
+        kept = 0
+        for s in sessions:
+            title = str(s.get("name") or s.get("title") or "")
+            if any(k and k in title for k in keep_titles):
+                kept += 1
+                continue
+            cid = s.get("id")
+            if cid:
+                doomed.append(str(cid))
+
+        res = {
+            "total": len(sessions),
+            "matched": len(doomed),
+            "kept": kept,
+            "deleted": 0,
+            "failed": 0,
+            "dry_run": bool(dry_run),
+        }
+        if dry_run or not doomed:
+            return res
+
+        for cid in doomed:
+            try:
+                self._rpc("DeleteChat", {"chatId": cid}, timeout=15)
+                res["deleted"] += 1
+            except Exception as exc:  # noqa: BLE001
+                res["failed"] += 1
+                self.logger.warning("删除 Kimi 会话失败 %s: %s", cid[:12], exc)
+
+        for cid in doomed:
+            try:
+                self._conv_cache.delete_by_session_id(cid)
+            except Exception:  # noqa: BLE001
+                pass
+
+        self.logger.info(
+            "Kimi 会话清理完成 total=%d deleted=%d failed=%d kept=%d",
+            res["total"],
+            res["deleted"],
+            res["failed"],
+            res["kept"],
+        )
+        return res
+
     # ── 会话清理（供后台清理线程调用） ─────────────────
     def cleanup_stale_sessions(self) -> None:
         """删除已过期/超轮次的 Kimi 会话，并从缓存移除。"""

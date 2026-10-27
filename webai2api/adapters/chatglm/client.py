@@ -973,6 +973,103 @@ class ChatGlmWebClient:
         except Exception as exc:  # noqa: BLE001
             self.logger.debug("删除智谱会话失败: %s", exc)
 
+    # ── 上游会话管理（面板「会话管理」用）──────────────
+    def list_upstream_sessions(self, max_pages: int = 20) -> list[dict]:
+        """拉取该账号在智谱的上游会话列表（分页直到 has_more=False）。
+
+        接口（实测）：
+          GET /chatglm/backend-api/assistant/conversation/list
+              ?assistant_id=<id>&page=1&page_size=20
+          → {"result": {"conversation_list": [...], "has_more": bool}, "status": 0}
+        page 与 page_size 均为必填。
+        """
+        token = self._access()
+        headers = _headers_for(self.config, token)
+        out: list[dict] = []
+        for page in range(1, max(1, int(max_pages)) + 1):
+            url = (
+                f"{self.config.base_url}/chatglm/backend-api/assistant/conversation/list"
+                f"?assistant_id={self.config.assistant_id}&page={page}&page_size=50"
+            )
+            try:
+                conn = self._conn(url, min(self.config.request_timeout, 20))
+                conn.request("GET", self._split(url)[1], headers=headers)
+                resp = conn.getresponse()
+                raw = resp.read()
+                conn.close()
+                payload = json.loads(raw or b"{}")
+            except Exception as exc:  # noqa: BLE001
+                raise GlmError(f"拉取智谱会话列表失败: {exc}", 502) from exc
+
+            result = payload.get("result") or {}
+            items = result.get("conversation_list") or []
+            out.extend(items)
+            if not result.get("has_more") or not items:
+                break
+        return out
+
+    def purge_upstream_sessions(
+        self, *, keep_titles: tuple = (), dry_run: bool = False
+    ) -> dict:
+        """删除该账号上游全部会话（可保留标题命中的）。
+
+        删除走 /assistant/conversation/delete（一次一个）。
+        """
+        sessions = self.list_upstream_sessions()
+        doomed: list[str] = []
+        kept = 0
+        for s in sessions:
+            title = str(s.get("title") or s.get("name") or "")
+            if any(k and k in title for k in keep_titles):
+                kept += 1
+                continue
+            cid = s.get("conversation_id") or s.get("id")
+            if cid:
+                doomed.append(str(cid))
+
+        res = {
+            "total": len(sessions),
+            "matched": len(doomed),
+            "kept": kept,
+            "deleted": 0,
+            "failed": 0,
+            "dry_run": bool(dry_run),
+        }
+        if dry_run or not doomed:
+            return res
+
+        token = self._access()
+        for cid in doomed:
+            try:
+                self._post_json(
+                    self.config.delete_url,
+                    {
+                        "assistant_id": self.config.assistant_id,
+                        "conversation_id": cid,
+                    },
+                    _headers_for(self.config, token),
+                    min(self.config.request_timeout, 20),
+                )
+                res["deleted"] += 1
+            except Exception as exc:  # noqa: BLE001
+                res["failed"] += 1
+                self.logger.warning("删除智谱会话失败 %s: %s", cid[:12], exc)
+
+        for cid in doomed:
+            try:
+                self._conv_cache.delete_by_session_id(cid)
+            except Exception:  # noqa: BLE001
+                pass
+
+        self.logger.info(
+            "智谱会话清理完成 total=%d deleted=%d failed=%d kept=%d",
+            res["total"],
+            res["deleted"],
+            res["failed"],
+            res["kept"],
+        )
+        return res
+
     # ── 对外接口 ───────────────────────────────────────
     def _forced_retry(self, payload: dict, tools: list) -> tuple[str, str, list]:
         """tool_choice=required 强校验重试：加强指令再问一次（上限 1 次）。"""
