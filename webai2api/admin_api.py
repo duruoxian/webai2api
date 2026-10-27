@@ -619,11 +619,14 @@ def create_admin_router(
         return {"ok": True}
 
     @router.get("/keys/{key_id}/detail")
-    async def key_detail(key_id: str, request: Request, range: str = "all"):
+    async def key_detail(
+        key_id: str, request: Request, range: str = "all",
+        start: str = "", end: str = "",
+    ):
         g = _guard(request)
         if g:
             return g
-        since, _ = _range_window(range)
+        since, _ = _range_window(range, start, end)
         data = await run_in_threadpool(store.key_detail, key_id, since)
         return {"ok": True, **data}
 
@@ -737,7 +740,14 @@ def create_admin_router(
             "qwen_anti_min",
             "qwen_anti_max",
         ):
-            if k in b:
+            if k in b and (
+                str(b[k]).strip()
+                or k not in (
+                    "admin_password",
+                    "deepseek_base_url", "glm_base_url",
+                    "kimi_base_url", "qwen_base_url",
+                )
+            ):
                 await run_in_threadpool(store.set_setting, k, str(b[k]).strip())
         # 额度类：夹到该模型允许的上限内，防止填出荒谬值
         for k in (

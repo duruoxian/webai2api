@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "webai2api"
-version = "0.1.39"
+version = "0.1.40"
 description = "把多家 AI 网页版反向代理成统一的 OpenAI 兼容 API，带中文管理面板"
 requires-python = ">=3.12"
 dependencies = [
