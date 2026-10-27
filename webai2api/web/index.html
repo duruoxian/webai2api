@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.46">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.47">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -25,7 +25,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.46"></script>
+<script src="/admin/static/hyalite.js?v=0.1.47"></script>
 </head>
 <body>
 
@@ -242,7 +242,7 @@
             <button class="btn sm" onclick="ocConnectCurrent()">一键写入配置</button>
             <button class="btn gray sm" onclick="ocDisconnectCurrent()">移除</button>
           </div>
-          <pre id="ocSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
+          <pre id="ocSnippet" class="code-pre"></pre>
           <button class="btn sm" onclick="copyText(document.getElementById('ocSnippet').textContent)" style="margin-top:10px">复制配置片段</button>
         </div>
         <div class="set-group" style="margin-top:18px">
@@ -272,13 +272,13 @@
         <div class="set-group">
           <div class="set-group-title">Claude Code</div>
           <p class="hint" style="margin-bottom:8px">把 env 段写进 <code>~/.claude/settings.json</code>（或设为系统环境变量）：</p>
-          <pre id="claudeSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
+          <pre id="claudeSnippet" class="code-pre"></pre>
           <button class="btn sm" onclick="copyText(document.getElementById('claudeSnippet').textContent)" style="margin-top:10px">复制配置</button>
         </div>
         <div class="set-group" style="margin-top:18px">
           <div class="set-group-title">ZCode</div>
           <p class="hint" style="margin-bottom:8px">自定义模型模板里选 <code>anthropic-messages</code> 协议，baseUrl 与 apiKey 按下面填写：</p>
-          <pre id="zcodeSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
+          <pre id="zcodeSnippet" class="code-pre"></pre>
           <button class="btn sm" onclick="copyText(document.getElementById('zcodeSnippet').textContent)" style="margin-top:10px">复制配置</button>
         </div>
       </div>
@@ -738,7 +738,7 @@
       </button>
     </div>
     <div class="modal-body">
-      <pre id="logText" style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:12px;line-height:1.6;font-family:Consolas,monospace;background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:14px"></pre>
+      <pre id="logText" class="code-pre code-log"></pre>
     </div>
   </div>
 </div>
@@ -1207,7 +1207,7 @@ function renderOverview(s){
     const entries=Object.entries(by);
     pc.style.display=entries.length?'':'none';
     pc.innerHTML=entries.map(([pr,v])=>
-      `<button type="button" class="plat-chip${v.bad?' warn':''}" onclick="switchTab('accounts')" title="查看账号">${esc(names[pr]||pr)} ${v.ok} 可用${v.bad?` · ${v.bad} 异常`:''}</button>`).join('');
+      `<button type="button" class="plat-chip jump${v.bad?' warn':''}" onclick="switchTab('accounts')" title="查看账号">${esc(names[pr]||pr)} ${v.ok} 可用${v.bad?` · ${v.bad} 异常`:''}</button>`).join('');
   }
   // 今日/昨日对比并入统计卡 foot（用量页重复卡已删）
   const td0=(s.today&&s.today.today)||{n:0,t:0};
@@ -2395,7 +2395,7 @@ function renderThemeChips(){
 function glassOpts(dark){
   return {
     bevel:22, thickness:30, slope:1.25, shape:'squircle',
-    blur:9, dispersion:.8,
+    blur:6, dispersion:.6,
     shade: dark?.6:.30, rim: dark?1.9:1.35,
     edgeW:6, sat:.92, edge: dark?.42:.26,
     light:-140, settle:160
@@ -2566,7 +2566,7 @@ ${lines.join(',\n')}
     let m=document.getElementById('ocResultModal');
     if(!m){
       m=document.createElement('div'); m.id='ocResultModal'; m.className='modal-bg';
-      m.innerHTML=`<div class="modal"><div class="modal-head"><h3 id="ocResultTitle"></h3><button class="modal-x" onclick="closeModal('ocResultModal')" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><pre id="ocResultPre" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace;max-height:60vh"></pre><div class="modal-foot"><button class="btn" onclick="copyText(document.getElementById('ocResultPre').textContent);closeModal('ocResultModal')">复制并关闭</button></div></div>`;
+      m.innerHTML=`<div class="modal"><div class="modal-head"><h3 id="ocResultTitle"></h3><button class="modal-x" onclick="closeModal('ocResultModal')" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><pre id="ocResultPre" class="code-pre" style="max-height:60vh"></pre><div class="modal-foot"><button class="btn" onclick="copyText(document.getElementById('ocResultPre').textContent);closeModal('ocResultModal')">复制并关闭</button></div></div>`;
       document.body.appendChild(m);
     }
     document.getElementById('ocResultTitle').textContent=title||'结果';

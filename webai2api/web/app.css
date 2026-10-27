@@ -38,7 +38,7 @@
   --pat-ink:rgba(70,90,130,.16);
   --shadow:0 1px 1px rgba(16,24,40,.04),0 16px 40px -18px rgba(16,24,40,.28),inset 0 1px 0 rgba(255,255,255,.85);
   --shadow-lg:0 2px 6px rgba(16,24,40,.06),0 30px 70px -14px rgba(16,24,40,.30),inset 0 1px 0 rgba(255,255,255,.72);
-  --glass-blur:34px;
+  --glass-blur:22px;
 }
 html[data-theme=dark]{
   color-scheme:dark;
@@ -133,8 +133,8 @@ input[type=checkbox]{accent-color:var(--accent)}
   height:48px;display:flex;align-items:center;gap:12px;
   padding:0 22px;
   background:var(--surface-flat);
-  backdrop-filter:blur(24px) saturate(180%);
-  -webkit-backdrop-filter:blur(24px) saturate(180%);
+  backdrop-filter:blur(14px) saturate(180%);
+  -webkit-backdrop-filter:blur(14px) saturate(180%);
   border-bottom:1px solid rgba(255,255,255,.4);
 }
 .brand{display:flex;align-items:center;gap:9px;font-weight:600;font-size:15.5px;letter-spacing:-.02em}
@@ -201,7 +201,7 @@ html[data-theme=dark] .tabs-bar,html[data-theme=neon] .tabs-bar,html[data-theme=
 .stat-pill{
   font-size:12.5px;color:var(--text3);white-space:nowrap;
   background:var(--surface-flat);border:1px solid rgba(255,255,255,.45);
-  padding:5px 11px;border-radius:999px;backdrop-filter:blur(12px);
+  padding:5px 11px;border-radius:999px;backdrop-filter:blur(8px);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.55);
 }
 html[data-theme=dark] .stat-pill,html[data-theme=neon] .stat-pill,html[data-theme=terminal] .stat-pill,html[data-theme=mono-dark] .stat-pill{border-color:rgba(255,255,255,.08);box-shadow:none}
@@ -343,9 +343,9 @@ html[data-theme=dark] .tag.err,html[data-theme=neon] .tag.err,html[data-theme=te
 .tbl-scroll.tall{max-height:520px}
 .tbl-scroll thead th{
   position:sticky;top:0;z-index:2;
-  background:var(--sticky-th);
-  backdrop-filter:blur(16px) saturate(160%);
-  -webkit-backdrop-filter:blur(16px) saturate(160%);
+  background:var(--sticky-th,var(--surface-flat,var(--bg)));
+  backdrop-filter:blur(10px) saturate(160%);
+  -webkit-backdrop-filter:blur(10px) saturate(160%);
   border-bottom:1px solid var(--hairline);
 }
 .model-table table th:not(:first-child),
@@ -1329,3 +1329,21 @@ input[type=color]::-webkit-color-swatch{border:1px solid var(--line,rgba(0,0,0,.
 .plat-chip:hover{color:var(--text);border-color:var(--accent)}
 .plat-chip.warn{border-color:rgba(255,159,10,.45);color:var(--text)}
 .plat-chip.on{border-color:var(--accent);color:var(--text);background:var(--accent-soft)}
+
+/* ── v0.1.40 设计打磨：代码块主题化 / chip 语义记号 / 极简主题图表去饱和 ── */
+:root{--code-bg:#f3f5f9;--code-fg:#1f2430;--code-line:rgba(16,24,40,.08)}
+html[data-theme=dark],html[data-theme=mono-dark]{
+  --code-bg:#10151d;--code-fg:#e6e8ee;--code-line:rgba(255,255,255,.08)}
+.code-pre{
+  background:var(--code-bg);color:var(--code-fg);
+  border:1px solid var(--code-line);border-radius:12px;
+  padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;
+  font-family:'SF Mono',Consolas,ui-monospace,monospace;margin:0;
+}
+.code-pre.code-log{font-size:12px;padding:14px;white-space:pre-wrap;word-break:break-all}
+/* chip 语义：跳转 chip 带 › 记号；筛选 chip 用选中态 .on；纯状态展示用 .tag。三者不再混用 */
+.plat-chip.jump::after{content:"›";margin-left:2px;opacity:.55;font-weight:600}
+/* 极简主题：图表去饱和，让「极简」贯彻到图表层 */
+html[data-theme=mono-light] .donut-seg,html[data-theme=mono-dark] .donut-seg,
+html[data-theme=mono-light] .bar-fill,html[data-theme=mono-dark] .bar-fill,
+html[data-theme=mono-light] .m-dot,html[data-theme=mono-dark] .m-dot{filter:grayscale(.85)}
