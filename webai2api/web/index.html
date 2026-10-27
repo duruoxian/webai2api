@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.41">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.42">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -23,7 +23,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.41"></script>
+<script src="/admin/static/hyalite.js?v=0.1.42"></script>
 </head>
 <body>
 
@@ -1063,7 +1063,7 @@ function setRange(r){
   document.getElementById('rangeEndText').textContent='选择日期';
   document.getElementById('rangeStartBtn').classList.add('empty');
   document.getElementById('rangeEndBtn').classList.add('empty');
-  refresh();
+  refreshData(true);
 }
 function cancelCustomRange(){
   closeDatePicker();
@@ -1071,7 +1071,7 @@ function cancelCustomRange(){
   RANGE='all'; RANGE_START=''; RANGE_END='';
   segSet('rangeSeg','all');
   document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range==='all'));
-  refresh();
+  refreshData(true);
 }
 function applyCustomRange(){
   if(!RANGE_START){ toast('请选择开始日期'); return; }
@@ -1082,10 +1082,10 @@ function applyCustomRange(){
   closeDatePicker();
   document.getElementById('customRange').classList.remove('show');
   document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range==='custom'));
-  refresh();
+  refreshData(true);
 }
 
-async function refresh(){
+function stateQs(){
   let qs='';
   if(RANGE!=='all'){
     qs='?range='+encodeURIComponent(RANGE)
@@ -1097,7 +1097,12 @@ async function refresh(){
   if(RECENT_KEY) qs+='&key_id='+encodeURIComponent(RECENT_KEY);
   if(RECENT_ACC) qs+='&account_id='+encodeURIComponent(RECENT_ACC);
   if(RECENT_STATUS) qs+='&status='+encodeURIComponent(RECENT_STATUS);
-  const s=await api('/state'+qs);
+  return qs;
+}
+/* 只刷数据（总览+用量）：段选切换与轮询走这条路径，不再整页重画 */
+async function refreshData(cue){
+  if(cue) document.body.classList.add('loading');
+  const s=await api('/state'+stateQs());
   document.body.classList.remove('loading');
   if(!s||!s.ok)return;
   LAST_STATE=s;
@@ -1105,7 +1110,13 @@ async function refresh(){
     `可用账号 <b>${s.accounts.filter(a=>a.enabled).length}</b>`;
   document.getElementById('navKey').innerHTML =
     `Key <b>${s.keys.length}</b>`;
-  renderOverview(s);renderAccounts(s);renderKeys(s);renderUsage(s);renderSettings(s);
+  renderOverview(s);renderUsage(s);
+}
+async function refresh(){
+  await refreshData(false);
+  const s=LAST_STATE;
+  if(!s||!s.ok) return;
+  renderAccounts(s);renderKeys(s);renderSettings(s);
   bindLimitInputs();
   loadSystem();
   if(window.__setLimits) window.__setLimits(s.settings||{});
@@ -2548,10 +2559,11 @@ ${lines.join(',\n')}
   ['accProvider','accEgress'].forEach(selBuild);
   if(TOKEN){document.body.classList.add('loading');try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
   setInterval(()=>{
+    if(document.hidden) return;
     if(document.getElementById('mainView').style.display==='none') return;
     if(document.body.classList.contains('modal-open')) return;
-    refresh();
-  },5000);
+    refreshData(false);
+  },15000);
 })();
 </script>
 </body>
