@@ -1285,3 +1285,27 @@ html[data-theme=dark] .alert-bar .alert-x:hover,html[data-theme=neon] .alert-bar
 .seg.has-ind>button{position:relative;z-index:1}
 .seg.has-ind>button.active{background:transparent;box-shadow:none}
 @media (prefers-reduced-motion:reduce){.seg .seg-ind{transition:none}}
+
+/* ── 2026-10-28 第四批：新背景纹理（十字/波纹/编织/雾面）── */
+html[data-pattern=cross] body::before{display:block;
+  background-image:linear-gradient(var(--pat-ink) 1px,transparent 1px),
+                   linear-gradient(90deg,var(--pat-ink) 1px,transparent 1px),
+                   linear-gradient(45deg,var(--pat-ink) 1px,transparent 1px),
+                   linear-gradient(-45deg,var(--pat-ink) 1px,transparent 1px);
+  background-size:26px 26px}
+html[data-pattern=waves] body::before{display:block;
+  background-image:radial-gradient(var(--pat-ink) 6px,transparent 6.5px);
+  background-size:28px 14px}
+html[data-pattern=weave] body::before{display:block;opacity:.75;
+  background-image:repeating-linear-gradient(0deg,var(--pat-ink) 0 2px,transparent 2px 12px),
+                   repeating-linear-gradient(90deg,var(--pat-ink) 0 2px,transparent 2px 12px)}
+html[data-pattern=veil] body::before{display:block;
+  background-image:radial-gradient(1100px 480px at 18% -8%,var(--pat-ink),transparent 60%),
+                   radial-gradient(900px 420px at 92% 108%,var(--pat-ink),transparent 55%)}
+html[data-theme=dark] body,html[data-theme=mono-dark] body{--pat-ink:rgba(255,255,255,.10)}
+
+/* ── 第四批：外观卡调色盘 / 按钮行右对齐 ── */
+input[type=color]{-webkit-appearance:none;appearance:none}
+input[type=color]::-webkit-color-swatch-wrapper{padding:0}
+input[type=color]::-webkit-color-swatch{border:1px solid var(--line,rgba(0,0,0,.14));border-radius:8px}
+.btn-row{justify-content:flex-end}
