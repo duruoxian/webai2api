@@ -10,6 +10,7 @@ EXPOSED_MODELS = (
     "default",
 )
 
+
 @dataclass(slots=True)
 class AppConfig:
     env_file_path: Path
@@ -27,7 +28,7 @@ class AppConfig:
     auth_token: str
     device_id: str
     settings_token: str
-    cookie: str   
+    cookie: str
     base_url: str
     wasm_path: str
 
@@ -47,17 +48,17 @@ class AppConfig:
     user_agent: str = ""
     device_model: str = ""
     session_store_path: str = ""
-    daily_request_limit: int = 600
+    daily_request_limit: int = 150
     long_pause_chance: float = 0.02
     max_turns_per_session: int = 40
     min_request_interval: float = 1.2
-    proxy: str = ""                # 账号级出口代理（custom 模式使用）
-    egress: str = "system"         # direct / system / custom
+    proxy: str = ""  # 账号级出口代理（custom 模式使用）
+    egress: str = "system"  # direct / system / custom
 
     # ── 会话缓存 ──
     session_cache_enabled: bool = True
     session_cache_max_size: int = 500
-    session_cache_ttl: int = 7200    
+    session_cache_ttl: int = 7200
 
     search_enabled: bool = False
     strip_citations: bool = True
@@ -97,4 +98,3 @@ class AppConfig:
     @property
     def hif_dliq_url(self) -> str:
         return "https://hif-dliq.deepseek.com/query"
-

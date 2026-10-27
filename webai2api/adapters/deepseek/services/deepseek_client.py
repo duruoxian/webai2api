@@ -35,6 +35,7 @@ from typing import Callable
 from ..config import AppConfig
 from ..logging_utils import debug_dump
 from .deepseek_auth import DeepSeekAuthManager
+from . import browser_transport
 from .pow_solver import PoWSolver
 from .session_cache import SessionCache, SessionState, conv_fingerprint, prefix_hash
 from .tool_calling import (
@@ -98,6 +99,33 @@ class UpstreamAPIError(RuntimeError):
         super().__init__(message)
         self.status_code = status_code
         self.payload = payload or {}
+
+
+# 账号封禁/限制类 hint 关键词。命中即熔断：该账号长冷却，绝不重试、绝不续写
+# （对着已封账号继续打请求只会加重风控记录）。
+_BANNED_HINT_KEYWORDS = (
+    "封禁",
+    "被封",
+    "封号",
+    "封停",
+    "账号已被限制",
+    "账号异常",
+    "永久限制",
+    "banned",
+    "suspended",
+)
+
+
+def _hint_is_banned(finish_reason: object, content: object) -> bool:
+    low = f"{finish_reason or ''} {content or ''}".lower()
+    return any(k in low for k in _BANNED_HINT_KEYWORDS)
+
+
+class AccountBannedError(UpstreamAPIError):
+    """上游明确提示账号被限制/封禁（区别于限流与内容审核）。"""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(status_code=403, message=message)
 
 
 class QueueTimeoutError(RuntimeError):
@@ -175,6 +203,11 @@ class ConcurrentRequestQueue:
                 request_name,
             )
             return QueueLease(ticket=ticket, release_callback=self._release)
+
+    def pending(self) -> int:
+        """已取号未释放的请求数（排队+在服务），作为选号负载均衡水位。"""
+        with self._condition:
+            return max(0, self._next_ticket - self._serving_ticket)
 
     def _release(self, ticket: int) -> None:
         with self._condition:
@@ -427,6 +460,8 @@ class DeepSeekWebClient:
         self._http_conn = None
         self._http_host = None
         self._http_proxy = ""
+        # 浏览器指纹传输会话（curl_cffi，惰性创建；不可用时为 None）
+        self._browser = None
         # 风险指标计数器（进程内，面板展示）
         self._stats: dict[str, int] = {}
         self._stats_lock = threading.Lock()
@@ -546,6 +581,39 @@ class DeepSeekWebClient:
             self._http_proxy = f"{egress}|{proxy_url}"
         return conn
 
+    def _browser_request(
+        self, url: str, *, method: str, headers: dict, data, timeout: int
+    ):
+        """浏览器指纹传输（curl_cffi）。返回 None 表示应回退 http.client。
+
+        **任何**异常都返回 None 交给原路径重试：换传输不能引入新的失败面。
+        """
+        if not browser_transport.available():
+            return None
+        egress = str(getattr(self.config, "egress", "system") or "system")
+        proxy_url = str(getattr(self.config, "proxy", "") or "")
+        proxy, complex_mode = browser_transport.resolve_proxy(egress, proxy_url)
+        if complex_mode:
+            return None
+        try:
+            if getattr(self, "_browser", None) is None:
+                self._browser = browser_transport.BrowserSession()
+            return self._browser.request(
+                url,
+                method=method,
+                headers=headers,
+                data=data,
+                timeout=timeout,
+                proxy=proxy,
+            )
+        except urllib.error.HTTPError:
+            # HTTP 层错误是**业务结果**（401/403/429 等），必须原样抛给
+            # 上层分类逻辑，不能被当成传输失败回退重发。
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("浏览器指纹传输失败，回退 http.client: %s", exc)
+            return None
+
     def _drop_http_conn(self) -> None:
         conn = self._http_conn
         self._http_conn = None
@@ -562,6 +630,10 @@ class DeepSeekWebClient:
 
         立刻把 body 读干净，连接随即回到空闲态可复用；返回的对象与连接解耦，
         with 退出时不会关闭连接。出错时抛 urllib.error.HTTPError / URLError。
+
+        **传输层优先走 curl_cffi 浏览器指纹**（browser_transport），避免
+        「头部像浏览器、TLS 像脚本」的指纹矛盾；不可用/代理模式不确定时
+        静默回退到原 http.client 路径，行为与改造前一致。
         """
         import io
         from urllib.parse import urlsplit
@@ -599,6 +671,13 @@ class DeepSeekWebClient:
         headers = {k: v for k, v in request.header_items()}
         data = request.data
 
+        # ── 传输层：浏览器指纹优先，失败即回退 ──
+        resp = self._browser_request(
+            url, method=method, headers=headers, data=data, timeout=timeout
+        )
+        if resp is not None:
+            return resp
+
         last_exc: Exception | None = None
         for _ in range(2):
             conn = self._get_http_conn(host, timeout)
@@ -635,6 +714,14 @@ class DeepSeekWebClient:
             return False
         if event.get("type") == "error":
             finish_reason = event.get("finish_reason")
+            if finish_reason not in (
+                "context_length_exceeded",
+                "rate_limit_reached",
+                "file_parse_error",
+            ) and _hint_is_banned(finish_reason, event.get("content")):
+                raise AccountBannedError(
+                    str(event.get("content") or "DeepSeek: 账号已被限制")
+                )
             if finish_reason == "context_length_exceeded":
                 raise ContextLengthExceededError("DeepSeek: 达到对话长度上限")
             if finish_reason == "rate_limit_reached":

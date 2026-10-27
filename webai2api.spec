@@ -40,6 +40,14 @@ datas += wt_datas
 # deepseek_pow 内置 wasm
 datas += collect_data_files("deepseek_pow")
 
+# curl_cffi（浏览器 TLS 指纹，deepseek 上游传输层）：自带 BoringSSL 二进制
+try:
+    _cc_datas, _cc_bins, _cc_hidden = collect_all("curl_cffi")
+    datas += _cc_datas
+except Exception:
+    _cc_hidden = []
+    _cc_bins = []
+
 # pystray / pillow（系统托盘）在下方 hiddenimports 汇总后处理
 _tray_datas, _tray_bins, _tray_hidden = [], [], []
 for pkg in ("pystray", "PIL"):
@@ -71,12 +79,12 @@ hiddenimports = [
     "socks",          # PySocks：socks5 代理（运行期动态 import）
     "sockshandler",
     "webai2api.edition",   # license.py 运行期动态 import
-] + wt_hidden + wv_hidden + _tray_hidden
+] + wt_hidden + wv_hidden + _tray_hidden + _cc_hidden
 
 a = Analysis(
     ["run.py"],
     pathex=[],
-    binaries=wt_bins + _tray_bins,
+    binaries=wt_bins + _tray_bins + _cc_bins,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

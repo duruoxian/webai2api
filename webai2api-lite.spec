@@ -52,6 +52,14 @@ datas += wt_datas
 
 datas += collect_data_files("deepseek_pow")
 
+# curl_cffi（浏览器 TLS 指纹传输层）
+try:
+    _cc_datas, _cc_bins, _cc_hidden = collect_all("curl_cffi")
+    datas += _cc_datas
+except Exception:
+    _cc_hidden = []
+    _cc_bins = []
+
 _tray_datas, _tray_bins, _tray_hidden = [], [], []
 for pkg in ("pystray", "PIL"):
     try:
@@ -83,12 +91,12 @@ hiddenimports = [
     "pythonnet",
     "socks",          # PySocks：socks5 代理（运行期动态 import）
     "sockshandler",
-] + wt_hidden + wv_hidden + _tray_hidden
+] + wt_hidden + wv_hidden + _tray_hidden + _cc_hidden
 
 a = Analysis(
     ["run.py"],
     pathex=[],
-    binaries=wt_bins + _tray_bins,
+    binaries=wt_bins + _tray_bins + _cc_bins,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

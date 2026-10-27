@@ -140,8 +140,7 @@ def _estimate_tokens(text: str) -> int:
 def _messages_text(payload: dict) -> str:
     msgs = payload.get("messages") or []
     return "".join(
-        _msg_text(m.get("content")) if isinstance(m, dict) else ""
-        for m in msgs
+        _msg_text(m.get("content")) if isinstance(m, dict) else "" for m in msgs
     )
 
 
@@ -190,6 +189,17 @@ def _classify_error(exc: Exception | None) -> str:
 
     if has("429", "rate limit", "too many", "限流", "频繁"):
         return "rate"
+    if has(
+        "封禁",
+        "被封",
+        "封号",
+        "封停",
+        "账号已被限制",
+        "账号异常",
+        "banned",
+        "suspended",
+    ):
+        return "banned"
     if re.search(r"\b401\b", text) or has(
         "unauthorized",
         "refresh_token",
@@ -229,6 +239,10 @@ def _apply_failure(registry: ProviderRegistry, ac, exc: Exception) -> str:
         ac.mark_bad(600, exc=exc)
     elif kind == "rate":
         registry.note_auth_ok(ac.account["id"])
+        ac.mark_bad(exc=exc)
+    elif kind == "banned":
+        # 封禁类：mark_bad 内部按关键词给 7 天长冷却；不计 auth 失败
+        # （note_auth_failure 可能把账号在库里误禁用，封禁应保持可观察）
         ac.mark_bad(exc=exc)
     elif kind == "content":
         ac.mark_ok()

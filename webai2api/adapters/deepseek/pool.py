@@ -8,6 +8,7 @@
 - 支持把某账号临时标记为"冷却中"（如凭证失效），自动跳到其他账号
 - 创建客户端时不长时间持锁
 """
+
 from __future__ import annotations
 
 import json
@@ -34,6 +35,27 @@ def _is_rate_limited(exc: Exception) -> bool:
     return any(w in low for w in ("429", "rate limit", "too many", "限流", "频繁"))
 
 
+# 封禁类熔断：7 天长冷却。对着已封账号重试/续写只会加重风控记录。
+BAN_COOLDOWN_SECONDS = 7 * 24 * 3600
+
+
+def _is_banned_exc(exc: Exception) -> bool:
+    low = str(exc).lower()
+    return any(
+        w in low
+        for w in (
+            "封禁",
+            "被封",
+            "封号",
+            "封停",
+            "账号已被限制",
+            "账号异常",
+            "banned",
+            "suspended",
+        )
+    )
+
+
 def _base_defaults(store: Store) -> dict:
     """从 settings 读取全局默认（可被面板修改）。"""
     return {
@@ -47,10 +69,14 @@ def _base_defaults(store: Store) -> dict:
         "session_cache": store.get_setting("deepseek_session_cache", "true"),
         "cache_ttl": int(store.get_setting("deepseek_cache_ttl", "43200")),
         "cache_max_size": int(store.get_setting("deepseek_cache_max_size", "2000")),
-        "daily_limit": int(store.get_setting("deepseek_daily_limit", "600")),
-        "long_pause_chance": float(store.get_setting("deepseek_long_pause_chance", "0.02")),
+        "daily_limit": int(store.get_setting("deepseek_daily_limit", "150")),
+        "long_pause_chance": float(
+            store.get_setting("deepseek_long_pause_chance", "0.02")
+        ),
         "max_turns": int(store.get_setting("deepseek_max_turns", "40")),
-        "min_interval": float(store.get_setting("deepseek_min_request_interval", "1.2")),
+        "min_interval": float(
+            store.get_setting("deepseek_min_request_interval", "1.2")
+        ),
         "search": store.get_setting("deepseek_search", "false"),
     }
 
@@ -129,7 +155,9 @@ def build_pool(store: Store, logger: Logger) -> "ClientPool":
 class AccountClient:
     """一个账号 + 它的客户端。"""
 
-    def __init__(self, account: dict, client: DeepSeekWebClient, config: ds_config.AppConfig) -> None:
+    def __init__(
+        self, account: dict, client: DeepSeekWebClient, config: ds_config.AppConfig
+    ) -> None:
         self.account = account
         self.client = client
         self.config = config
@@ -157,7 +185,12 @@ class AccountClient:
     def cooldown_left(self) -> int:
         return max(0, int(self.cooldown_until - time.time()))
 
-    def mark_bad(self, seconds: int = COOLDOWN_SECONDS, exc: Exception | None = None) -> None:
+    def mark_bad(
+        self, seconds: int = COOLDOWN_SECONDS, exc: Exception | None = None
+    ) -> None:
+        if exc is not None and _is_banned_exc(exc):
+            self.cooldown_until = time.time() + BAN_COOLDOWN_SECONDS
+            return
         if exc is not None and _is_rate_limited(exc):
             self.rate_hits += 1
             seconds = min(900, 60 * (2 ** (self.rate_hits - 1)))
@@ -224,9 +257,12 @@ class ClientPool:
             self._sync()
             return list(self._clients.values())
 
-    def pick(self, exclude: set[str] | None = None,
-             allowed: set[str] | None = None,
-             prefer: str | None = None) -> AccountClient | None:
+    def pick(
+        self,
+        exclude: set[str] | None = None,
+        allowed: set[str] | None = None,
+        prefer: str | None = None,
+    ) -> AccountClient | None:
         """轮询选一个"健康"的可用账号，可排除 / 限定账号范围 / 优先指定。
 
         全部处于冷却时，只有冷却快结束（≤45 秒）才勉强放行。
@@ -234,13 +270,22 @@ class ClientPool:
         exclude = exclude or set()
         with self._lock:
             self._sync()
-            items = [c for c in self._clients.values()
-                     if c.account["id"] not in exclude and c.healthy()
-                     and account_ready(c.account) and not c.daily_exhausted()]
+            items = [
+                c
+                for c in self._clients.values()
+                if c.account["id"] not in exclude
+                and c.healthy()
+                and account_ready(c.account)
+                and not c.daily_exhausted()
+            ]
             if not items:
-                cooling = [c for c in self._clients.values()
-                           if c.account["id"] not in exclude and account_ready(c.account)
-                           and not c.daily_exhausted()]
+                cooling = [
+                    c
+                    for c in self._clients.values()
+                    if c.account["id"] not in exclude
+                    and account_ready(c.account)
+                    and not c.daily_exhausted()
+                ]
                 items = [c for c in cooling if c.cooldown_left() <= 45]
             if allowed:
                 items = [c for c in items if c.account["id"] in allowed]
@@ -250,18 +295,25 @@ class ClientPool:
                 for c in items:
                     if c.account["id"] == prefer:
                         return c
-            self._rr = (self._rr + 1) % len(items)
-            return items[self._rr]
+            # 负载分散：优先选无在途请求的账号，避免新请求堆到同一账号
+            # 队列里白等（最长 60s）而别的账号闲置；全忙时回退原轮询
+            # （每账号队列本身已串行化，不会真并发打同一 cookie）。
+            idle = [c for c in items if c.client.request_queue.pending() == 0]
+            pool_items = idle or items
+            self._rr = (self._rr + 1) % len(pool_items)
+            return pool_items[self._rr]
 
     def cooldowns(self) -> dict[str, int]:
         """各账号剩余冷却秒数（>0 表示正在休息）。"""
         with self._lock:
             self._sync()
-            return {aid: c.cooldown_left() for aid, c in self._clients.items()
-                    if c.cooldown_left() > 0}
+            return {
+                aid: c.cooldown_left()
+                for aid, c in self._clients.items()
+                if c.cooldown_left() > 0
+            }
 
     def pick_by_id(self, account_id: str) -> AccountClient | None:
         with self._lock:
             self._sync()
             return self._clients.get(account_id)
-
