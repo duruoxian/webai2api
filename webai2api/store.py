@@ -78,6 +78,14 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS acc_stats (
+    account_id TEXT NOT NULL,
+    day        TEXT NOT NULL,
+    metric     TEXT NOT NULL,
+    value      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, day, metric)
+);
 """
 
 
@@ -566,6 +574,23 @@ class Store:
         with self._conn() as c:
             row = c.execute("SELECT COUNT(*) n FROM usage_log" + where, tuple(args)).fetchone()
         return int(row["n"]) if row else 0
+
+    # ── 账号级日累计指标（风险指标/日配额持久化，按自然日归零）─────────
+    def bump_stat(self, account_id: str, day: str, metric: str, delta: int = 1) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO acc_stats(account_id, day, metric, value) VALUES(?,?,?,?) "
+                "ON CONFLICT(account_id, day, metric) DO UPDATE SET value = value + excluded.value",
+                (account_id, day, metric, int(delta)),
+            )
+
+    def get_stat(self, account_id: str, day: str, metric: str) -> int:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT value FROM acc_stats WHERE account_id=? AND day=? AND metric=?",
+                (account_id, day, metric),
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def key_usage_map(self) -> dict[str, dict]:
         """每个 Key 今日/本月 Token 用量（额度看板用）。"""

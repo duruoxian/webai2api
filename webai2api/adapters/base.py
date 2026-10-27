@@ -32,16 +32,30 @@ def _is_rate_limited(exc: Exception) -> bool:
 class AccountClient:
     """一个账号 + 它的客户端。"""
 
-    def __init__(self, account: dict, client, config) -> None:
+    RISK_METRICS = (
+        "sessions_created", "sessions_deleted", "cache_hit", "cache_miss",
+        "upstream_requests", "rate_limit_hits",
+    )
+
+    def __init__(self, account: dict, client, config, store: Store | None = None) -> None:
         self.account = account
         self.client = client
         self.config = config
+        self.store = store
         self.cooldown_until = 0.0
         self.rate_hits = 0
-        # ── 日请求配额（进程内计数，跨天自动归零）──
+        # ── 日请求配额：有 store 时持久化（跨重启累计、按自然日归零）──
         self.daily_limit = int(getattr(config, "daily_request_limit", 0) or 0)
         self._daily_day = time.strftime("%Y-%m-%d")
         self._daily_count = 0
+        self._risk_last_read: dict | None = None
+
+    def _account_id(self) -> str:
+        return str(self.account.get("id") or "")
+
+    @staticmethod
+    def _today() -> str:
+        return time.strftime("%Y-%m-%d")
 
     def _roll_day(self) -> None:
         today = time.strftime("%Y-%m-%d")
@@ -49,10 +63,19 @@ class AccountClient:
             self._daily_day = today
             self._daily_count = 0
 
+    def daily_used(self) -> int:
+        """当日已用请求数：有 store 用持久值（重启后仍正确），否则退回内存计数。"""
+        self._roll_day()
+        if self.store is not None and self._account_id():
+            try:
+                return int(self.store.get_stat(self._account_id(), self._today(), "requests"))
+            except Exception:  # noqa: BLE001
+                pass
+        return int(self._daily_count)
+
     def daily_exhausted(self) -> bool:
         """当日请求数已达上限则不可用（limit<=0 表示不限）。"""
-        self._roll_day()
-        return self.daily_limit > 0 and self._daily_count >= self.daily_limit
+        return self.daily_limit > 0 and self.daily_used() >= self.daily_limit
 
     def healthy(self) -> bool:
         return self.cooldown_until < time.time()
@@ -72,6 +95,44 @@ class AccountClient:
         self.rate_hits = 0
         self._roll_day()
         self._daily_count += 1
+        if self.store is not None and self._account_id():
+            try:
+                self.store.bump_stat(self._account_id(), self._today(), "requests", 1)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def persist_and_display_risk(self) -> dict:
+        """风险指标：把内存计数相对上次读取的增量持久化到 acc_stats（当日），
+        返回「当日持久累计值」供面板展示——跨重启保留、按自然日归零。
+        内存计数在重启后从 0 开始，差量为负/零时以持久值兜底。"""
+        stats: dict = {}
+        try:
+            stats = dict(self.client.risk_stats() or {}) if self.client is not None else {}
+        except Exception:  # noqa: BLE001
+            stats = {}
+        if not stats:
+            return stats
+        if self.store is None or not self._account_id():
+            return stats
+        day = self._today()
+        last = self._risk_last_read or {}
+        try:
+            for m in self.RISK_METRICS:
+                now_v = int(stats.get(m) or 0)
+                prev = int(last.get(m) or 0)
+                delta = now_v - prev
+                if delta > 0:
+                    self.store.bump_stat(self._account_id(), day, m, delta)
+                persisted = int(self.store.get_stat(self._account_id(), day, m))
+                # 持久累计值恒 ≥ 本进程内存计数（内存只是本进程的子集）
+                stats[m] = max(persisted, now_v)
+                last[m] = now_v
+            hit, miss = int(stats.get("cache_hit") or 0), int(stats.get("cache_miss") or 0)
+            stats["cache_hit_rate"] = round(hit / (hit + miss), 3) if (hit + miss) else 0.0
+            self._risk_last_read = last
+        except Exception:  # noqa: BLE001
+            pass
+        return stats
 
 
 class GenericClientPool:
@@ -127,7 +188,7 @@ class GenericClientPool:
                 cfg = self._build_config(self.store, a)
                 client = self._client_factory(cfg, self.logger)
                 old = self._clients.get(a["id"])
-                ac = AccountClient(a, client, cfg)
+                ac = AccountClient(a, client, cfg, store=self.store)
                 if old:
                     ac.cooldown_until = old.cooldown_until
                     ac.rate_hits = old.rate_hits

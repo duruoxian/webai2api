@@ -369,13 +369,26 @@ def create_admin_router(
         items: list[dict] = []
         for ac in await run_in_threadpool(registry.all_accounts):
             client = getattr(ac, "client", None)
-            stats = {}
-            if client is not None and hasattr(client, "risk_stats"):
+            # 风险指标：走 AccountClient 的差量持久化（当日累计跨重启保留）
+            if hasattr(ac, "persist_and_display_risk"):
+                try:
+                    stats = await run_in_threadpool(ac.persist_and_display_risk)
+                except Exception:  # noqa: BLE001
+                    stats = {}
+            elif client is not None and hasattr(client, "risk_stats"):
                 try:
                     stats = client.risk_stats()
                 except Exception:  # noqa: BLE001
                     stats = {}
-            stats["daily_count"] = int(getattr(ac, "_daily_count", 0) or 0)
+            else:
+                stats = {}
+            if hasattr(ac, "daily_used"):
+                try:
+                    stats["daily_count"] = int(await run_in_threadpool(ac.daily_used))
+                except Exception:  # noqa: BLE001
+                    stats["daily_count"] = int(getattr(ac, "_daily_count", 0) or 0)
+            else:
+                stats["daily_count"] = int(getattr(ac, "_daily_count", 0) or 0)
             stats["daily_limit"] = int(getattr(ac, "daily_limit", 0) or 0)
             stats["cooldown_left"] = (
                 int(ac.cooldown_left()) if hasattr(ac, "cooldown_left") else 0
@@ -567,11 +580,9 @@ def create_admin_router(
         name = b.get("name")
         accounts = b.get("accounts")
         models = b.get("models")
-        owner = b.get("owner")
         note = b.get("note")
-        expires_at = b.get("expires_at")
-        quota_daily = b.get("quota_daily")
-        quota_monthly = b.get("quota_monthly")
+        # 2026-10-28 用户拍板：归属人/到期时间/每日与每月 Token 上限四项退役。
+        # 面板已删输入，这里显式忽略这些字段；DB 列保留不用，避免迁移。
         if accounts is not None or models is not None:
             cur = next(
                 (
@@ -598,9 +609,7 @@ def create_admin_router(
             name is not None
             or accounts is not None
             or models is not None
-            or owner is not None
             or note is not None
-            or expires_at is not None
         ):
             await run_in_threadpool(
                 store.update_key,
@@ -616,13 +625,7 @@ def create_admin_router(
                     if models is not None
                     else None
                 ),
-                owner=str(owner or "").strip() if owner is not None else None,
                 note=str(note or "").strip() if note is not None else None,
-                expires_at=float(expires_at or 0) if expires_at is not None else None,
-                quota_daily=int(quota_daily or 0) if quota_daily is not None else None,
-                quota_monthly=int(quota_monthly or 0)
-                if quota_monthly is not None
-                else None,
             )
         return {"ok": True}
 

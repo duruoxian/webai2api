@@ -238,7 +238,7 @@ class ClientPool:
                 cfg = build_config(self.store, a)
                 client = DeepSeekWebClient(config=cfg, logger=self.logger)
                 old = self._clients.get(a["id"])
-                ac = AccountClient(a, client, cfg)
+                ac = AccountClient(a, client, cfg, store=self.store)
                 if old:
                     ac.cooldown_until = old.cooldown_until
                     ac.rate_hits = old.rate_hits
