@@ -516,50 +516,6 @@
         </div>
       </div>
 
-      <div class="card" id="issuerCard" hidden>
-        <div class="card-head"><h2>授权签发</h2><div class="sp"></div>
-          <span class="hint" style="margin:0">仅本机可见（检测到作者私钥）</span></div>
-
-        <div class="issue-form">
-          <label class="fld"><span>有效天数</span>
-            <input id="issueDays" inputmode="numeric" value="7"></label>
-          <label class="fld"><span>数量</span>
-            <input id="issueCount" inputmode="numeric" value="1"></label>
-          <label class="fld"><span>备注（客户名 / 订单号）</span>
-            <input id="issueNote" placeholder="可选"></label>
-          <label class="fld"><span>绑定机器码（留空 = 通用码，可任意机器激活）</span>
-            <input id="issueMachine" placeholder="客户发来的机器码，如 ABCD-EFGH-IJKL-MNOP"></label>
-          <button class="btn issue-submit" onclick="issueCodes()">生成授权码</button>
-        </div>
-
-        <div class="issue-toolbar">
-          <div class="issue-toolbar-title">
-            <b>签发记录</b>
-            <span class="hint" id="issuedInfo"></span>
-          </div>
-          <div class="sp"></div>
-          <input id="issueSearch" class="input-sm" placeholder="搜索授权码 / 备注"
-                 oninput="loadIssued()">
-          <button class="btn gray sm" onclick="exportIssued()">导出 CSV</button>
-          <button class="btn gray sm" onclick="clearIssued()">清空记录</button>
-        </div>
-
-        <div class="tbl-scroll tall">
-          <table id="issuedTable">
-            <thead><tr>
-              <th style="width:150px">生成时间</th>
-              <th style="width:88px">有效天数</th>
-              <th style="width:118px">参考到期日</th>
-              <th style="width:150px">备注</th>
-              <th>授权码</th>
-              <th style="width:120px"></th>
-            </tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <div id="issueResult" class="issue-list"></div>
-      </div>
-
       <div class="card about">
         <div class="card-head"><h2>关于</h2></div>
         <div class="about-row"><span>作者</span><b>DuRuoxian</b></div>
@@ -1625,96 +1581,8 @@ function renderSettings(s){
   const qax=document.getElementById('setQwenAntiMax'); if(qax) qax.value=s.settings.qwen_anti_max||'3.0';
   const qas=document.getElementById('setQwenSearch'); if(qas) qas.checked=(s.settings.qwen_search||'false')==='true';
   const qac=document.getElementById('setQwenCache'); if(qac) qac.checked=(s.settings.qwen_session_cache||'true')!=='false';
-  loadIssuer();
 }
-let ISSUER_OK=false;
-async function loadIssuer(){
-  if(ISSUER_OK) return;
-  const j=await api('/license/issuer');
-  const card=document.getElementById('issuerCard');
-  const ok=!!(j && j.available);
-  if(card) card.hidden = !ok;
-  ISSUER_OK = ok;
-  if(ok) loadIssued();
-}
-async function issueCodes(){
-  const days=Number(document.getElementById('issueDays').value||7);
-  const count=Number(document.getElementById('issueCount').value||1);
-  const note=document.getElementById('issueNote').value.trim();
-  const machineEl=document.getElementById('issueMachine');
-  const machine=(machineEl?machineEl.value:'').trim();
-  const j=await api('/license/issue','POST',{days,count,note,machine});
-  if(!j||!j.ok){ toast((j&&j.error)||'签发失败'); return; }
-  toast(machine?`已生成 1 个绑定本机的授权码`:`已生成 ${j.items.length} 个授权码`);
-  loadIssued();
-  const first=(j.items||[])[0];
-  if(first) copyText(first.code);
-}
-function issuedExpiry(it){
-  const base=(it.issued||it.created||'').slice(0,10);
-  if(!base) return '—';
-  const d=new Date(base+'T00:00:00');
-  if(isNaN(d)) return '—';
-  d.setDate(d.getDate()+Number(it.days||0));
-  const p=n=>String(n).padStart(2,'0');
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
-}
-let ISSUED_ITEMS=[];
-async function loadIssued(){
-  const qEl=document.getElementById('issueSearch');
-  const q=qEl?qEl.value.trim():'';
-  const j=await api('/license/issued?limit=200&q='+encodeURIComponent(q));
-  if(!j||!j.ok) return;
-  ISSUED_ITEMS=j.items||[];
-  const tb=document.querySelector('#issuedTable tbody');
-  const info=document.getElementById('issuedInfo');
-  if(info){
-    info.textContent = j.total
-      ? (q ? `匹配 ${j.matched} / 共 ${j.total} 条` : `共 ${j.total} 条（显示最近 ${ISSUED_ITEMS.length} 条）`)
-      : '还没有签发记录';
-  }
-  if(!tb) return;
-  tb.innerHTML='';
-  if(!ISSUED_ITEMS.length){
-    tb.innerHTML='<tr><td colspan="6" class="empty">还没有签发记录</td></tr>';
-    return;
-  }
-  ISSUED_ITEMS.forEach((it,i)=>{
-    const code=esc(it.code||'');
-    const id=esc(it.id||'');
-    tb.innerHTML+=`<tr>
-      <td class="muted" style="white-space:nowrap">${esc((it.created||'').slice(0,16)||'—')}</td>
-      <td class="num-t">${Number(it.days)||0} 天</td>
-      <td class="muted" style="white-space:nowrap">${issuedExpiry(it)}</td>
-      <td>${esc(it.note||'—')}</td>
-      <td class="mono issued-code" title="${code}">${code}</td>
-      <td style="white-space:nowrap;text-align:right">
-        <button class="btn gray sm" onclick="copyText(ISSUED_ITEMS[${i}].code)">复制</button>
-        <button class="btn gray sm" onclick="deleteIssued('${id}')">删除</button>
-      </td>
-    </tr>`;
-  });
-}
-async function deleteIssued(codeId){
-  if(!codeId) return;
-  if(!confirm('删除这条签发记录？\n\n只删本地记录，不影响已发出的授权码能否使用。')) return;
-  const j=await api('/license/issued/'+encodeURIComponent(codeId),'DELETE');
-  if(!j||!j.ok){ toast((j&&j.error)||'删除失败'); return; }
-  toast('已删除 1 条记录');
-  loadIssued();
-}
-async function clearIssued(){
-  if(!confirm('清空全部签发记录？\n\n只删本地记录，不影响已发出的授权码能否使用。建议先导出 CSV 备份。')) return;
-  const j=await api('/license/issued/clear','POST',{});
-  if(!j||!j.ok){ toast((j&&j.error)||'清空失败'); return; }
-  toast('已清空 '+(j.removed||0)+' 条记录');
-  loadIssued();
-}
-async function exportIssued(){
-  const j=await api('/license/issued/export','POST',{});
-  if(!j||!j.ok){ toast((j&&j.error)||'导出失败'); return; }
-  toast('已导出到 '+(j.path||'数据目录'));
-}
+
 /* 恢复默认：只改表单，点保存才真正写入 */
 const DEEPSEEK_DEFAULTS={
   session_cache:true, search:false,

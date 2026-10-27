@@ -32,10 +32,6 @@ datas = [
 if os.path.exists("sha3_wasm_bg.wasm"):
     datas.append(("sha3_wasm_bg.wasm", "."))
 
-# 授权 HMAC 秘密盐（不进 git）：随包内嵌，供 license.py 的 v3 记录签名
-if os.path.exists("tools/license_pepper.txt"):
-    datas.append(("tools/license_pepper.txt", "webai2api"))
-
 APP_ICON = "assets/webai2api-lite.ico"
 if os.path.exists(APP_ICON):
     datas.append((APP_ICON, "assets"))
@@ -77,8 +73,6 @@ wt_bins = wt_bins + wv_bins
 
 hiddenimports = [
     "webai2api",
-    "webai2api.license",
-    "webai2api.ed25519",
     "webai2api.edition",
     "uvicorn.logging",
     "uvicorn.loops.auto",

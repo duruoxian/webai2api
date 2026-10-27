@@ -8,6 +8,7 @@
 WEBAI2API_OPENCODE_CONFIG 一律 monkeypatch 到 tmp_path，绝不碰真实配置。
 数据库用 tmp_path 下的 sqlite，避免与并发运行的其它服务抢 data/webai2api.db。
 """
+
 from __future__ import annotations
 
 import json
@@ -97,9 +98,12 @@ def _jsonc(text: str) -> dict:
 
 
 # ── 鉴权 ────────────────────────────────────────────
-@pytest.mark.parametrize("path", [
-    "/admin/api/opencode/status",
-])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/api/opencode/status",
+    ],
+)
 def test_status_requires_login(client, path):
     r = client.get(path)
     assert r.status_code == 401
@@ -121,8 +125,11 @@ def test_disconnect_requires_login(client):
 def test_connect_writes_config(client, config_path):
     tok = _login(client)
     key = _add_key(client, tok)
-    r = client.post(f"/admin/api/keys/{key['id']}/opencode/connect",
-                    json={"model": "deepseek-chat"}, headers=_hdr(tok))
+    r = client.post(
+        f"/admin/api/keys/{key['id']}/opencode/connect",
+        json={"model": "deepseek-chat"},
+        headers=_hdr(tok),
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
@@ -140,8 +147,11 @@ def test_connect_writes_config(client, config_path):
 
 def test_connect_unknown_key(client):
     tok = _login(client)
-    r = client.post("/admin/api/keys/key-does-not-exist/opencode/connect",
-                    json={}, headers=_hdr(tok))
+    r = client.post(
+        "/admin/api/keys/key-does-not-exist/opencode/connect",
+        json={},
+        headers=_hdr(tok),
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is False
@@ -152,8 +162,9 @@ def test_connect_disabled_key(client, store):
     tok = _login(client)
     key = _add_key(client, tok)
     store.set_key_enabled(key["id"], False)
-    r = client.post(f"/admin/api/keys/{key['id']}/opencode/connect",
-                    json={}, headers=_hdr(tok))
+    r = client.post(
+        f"/admin/api/keys/{key['id']}/opencode/connect", json={}, headers=_hdr(tok)
+    )
     assert r.status_code == 200
     assert r.json() == {"ok": False, "error": "Key 已禁用"}
 
@@ -165,8 +176,9 @@ def test_connect_without_provider_section_auto_creates(client, config_path):
     tok = _login(client)
     key = _add_key(client, tok)
 
-    r = client.post(f"/admin/api/keys/{key['id']}/opencode/connect",
-                    json={}, headers=_hdr(tok))
+    r = client.post(
+        f"/admin/api/keys/{key['id']}/opencode/connect", json={}, headers=_hdr(tok)
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
@@ -179,11 +191,14 @@ def test_connect_without_provider_section_auto_creates(client, config_path):
 
 def test_connect_with_empty_config_creates_provider(client, config_path):
     config_path.parent.mkdir(parents=True)
-    config_path.write_text('{\n  // 我的配置\n  "provider": {\n  }\n}\n', encoding="utf-8")
+    config_path.write_text(
+        '{\n  // 我的配置\n  "provider": {\n  }\n}\n', encoding="utf-8"
+    )
     tok = _login(client)
     key = _add_key(client, tok)
-    r = client.post(f"/admin/api/keys/{key['id']}/opencode/connect",
-                    json={}, headers=_hdr(tok))
+    r = client.post(
+        f"/admin/api/keys/{key['id']}/opencode/connect", json={}, headers=_hdr(tok)
+    )
     assert r.json()["ok"] is True
     doc = _jsonc(config_path.read_text(encoding="utf-8"))
     assert "webai2api" in doc["providers"]
@@ -194,11 +209,16 @@ def test_connect_with_empty_config_creates_provider(client, config_path):
 def test_disconnect_removes_block(client, config_path):
     tok = _login(client)
     key = _add_key(client, tok)
-    assert client.post(f"/admin/api/keys/{key['id']}/opencode/connect",
-                       json={}, headers=_hdr(tok)).json()["ok"] is True
+    assert (
+        client.post(
+            f"/admin/api/keys/{key['id']}/opencode/connect", json={}, headers=_hdr(tok)
+        ).json()["ok"]
+        is True
+    )
 
-    r = client.post(f"/admin/api/keys/{key['id']}/opencode/disconnect",
-                    headers=_hdr(tok))
+    r = client.post(
+        f"/admin/api/keys/{key['id']}/opencode/disconnect", headers=_hdr(tok)
+    )
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
@@ -222,8 +242,9 @@ def test_disconnect_broken_config(client, config_path):
     重点：handler 把 error 前缀当"失败"信号（Web 端也按 ok 判断）。
     """
     config_path.parent.mkdir(parents=True)
-    broken = ('{\n  "provider": {\n    "webai2api": {"a": 1},\n'
-              '    "z": {"b": 2\n  }\n}\n')
+    broken = (
+        '{\n  "provider": {\n    "webai2api": {"a": 1},\n    "z": {"b": 2\n  }\n}\n'
+    )
     config_path.write_text(broken, encoding="utf-8")
     tok = _login(client)
     r = client.post("/admin/api/keys/x/opencode/disconnect", headers=_hdr(tok))
@@ -241,19 +262,18 @@ def test_status_schema_no_config(client, config_path, store):
     r = client.get("/admin/api/opencode/status", headers=_hdr(tok))
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"ok", "installed", "config_path", "has_provider", "license_ok"}
+    assert set(body) == {"ok", "installed", "config_path", "has_provider"}
     assert body["ok"] is True
     assert body["config_path"] == str(config_path)
     assert body["has_provider"] is False
-    # license_ok 读的是本机 user_data_dir() 的真实授权，测试里只断言类型
-    assert isinstance(body["license_ok"], bool)
 
 
 def test_status_after_connect(client, config_path):
     tok = _login(client)
     key = _add_key(client, tok)
-    client.post(f"/admin/api/keys/{key['id']}/opencode/connect",
-                json={}, headers=_hdr(tok))
+    client.post(
+        f"/admin/api/keys/{key['id']}/opencode/connect", json={}, headers=_hdr(tok)
+    )
     body = client.get("/admin/api/opencode/status", headers=_hdr(tok)).json()
     assert body["has_provider"] is True
     assert body["installed"] is True  # 配置文件存在即视为已安装

@@ -3,6 +3,7 @@
 鉴权：密码登录后发放随机 token，放在 X-Admin-Token 头里。
 token 有有效期（默认 12 小时），并且登录失败有简单限速。
 """
+
 from __future__ import annotations
 
 import hmac
@@ -21,16 +22,15 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from . import __version__
-from .license import status as _license_status_fn
 from .paths import user_data_dir
 from .providers import DEFAULT_LIMITS, MAX_LIMITS, ProviderRegistry, infer_provider
 from .store import Store
 
 router = APIRouter(prefix="/admin/api")
 
-TOKEN_TTL = 12 * 3600          # token 有效期
-_MAX_FAILS = 8                 # 连续失败上限
-_FAIL_WINDOW = 300             # 失败统计窗口（秒）
+TOKEN_TTL = 12 * 3600  # token 有效期
+_MAX_FAILS = 8  # 连续失败上限
+_FAIL_WINDOW = 300  # 失败统计窗口（秒）
 
 
 class _TokenStore:
@@ -76,7 +76,9 @@ class _TokenStore:
 _TOKENS = _TokenStore()
 
 
-def _range_window(range_key: str, start: str = "", end: str = "") -> tuple[float | None, float | None]:
+def _range_window(
+    range_key: str, start: str = "", end: str = ""
+) -> tuple[float | None, float | None]:
     """把面板选择的时间范围换算成 (起始, 结束) 时间戳（本地时区）。"""
     import datetime as _dt
 
@@ -111,7 +113,9 @@ def _range_window(range_key: str, start: str = "", end: str = "") -> tuple[float
     return None, None
 
 
-def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, logger: Logger) -> APIRouter:
+def create_admin_router(
+    store: Store, registry: ProviderRegistry, login_mgr, logger: Logger
+) -> APIRouter:
     # 函数内创建 router（遮蔽模块级单例）：模块级 router 在多个 app 实例
     # 共存时（测试/热重载）闭包捕获旧 store，先注册先匹配 → 泄漏
     router = APIRouter(prefix="/admin/api")
@@ -119,7 +123,9 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
 
     def _guard(request: Request):
         if not toks.valid(request.headers.get("x-admin-token", "")):
-            return JSONResponse(status_code=401, content={"ok": False, "error": "未登录"})
+            return JSONResponse(
+                status_code=401, content={"ok": False, "error": "未登录"}
+            )
         return None
 
     async def _json(request: Request) -> dict | None:
@@ -136,14 +142,14 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         accs = await run_in_threadpool(store.list_accounts)
         chosen = set(accounts)
         provs = {a["provider"] for a in accs if a["id"] in chosen}
-        bad = [
-            m for m in models
-            if infer_provider(m) not in provs
-        ]
+        bad = [m for m in models if infer_provider(m) not in provs]
         if not bad:
             return ""
-        return ("模型 " + "、".join(bad) +
-                " 需要对应平台的账号；请先勾选该平台的账号，或取消这些模型。")
+        return (
+            "模型 "
+            + "、".join(bad)
+            + " 需要对应平台的账号；请先勾选该平台的账号，或取消这些模型。"
+        )
 
     @router.post("/login")
     async def login(request: Request):
@@ -158,8 +164,11 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             toks.note_fail()
             return {"ok": False, "error": "密码错误"}
         toks.note_ok()
-        return {"ok": True, "token": toks.issue(),
-                "default_password": hmac.compare_digest(expect, "admin")}
+        return {
+            "ok": True,
+            "token": toks.issue(),
+            "default_password": hmac.compare_digest(expect, "admin"),
+        }
 
     @router.post("/logout")
     async def logout(request: Request):
@@ -167,9 +176,16 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         return {"ok": True}
 
     @router.get("/state")
-    async def state(request: Request, range: str = "all", start: str = "", end: str = "",
-                    limit: int = 50, offset: int = 0,
-                    key_id: str = "", account_id: str = ""):
+    async def state(
+        request: Request,
+        range: str = "all",
+        start: str = "",
+        end: str = "",
+        limit: int = 50,
+        offset: int = 0,
+        key_id: str = "",
+        account_id: str = "",
+    ):
         g = _guard(request)
         if g:
             return g
@@ -186,30 +202,25 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             "login": {a["id"]: login_mgr.state(a["id"]) for a in accounts},
             "keys": await run_in_threadpool(store.list_keys),
             "models": [m["id"] for m in catalog],
-            "model_providers": {
-                m["id"]: infer_provider(m["id"]) for m in catalog
-            },
+            "model_providers": {m["id"]: infer_provider(m["id"]) for m in catalog},
             "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
             "today": await run_in_threadpool(store.today_summary),
             "cooldowns": await run_in_threadpool(registry.cooldowns),
             "network": await run_in_threadpool(_network_status),
             "key_usage": await run_in_threadpool(store.key_usage_map),
             "recent": await run_in_threadpool(
-                store.recent_usage, limit, offset, "", "", key_id, account_id),
+                store.recent_usage, limit, offset, "", "", key_id, account_id
+            ),
             "recent_total": await run_in_threadpool(
-                store.count_usage, "", "", key_id, account_id),
+                store.count_usage, "", "", key_id, account_id
+            ),
             "recent_limit": limit,
             "recent_offset": offset,
             "settings": {
-
                 # 37 个设置键一次批量读取（原先逐个 await = 37 次线程池往返）
                 **await run_in_threadpool(store.get_many, STATE_SETTING_DEFAULTS),
                 "admin_password": "******",
             },
-            # 客户版面板的授权卡从 s.license 渲染；0.1.26 单代码库合并时
-            # 把 lite 分支的这行弄丢了，授权卡（含授权码输入框）从此被
-            # 前端当「未启用」隐藏——0.1.30 找回
-            "license": await run_in_threadpool(_license_info),
         }
 
     # ── 账号 ──
@@ -250,23 +261,38 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         b = await _json(request)
         if b is None:
             return {"ok": False, "error": "请求格式错误"}
-        fields = {k: b[k] for k in
-                  ("name", "auth_token", "device_id", "settings_token",
-                   "cookie", "enabled", "note", "proxy", "egress") if k in b}
+        fields = {
+            k: b[k]
+            for k in (
+                "name",
+                "auth_token",
+                "device_id",
+                "settings_token",
+                "cookie",
+                "enabled",
+                "note",
+                "proxy",
+                "egress",
+            )
+            if k in b
+        }
         acc0 = await run_in_threadpool(store.get_account, account_id)
         if "egress" in fields:
             from .egress import normalize_egress
 
             fields["egress"] = normalize_egress(str(fields["egress"]))
         # 凭证有变化 → 重新检查
-        if any(k in fields for k in ("auth_token", "device_id", "settings_token", "cookie")):
+        if any(
+            k in fields for k in ("auth_token", "device_id", "settings_token", "cookie")
+        ):
             fields["health"] = ""
             fields["checked_at"] = 0.0
         if "enabled" in fields:
             fields["enabled"] = 1 if fields["enabled"] else 0
         await run_in_threadpool(store.update_account, account_id, **fields)
         await run_in_threadpool(
-            registry.refresh, acc0.get("provider") if acc0 else None)
+            registry.refresh, acc0.get("provider") if acc0 else None
+        )
         return {"ok": True}
 
     @router.post("/accounts/{account_id}/check")
@@ -280,10 +306,17 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if not acc:
             return {"ok": False, "error": "账号不存在"}
         try:
-            status, profile, new_token, new_refresh = await run_in_threadpool(_check, acc)
+            status, profile, new_token, new_refresh = await run_in_threadpool(
+                _check, acc
+            )
             await run_in_threadpool(
-                store.set_account_health, account_id, status, profile,
-                new_token or None, new_refresh or None)
+                store.set_account_health,
+                account_id,
+                status,
+                profile,
+                new_token or None,
+                new_refresh or None,
+            )
             return {"ok": True, "status": status, "profile": profile}
         except Exception as exc:  # noqa: BLE001
             await run_in_threadpool(store.set_account_health, account_id, "expired")
@@ -308,7 +341,8 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         acc_del = await run_in_threadpool(store.get_account, account_id)
         await run_in_threadpool(store.delete_account, account_id)
         await run_in_threadpool(
-            registry.refresh, acc_del.get("provider") if acc_del else None)
+            registry.refresh, acc_del.get("provider") if acc_del else None
+        )
         return {"ok": True}
 
     # ── 风险指标 ──
@@ -343,15 +377,19 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
                     stats = {}
             stats["daily_count"] = int(getattr(ac, "_daily_count", 0) or 0)
             stats["daily_limit"] = int(getattr(ac, "daily_limit", 0) or 0)
-            stats["cooldown_left"] = int(ac.cooldown_left()) if hasattr(ac, "cooldown_left") else 0
-            items.append({
-                "id": ac.account.get("id", ""),
-                "name": ac.account.get("name", ""),
-                "provider": ac.account.get("provider", ""),
-                "proxy": bool(ac.account.get("proxy")),
-                "egress": ac.account.get("egress", "system"),
-                "stats": stats,
-            })
+            stats["cooldown_left"] = (
+                int(ac.cooldown_left()) if hasattr(ac, "cooldown_left") else 0
+            )
+            items.append(
+                {
+                    "id": ac.account.get("id", ""),
+                    "name": ac.account.get("name", ""),
+                    "provider": ac.account.get("provider", ""),
+                    "proxy": bool(ac.account.get("proxy")),
+                    "egress": ac.account.get("egress", "system"),
+                    "stats": stats,
+                }
+            )
         return {"ok": True, "accounts": items}
 
     # ── 浏览器登录 ──
@@ -392,8 +430,11 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if bad:
             return {"ok": False, "error": bad}
         k = await run_in_threadpool(
-            store.add_key, b.get("name", "未命名 Key"),
-            None, accounts, models,
+            store.add_key,
+            b.get("name", "未命名 Key"),
+            None,
+            accounts,
+            models,
         )
         owner = str(b.get("owner") or "").strip()
         note = str(b.get("note") or "").strip()
@@ -402,8 +443,14 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         qm = int(b.get("quota_monthly") or 0)
         if owner or note or exp or qd or qm:
             await run_in_threadpool(
-                store.update_key, k["id"], owner=owner, note=note,
-                expires_at=exp, quota_daily=qd, quota_monthly=qm)
+                store.update_key,
+                k["id"],
+                owner=owner,
+                note=note,
+                expires_at=exp,
+                quota_daily=qd,
+                quota_monthly=qm,
+            )
         return {"ok": True, "key": k}
 
     @router.put("/keys/{key_id}")
@@ -423,29 +470,56 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         quota_daily = b.get("quota_daily")
         quota_monthly = b.get("quota_monthly")
         if accounts is not None or models is not None:
-            cur = next((k for k in await run_in_threadpool(store.list_keys)
-                        if k["id"] == key_id), None)
-            nacc = ([str(x) for x in accounts if str(x).strip()]
-                    if accounts is not None else (cur or {}).get("accounts", []))
-            nmod = ([str(x).strip() for x in models if str(x).strip()]
-                    if models is not None else (cur or {}).get("models", []))
+            cur = next(
+                (
+                    k
+                    for k in await run_in_threadpool(store.list_keys)
+                    if k["id"] == key_id
+                ),
+                None,
+            )
+            nacc = (
+                [str(x) for x in accounts if str(x).strip()]
+                if accounts is not None
+                else (cur or {}).get("accounts", [])
+            )
+            nmod = (
+                [str(x).strip() for x in models if str(x).strip()]
+                if models is not None
+                else (cur or {}).get("models", [])
+            )
             bad = await _incompatible_models(nacc, nmod)
             if bad:
                 return {"ok": False, "error": bad}
-        if (name is not None or accounts is not None or models is not None
-                or owner is not None or note is not None or expires_at is not None):
+        if (
+            name is not None
+            or accounts is not None
+            or models is not None
+            or owner is not None
+            or note is not None
+            or expires_at is not None
+        ):
             await run_in_threadpool(
-                store.update_key, key_id,
+                store.update_key,
+                key_id,
                 name=(str(name).strip() or "未命名 Key") if name is not None else None,
-                accounts=([str(x) for x in accounts if str(x).strip()]
-                          if accounts is not None else None),
-                models=([str(x).strip() for x in models if str(x).strip()]
-                        if models is not None else None),
+                accounts=(
+                    [str(x) for x in accounts if str(x).strip()]
+                    if accounts is not None
+                    else None
+                ),
+                models=(
+                    [str(x).strip() for x in models if str(x).strip()]
+                    if models is not None
+                    else None
+                ),
                 owner=str(owner or "").strip() if owner is not None else None,
                 note=str(note or "").strip() if note is not None else None,
                 expires_at=float(expires_at or 0) if expires_at is not None else None,
                 quota_daily=int(quota_daily or 0) if quota_daily is not None else None,
-                quota_monthly=int(quota_monthly or 0) if quota_monthly is not None else None,
+                quota_monthly=int(quota_monthly or 0)
+                if quota_monthly is not None
+                else None,
             )
         return {"ok": True}
 
@@ -464,14 +538,16 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if g:
             return g
         import datetime as _dt
+
         now = _dt.datetime.now()
         day0 = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
         rows = await run_in_threadpool(store.key_daily_by_account, key_id, day0)
         return {"ok": True, "rows": rows}
 
     @router.get("/usage/export")
-    async def export_usage(request: Request, range: str = "all",
-                           start: str = "", end: str = ""):
+    async def export_usage(
+        request: Request, range: str = "all", start: str = "", end: str = ""
+    ):
         g = _guard(request)
         if g:
             return g
@@ -482,25 +558,48 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
 
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(["时间", "Key", "账号", "平台", "模型", "输入", "输出",
-                         "合计", "状态", "总耗时ms", "首Token ms", "错误码"])
+        writer.writerow(
+            [
+                "时间",
+                "Key",
+                "账号",
+                "平台",
+                "模型",
+                "输入",
+                "输出",
+                "合计",
+                "状态",
+                "总耗时ms",
+                "首Token ms",
+                "错误码",
+            ]
+        )
         for r in rows:
-            writer.writerow([
-                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"])),
-                r.get("api_key_name", ""), r.get("account_name", ""),
-                r.get("provider", ""), r.get("model", ""),
-                r.get("prompt_tokens", 0), r.get("completion_tokens", 0),
-                r.get("total_tokens", 0), r.get("status", ""),
-                r.get("latency_ms", 0), r.get("first_token_ms", 0),
-                r.get("error_code", ""),
-            ])
+            writer.writerow(
+                [
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"])),
+                    r.get("api_key_name", ""),
+                    r.get("account_name", ""),
+                    r.get("provider", ""),
+                    r.get("model", ""),
+                    r.get("prompt_tokens", 0),
+                    r.get("completion_tokens", 0),
+                    r.get("total_tokens", 0),
+                    r.get("status", ""),
+                    r.get("latency_ms", 0),
+                    r.get("first_token_ms", 0),
+                    r.get("error_code", ""),
+                ]
+            )
         from fastapi.responses import Response
 
         data = "\ufeff" + buf.getvalue()
         return Response(
             content=data.encode("utf-8"),
             media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": 'attachment; filename="webai2api-usage.csv"'},
+            headers={
+                "Content-Disposition": 'attachment; filename="webai2api-usage.csv"'
+            },
         )
 
     @router.delete("/keys/{key_id}")
@@ -520,28 +619,53 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         b = await _json(request)
         if b is None:
             return {"ok": False, "error": "请求格式错误"}
-        for k in ("deepseek_wasm_path", "admin_password",
-                  "deepseek_anti_min", "deepseek_anti_max",
-                  "glm_base_url", "glm_default_model", "glm_default_effort",
-                  "glm_anti_min", "glm_anti_max", "usage_retain_days",
-                  "deepseek_default_model",
-                  "kimi_base_url", "kimi_default_model", "kimi_default_effort",
-                  "kimi_anti_min", "kimi_anti_max",
-                  "qwen_base_url", "qwen_default_model", "qwen_default_effort",
-                  "qwen_anti_min", "qwen_anti_max"):
+        for k in (
+            "deepseek_wasm_path",
+            "admin_password",
+            "deepseek_anti_min",
+            "deepseek_anti_max",
+            "glm_base_url",
+            "glm_default_model",
+            "glm_default_effort",
+            "glm_anti_min",
+            "glm_anti_max",
+            "usage_retain_days",
+            "deepseek_default_model",
+            "kimi_base_url",
+            "kimi_default_model",
+            "kimi_default_effort",
+            "kimi_anti_min",
+            "kimi_anti_max",
+            "qwen_base_url",
+            "qwen_default_model",
+            "qwen_default_effort",
+            "qwen_anti_min",
+            "qwen_anti_max",
+        ):
             if k in b and str(b[k]).strip():
                 await run_in_threadpool(store.set_setting, k, str(b[k]).strip())
         # 额度类：夹到该模型允许的上限内，防止填出荒谬值
-        for k in ("deepseek_context_limit", "deepseek_output_limit",
-                  "glm_context_limit", "glm_output_limit",
-                  "kimi_context_limit", "kimi_output_limit",
-                  "qwen_context_limit", "qwen_output_limit"):
+        for k in (
+            "deepseek_context_limit",
+            "deepseek_output_limit",
+            "glm_context_limit",
+            "glm_output_limit",
+            "kimi_context_limit",
+            "kimi_output_limit",
+            "qwen_context_limit",
+            "qwen_output_limit",
+        ):
             if k not in b:
                 continue
-            prov = ("chatglm" if k.startswith("glm")
-                    else "kimi" if k.startswith("kimi")
-                    else "qwen" if k.startswith("qwen")
-                    else "deepseek")
+            prov = (
+                "chatglm"
+                if k.startswith("glm")
+                else "kimi"
+                if k.startswith("kimi")
+                else "qwen"
+                if k.startswith("qwen")
+                else "deepseek"
+            )
             kind = "context" if "context" in k else "output"
             cap = MAX_LIMITS[prov][kind]
             try:
@@ -552,172 +676,66 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
             await run_in_threadpool(store.set_setting, k, str(val))
         if "deepseek_session_cache" in b:
             v = b["deepseek_session_cache"]
-            s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+            s = (
+                "true"
+                if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on"))
+                else "false"
+            )
             await run_in_threadpool(store.set_setting, "deepseek_session_cache", s)
         if "deepseek_search" in b:
             v = b["deepseek_search"]
-            s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+            s = (
+                "true"
+                if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on"))
+                else "false"
+            )
             await run_in_threadpool(store.set_setting, "deepseek_search", s)
         if "glm_search" in b:
             v = b["glm_search"]
-            s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+            s = (
+                "true"
+                if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on"))
+                else "false"
+            )
             await run_in_threadpool(store.set_setting, "glm_search", s)
         if "glm_session_cache" in b:
             v = b["glm_session_cache"]
-            s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+            s = (
+                "true"
+                if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on"))
+                else "false"
+            )
             await run_in_threadpool(store.set_setting, "glm_session_cache", s)
-        for bk in ("kimi_search", "kimi_session_cache",
-                   "qwen_search", "qwen_session_cache"):
+        for bk in (
+            "kimi_search",
+            "kimi_session_cache",
+            "qwen_search",
+            "qwen_session_cache",
+        ):
             if bk in b:
                 v = b[bk]
-                s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+                s = (
+                    "true"
+                    if (
+                        v is True
+                        or str(v).strip().lower() in ("1", "true", "yes", "on")
+                    )
+                    else "false"
+                )
                 await run_in_threadpool(store.set_setting, bk, s)
         if "tray_enabled" in b:
             v = b["tray_enabled"]
-            s = "true" if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on")) else "false"
+            s = (
+                "true"
+                if (v is True or str(v).strip().lower() in ("1", "true", "yes", "on"))
+                else "false"
+            )
             await run_in_threadpool(store.set_setting, "tray_enabled", s)
         try:
             await run_in_threadpool(registry.refresh)
         except Exception:
             pass
         return {"ok": True}
-
-    # ── 授权（统一形状：Pro 只显示签发卡；lite 显示授权卡 + 机器码） ──
-    @router.get("/license")
-    async def get_license(request: Request):
-        g = _guard(request)
-        if g:
-            return g
-        info = await run_in_threadpool(_license_info)
-        try:
-            from .license import machine_code
-            info["machine"] = await run_in_threadpool(machine_code)
-        except Exception:
-            pass
-        return {"ok": True, **info}
-
-    @router.post("/license/install")
-    async def install_license(request: Request):
-        """客户版激活入口：粘贴 WB2. 授权码。"""
-        g = _guard(request)
-        if g:
-            return g
-        b = await _json(request)
-        if b is None:
-            return {"ok": False, "error": "请求格式错误"}
-        text = str(b.get("content") or "").strip()
-        if not text:
-            return {"ok": False, "error": "请粘贴授权码"}
-        from .license import activate
-        from .paths import user_data_dir
-        res = await run_in_threadpool(activate, user_data_dir(), text)
-        if not res.get("ok"):
-            return {"ok": False, "error": res.get("error") or "授权码无效"}
-        return {"ok": True, **res}
-
-    @router.post("/license/activate")
-    async def activate_license(request: Request):
-        """install 的旧别名，仅客户版可用。"""
-        from .edition import is_lite
-        if not is_lite():
-            return {"ok": False, "error": "当前版本无需激活"}
-        return await install_license(request)
-
-    # ── 授权签发（仅作者本机，需私钥） ──
-    @router.get("/license/issuer")
-    async def issuer_state(request: Request):
-        g = _guard(request)
-        if g:
-            return g
-        return {"ok": True, "available": await run_in_threadpool(_issuer_available)}
-
-    @router.post("/license/issue")
-    async def issue_license(request: Request):
-        g = _guard(request)
-        if g:
-            return g
-        from . import issuer
-        seed = await run_in_threadpool(issuer.load_author_seed)
-        if seed is None:
-            return {"ok": False, "error": "未找到作者私钥，无法签发"}
-        b = await _json(request)
-        if b is None:
-            return {"ok": False, "error": "请求格式错误"}
-        try:
-            days = int(b.get("days") or 7)
-            count = max(1, min(int(b.get("count") or 1), 100))
-        except Exception:
-            return {"ok": False, "error": "参数错误"}
-        note = str(b.get("note") or "").strip()
-        machine = str(b.get("machine") or "").strip().upper()
-        # 绑定码一次只能签一个（一个码只对一台机器有效）
-        if machine and count != 1:
-            return {"ok": False, "error": "绑定机器码时只能签 1 个"}
-        out = []
-        for _ in range(count):
-            info = issuer.make_code(seed, days, machine_code=machine)
-            out.append({"code": info["code"], "id": info["id"],
-                        "days": info["days"], "issued": info["issued"],
-                        "note": note, "bound": info["bound"],
-                        "machine_digest": info["machine_digest"]})
-        await run_in_threadpool(_issuer_log, out)
-        return {"ok": True, "items": out}
-
-    @router.get("/license/issued")
-    async def issued_list(request: Request, limit: int = 200, q: str = ""):
-        g = _guard(request)
-        if g:
-            return g
-        items = await run_in_threadpool(_issuer_read_log)
-        total = len(items)
-        if q.strip():
-            needle = q.strip().lower()
-            items = [it for it in items
-                     if needle in str(it.get("code", "")).lower()
-                     or needle in str(it.get("note", "")).lower()
-                     or needle in str(it.get("id", "")).lower()]
-        items = list(reversed(items))
-        limit = max(1, min(int(limit or 200), 2000))
-        return {"ok": True, "items": items[:limit], "total": total,
-                "matched": len(items)}
-
-    @router.post("/license/issued/export")
-    async def export_issued(request: Request):
-        """把签发记录写成 CSV 存到数据目录，并返回路径。"""
-        g = _guard(request)
-        if g:
-            return g
-        items = await run_in_threadpool(_issuer_read_log)
-        if not items:
-            return {"ok": False, "error": "暂无签发记录"}
-        path = await run_in_threadpool(_write_issued_csv, items)
-        await run_in_threadpool(_reveal_file, path)
-        return {"ok": True, "path": str(path)}
-
-    @router.delete("/license/issued/{code_id}")
-    async def delete_issued(code_id: str, request: Request):
-        """删除单条签发记录（只删记录，不影响已发出的授权码本身）。"""
-        g = _guard(request)
-        if g:
-            return g
-        if not await run_in_threadpool(_issuer_available):
-            return {"ok": False, "error": "当前版本不提供签发功能"}
-        removed = await run_in_threadpool(_issuer_delete, [code_id])
-        if not removed:
-            return {"ok": False, "error": "记录不存在"}
-        return {"ok": True, "removed": removed}
-
-    @router.post("/license/issued/clear")
-    async def clear_issued(request: Request):
-        """清空全部签发记录。"""
-        g = _guard(request)
-        if g:
-            return g
-        if not await run_in_threadpool(_issuer_available):
-            return {"ok": False, "error": "当前版本不提供签发功能"}
-        items = await run_in_threadpool(_issuer_read_log)
-        removed = await run_in_threadpool(_issuer_delete, None)
-        return {"ok": True, "removed": removed, "total_before": len(items)}
 
     # ── opencode 接入 ──
     @router.post("/keys/{key_id}/opencode/connect")
@@ -737,7 +755,11 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if not raw_key:
             return {"ok": False, "error": "无法读取 Key 明文"}
         key_text = raw_key.get("key", "")
-        models = [model_override] if model_override else [str(m) for m in (k.get("models") or [])]
+        models = (
+            [model_override]
+            if model_override
+            else [str(m) for m in (k.get("models") or [])]
+        )
         if not models:
             models = [m["id"] for m in await run_in_threadpool(registry.model_catalog)]
         port = request.url.port or _read_current_port() or 8800
@@ -758,7 +780,11 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         try:
             res = await run_in_threadpool(_remove_opencode_provider)
         except Exception as exc:
-            return {"ok": False, "error": f"移除失败：{exc}", "hint": "请手动删除 opencode.jsonc 中 provider 下的 \"webai2api\" 块"}
+            return {
+                "ok": False,
+                "error": f"移除失败：{exc}",
+                "hint": '请手动删除 opencode.jsonc 中 provider 下的 "webai2api" 块',
+            }
         out = {"ok": True, "config_path": res.get("path")}
         if res.get("not_present"):
             out["not_present"] = True
@@ -770,30 +796,17 @@ def create_admin_router(store: Store, registry: ProviderRegistry, login_mgr, log
         if g:
             return g
         info = await run_in_threadpool(_opencode_status_io)
-        lic = await run_in_threadpool(_local_license_status)
-        return {"ok": True, "installed": info["installed"], "config_path": info["config_path"],
-                "has_provider": info["has_provider"], "license_ok": lic.get("valid", False)}
+        return {
+            "ok": True,
+            "installed": info["installed"],
+            "config_path": info["config_path"],
+            "has_provider": info["has_provider"],
+        }
 
     return router
 
 
 # ── 签发记录（仅作者本机） ──────────────────────────
-def _issuer_log_path():
-    from .paths import user_data_dir
-    return user_data_dir() / "issued_codes.json"
-
-
-def _issuer_available() -> bool:
-    try:
-        from .edition import is_lite
-        if is_lite():
-            return False  # 客户版永远不显示、不提供签发
-        from . import issuer
-        return issuer.load_author_seed() is not None
-    except Exception:
-        return False
-
-
 STATE_SETTING_DEFAULTS = {
     "deepseek_wasm_path": "",
     "deepseek_session_cache": "true",
@@ -835,111 +848,12 @@ STATE_SETTING_DEFAULTS = {
 }
 
 
-def _license_info() -> dict:
-    """授权信息。客户版会校验；专业版只决定是否显示签发卡。
-
-    异常兜底也尽量带上 machine：面板授权卡永不隐藏（前端兜底），
-    机器码是用户找作者签码的凭据，任何情况下都不该缺席。
-    """
-    issuer_ok = _issuer_available()
-    try:
-        from .license import machine_code as _mc
-        machine = _mc()
-    except Exception:
-        machine = ""
-    try:
-        from .edition import is_lite
-        if not is_lite():
-            return {"enabled": False, "issuer": issuer_ok, "machine": machine}
-        from .license import status
-        from .paths import user_data_dir
-        st = status(user_data_dir(), store=None)
-        return {"enabled": True, "issuer": issuer_ok, **st}
-    except Exception:
-        return {"enabled": False, "issuer": issuer_ok, "machine": machine}
-
-
-def _issuer_read_log() -> list[dict]:
-    try:
-        p = _issuer_log_path()
-        if not p.exists():
-            return []
-        data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
-def _issuer_log(items: list[dict]) -> None:
-    try:
-        p = _issuer_log_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        existing = _issuer_read_log()
-        existing.extend({**it, "created": time.strftime("%Y-%m-%d %H:%M:%S")}
-                        for it in items)
-        p.write_text(json.dumps(existing[-5000:], ensure_ascii=False, indent=2),
-                     encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _issuer_delete(code_ids: list[str] | None) -> int:
-    """删除签发记录：传码 ID 列表删指定项，传 None 清空。返回删除条数。
-
-    只删本地记录，不影响已发出授权码的有效性（授权验证不依赖此文件）。
-    """
-    try:
-        p = _issuer_log_path()
-        if not p.exists():
-            return 0
-        existing = _issuer_read_log()
-        if code_ids is None:
-            kept: list[dict] = []
-        else:
-            wanted = {str(x) for x in code_ids}
-            kept = [it for it in existing if str(it.get("id", "")) not in wanted]
-        removed = len(existing) - len(kept)
-        if removed <= 0:
-            return 0
-        p.write_text(json.dumps(kept, ensure_ascii=False, indent=2), encoding="utf-8")
-        return removed
-    except Exception:
-        return 0
-
-
-def _issued_expiry(it: dict) -> str:
-    """按签发日 + 天数算参考到期日（实际从客户激活当天算）。"""
-    base = str(it.get("issued") or it.get("created") or "")[:10]
-    try:
-        import datetime as _dt
-        d = _dt.date.fromisoformat(base)
-        return (d + _dt.timedelta(days=int(it.get("days") or 0))).isoformat()
-    except Exception:
-        return ""
-
-
-def _write_issued_csv(items: list[dict]):
-    import csv
-    import io
-
-    p = _issuer_log_path().parent / "issued_codes.csv"
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["授权码", "码ID", "有效天数", "签发日", "参考到期日", "备注", "生成时间"])
-    for it in items:
-        w.writerow([it.get("code", ""), it.get("id", ""), it.get("days", ""),
-                    it.get("issued", ""), _issued_expiry(it),
-                    it.get("note", ""), it.get("created", "")])
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("\ufeff" + buf.getvalue(), encoding="utf-8", newline="")
-    return p
-
-
 def _reveal_file(path) -> None:
     """在资源管理器里定位到文件。"""
     try:
         if os.name == "nt":
             import subprocess
+
             subprocess.Popen(["explorer", "/select,", str(path)])
     except Exception:
         pass
@@ -981,30 +895,40 @@ def _proxy_probe(proxy_url: str) -> dict:
         try:
             import socks  # noqa: F401
         except Exception:  # noqa: BLE001
-            return {"ok": False, "error": "SOCKS 代理需要 PySocks（已内置，请重启程序）",
-                    "direct_ip": direct}
+            return {
+                "ok": False,
+                "error": "SOCKS 代理需要 PySocks（已内置，请重启程序）",
+                "direct_ip": direct,
+            }
         # PySocks 的 urllib 支持走全局 socket 包装，不在本函数内使用
-        return {"ok": False,
-                "error": "SOCKS 代理的连通性测试暂只支持在聊天请求中验证；"
-                         "HTTP/SOCKS 均已在客户端生效，可直接发一次对话验证",
-                "direct_ip": direct}
+        return {
+            "ok": False,
+            "error": "SOCKS 代理的连通性测试暂只支持在聊天请求中验证；"
+            "HTTP/SOCKS 均已在客户端生效，可直接发一次对话验证",
+            "direct_ip": direct,
+        }
 
     auth = px.auth_header()
-    proxy_handler = urllib.request.ProxyHandler({
-        "http": f"http://{px.host}:{px.port}",
-        "https": f"http://{px.host}:{px.port}",
-    })
+    proxy_handler = urllib.request.ProxyHandler(
+        {
+            "http": f"http://{px.host}:{px.port}",
+            "https": f"http://{px.host}:{px.port}",
+        }
+    )
     handlers.append(proxy_handler)
     if auth:
+
         class _AuthProxyHandler(urllib.request.ProxyHandler):
             def proxy_open(self, req, proxy, type):  # noqa: A003
                 req.add_header("Proxy-Authorization", auth)
                 return super().proxy_open(req, proxy, type)
 
-        handlers[0] = _AuthProxyHandler({
-            "http": f"http://{px.host}:{px.port}",
-            "https": f"http://{px.host}:{px.port}",
-        })
+        handlers[0] = _AuthProxyHandler(
+            {
+                "http": f"http://{px.host}:{px.port}",
+                "https": f"http://{px.host}:{px.port}",
+            }
+        )
 
     opener = urllib.request.build_opener(*handlers)
     exit_ip = ""
@@ -1016,15 +940,23 @@ def _proxy_probe(proxy_url: str) -> dict:
         err = str(exc)
         try:
             with opener.open("http://httpbin.org/ip", timeout=10) as r:
-                exit_ip = (_json.loads(r.read().decode()).get("origin") or "").split(",")[0].strip()
+                exit_ip = (
+                    (_json.loads(r.read().decode()).get("origin") or "")
+                    .split(",")[0]
+                    .strip()
+                )
                 err = ""
         except Exception as exc2:  # noqa: BLE001
             err = f"{exc} / {exc2}"
 
     elapsed = int((_time.perf_counter() - started) * 1000)
     if not exit_ip:
-        return {"ok": False, "error": f"代理不可用：{err}", "direct_ip": direct,
-                "elapsed_ms": elapsed}
+        return {
+            "ok": False,
+            "error": f"代理不可用：{err}",
+            "direct_ip": direct,
+            "elapsed_ms": elapsed,
+        }
 
     same = bool(direct) and exit_ip == direct
     return {
@@ -1064,8 +996,8 @@ def _clash_global_mode():
     for port in (9090, 9097):
         try:
             req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/proxies",
-                headers={"User-Agent": "webai2api"})
+                f"http://127.0.0.1:{port}/proxies", headers={"User-Agent": "webai2api"}
+            )
             with opener.open(req, timeout=0.8) as r:
                 mode = str((_json.load(r) or {}).get("mode") or "").lower()
             if mode:
@@ -1095,7 +1027,9 @@ def _network_status() -> dict:
             f"检测到 TUN 网卡「{tun}」：Clash 规则模式下国内站（DeepSeek/Kimi/千问）"
             "命中 DIRECT 规则，「直连」出口仍是真实家宽 IP；若切到「全局模式」，"
             "直连账号也会走节点。"
-        ) if tun else "",
+        )
+        if tun
+        else "",
     }
 
 
@@ -1108,8 +1042,11 @@ def _safe_account(a: dict) -> dict:
     except Exception:
         profile = {}
     return {
-        "id": a["id"], "provider": a["provider"], "name": a["name"],
-        "enabled": a["enabled"], "note": a["note"],
+        "id": a["id"],
+        "provider": a["provider"],
+        "name": a["name"],
+        "enabled": a["enabled"],
+        "note": a["note"],
         "has_token": bool(a.get("auth_token")),
         "has_device": bool(a.get("device_id")),
         "has_settings": bool(a.get("settings_token")),
@@ -1119,7 +1056,8 @@ def _safe_account(a: dict) -> dict:
         "profile": profile,
         "proxy": a.get("proxy", ""),
         "egress": a.get("egress", "system"),
-        "created_at": a["created_at"], "updated_at": a["updated_at"],
+        "created_at": a["created_at"],
+        "updated_at": a["updated_at"],
     }
 
 
@@ -1159,6 +1097,7 @@ def _read_current_port() -> int | None:
     """尝试读取 run.py 写下的 current_port.txt，返回端口或 None。"""
     try:
         from .paths import user_data_dir
+
         p = user_data_dir().parent / "current_port.txt"
         if not p.exists():
             return None
@@ -1183,11 +1122,16 @@ def _opencode_status_io() -> dict:
     if exists:
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
-            has_provider = (_provider_has_entry(text, "webai2api", section="providers")
-                            or _provider_has_entry(text, "webai2api", section="provider"))
+            has_provider = _provider_has_entry(
+                text, "webai2api", section="providers"
+            ) or _provider_has_entry(text, "webai2api", section="provider")
         except Exception:
             has_provider = False
-    return {"installed": installed, "config_path": str(path), "has_provider": has_provider}
+    return {
+        "installed": installed,
+        "config_path": str(path),
+        "has_provider": has_provider,
+    }
 
 
 def _build_opencode_snippet(host: str, key: str, models: list[str]) -> str:
@@ -1214,18 +1158,25 @@ def _build_opencode_snippet(host: str, key: str, models: list[str]) -> str:
             tiers = [("快速", "low"), ("深度", "medium"), ("极致", "max")]
         elif prov == "kimi":
             # Kimi 三档：标准 / 进阶 / 极致；K2.6（快速模型）无极致档
-            tiers = ([("标准", "low"), ("进阶", "high")] if "k2.6" in low
-                     else [("标准", "low"), ("进阶", "high"), ("极致", "max")])
+            tiers = (
+                [("标准", "low"), ("进阶", "high")]
+                if "k2.6" in low
+                else [("标准", "low"), ("进阶", "high"), ("极致", "max")]
+            )
         elif prov == "qwen":
             # Plus / Max：自动 / 思考 / 快速；Omni-Flash：只有 思考 / 快速
-            tiers = ([("思考", "high"), ("快速", "low")] if "flash" in low
-                     else [("自动", "medium"), ("思考", "high"), ("快速", "low")])
+            tiers = (
+                [("思考", "high"), ("快速", "low")]
+                if "flash" in low
+                else [("自动", "medium"), ("思考", "high"), ("快速", "low")]
+            )
         variants = ""
         if tiers:
             items = ", ".join(
                 f'{{ "id": {json.dumps(t, ensure_ascii=False)}, '
                 f'"settings": {{ "reasoningEffort": "{effort}" }} }}'
-                for t, effort in tiers)
+                for t, effort in tiers
+            )
             variants = f',\n      "variants": [{items}]'
         lines.append(
             f'    {jmid}: {{ "name": {jmid},\n'
@@ -1241,11 +1192,9 @@ def _build_opencode_snippet(host: str, key: str, models: list[str]) -> str:
         f'    "baseURL": {json.dumps(host + "/v1", ensure_ascii=False)},\n'
         f'    "apiKey": {json.dumps(str(key), ensure_ascii=False)},\n'
         '    "maxRetries": 0\n'
-        '  },\n'
+        "  },\n"
         '  "compatibility": { "streamUsage": true },\n'
-        '  "models": {\n'
-        + ",\n".join(lines) +
-        '\n  }\n}'
+        '  "models": {\n' + ",\n".join(lines) + "\n  }\n}"
     )
 
 
@@ -1349,7 +1298,7 @@ def _find_provider_span(text: str, section: str = "provider") -> tuple[int, int]
                 if c == '"':
                     break
                 j += 1
-            literal = text[i:j + 1]
+            literal = text[i : j + 1]
             k = _skip_ws_comment(text, j + 1)
             if literal == target_key and k < n and text[k] == ":":
                 k = _skip_ws_comment(text, k + 1)
@@ -1413,7 +1362,7 @@ def _find_top_level_key(text: str, start: int, end: int, name: str) -> int:
                 if c == '"':
                     break
                 j += 1
-            literal = text[i:j + 1]
+            literal = text[i : j + 1]
             k = _skip_ws_comment(text, j + 1)
             if depth == 0 and literal == target and k < len(text) and text[k] == ":":
                 return i
@@ -1480,9 +1429,9 @@ def _remove_provider_block(text: str, name: str, section: str = "provider") -> s
     new_span = _find_provider_span(out, section)
     if new_span:
         s2, e2 = new_span
-        seg = out[s2:e2 + 1]
+        seg = out[s2 : e2 + 1]
         cleaned = re.sub(r",(\s*[}\]])", r"\1", seg)
-        out = out[:s2] + cleaned + out[e2 + 1:]
+        out = out[:s2] + cleaned + out[e2 + 1 :]
     return out
 
 
@@ -1494,8 +1443,11 @@ def _ensure_provider_section(text: str, section: str = "provider") -> str:
     """
     stripped = _strip_jsonc_comments(text).strip()
     if not stripped:
-        return ('{\n  "$schema": "https://opencode.ai/config.json",\n  "'
-                + section + '": {\n  }\n}\n')
+        return (
+            '{\n  "$schema": "https://opencode.ai/config.json",\n  "'
+            + section
+            + '": {\n  }\n}\n'
+        )
 
     # 顶层必须是 { ... }
     first = _skip_ws_comment(text, 0)
@@ -1506,7 +1458,7 @@ def _ensure_provider_section(text: str, section: str = "provider") -> str:
         return text
 
     # 已有该 section 键（值不是对象也算存在，交给后续逻辑判断）
-    body = text[first + 1:close]
+    body = text[first + 1 : close]
     existing = _find_provider_span(text, section)
     if existing is not None:
         return text
@@ -1529,7 +1481,7 @@ def _remove_top_level_section(text: str, section: str) -> str:
     key_literal = '"' + section + '"'
     key_end = text.rfind(key_literal, 0, brace_open)
     start = brace_open
-    if key_end >= 0 and text[key_end + len(key_literal):brace_open].strip() == ":":
+    if key_end >= 0 and text[key_end + len(key_literal) : brace_open].strip() == ":":
         start = key_end  # 键名 + 冒号一并移除
     tail = brace_close + 1
     while tail < len(text) and text[tail] in " \t\r\n":
@@ -1559,11 +1511,16 @@ def _write_opencode_config(snippet: str) -> dict:
     path = _opencode_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        path.write_text('{\n  "$schema": "https://opencode.ai/config.json",\n'
-                        '  "providers": {\n  }\n}\n', encoding="utf-8")
+        path.write_text(
+            '{\n  "$schema": "https://opencode.ai/config.json",\n'
+            '  "providers": {\n  }\n}\n',
+            encoding="utf-8",
+        )
 
     text = path.read_text(encoding="utf-8")
-    backup = path.with_name(f"{path.name}.bak_{datetime.now().strftime('%Y%m%d%H%M%S_%f')}")
+    backup = path.with_name(
+        f"{path.name}.bak_{datetime.now().strftime('%Y%m%d%H%M%S_%f')}"
+    )
     backup.write_text(text, encoding="utf-8")
 
     # V1 迁移：旧 "provider" 段里如果有 webai2api（V1 格式残留），先摘除；
@@ -1572,7 +1529,7 @@ def _write_opencode_config(snippet: str) -> dict:
         text = _remove_provider_block(text, "webai2api", section="provider")
         legacy = _find_provider_span(text, section="provider")
         if legacy:
-            inner = _strip_jsonc_comments(text[legacy[0] + 1:legacy[1]]).strip()
+            inner = _strip_jsonc_comments(text[legacy[0] + 1 : legacy[1]]).strip()
             inner = re.sub(r",", "", inner).strip()
             if not inner:
                 text = _remove_top_level_section(text, "provider")
@@ -1587,7 +1544,7 @@ def _write_opencode_config(snippet: str) -> dict:
         raise RuntimeError("配置格式异常（顶层不是对象），请手动粘贴")
     _brace, close_pos = span
     # providers 块闭合后下一个非空白字符必须是 , 或 }（顶层对象结尾）
-    tail = _strip_jsonc_comments(text[close_pos + 1:]).lstrip(" \t\n\r")
+    tail = _strip_jsonc_comments(text[close_pos + 1 :]).lstrip(" \t\n\r")
     if tail and tail[0] not in ",}":
         raise RuntimeError("配置格式异常，请手动粘贴")
 
@@ -1604,7 +1561,7 @@ def _write_opencode_config(snippet: str) -> dict:
 
     indent = "    "
     block = snippet.replace("\n", "\n" + indent)
-    after = text[orig_brace + 1:]
+    after = text[orig_brace + 1 :]
     # 去掉 after 开头空白和已有的尾部逗号，避免双逗号
     after_stripped = after.lstrip(" \t\n\r")
     if after_stripped.startswith(","):
@@ -1614,7 +1571,7 @@ def _write_opencode_config(snippet: str) -> dict:
         after_stripped += "\n"
     # provider 段原本为空（直接以 } 收尾）时不能加逗号，否则产生悬空 ",}"
     sep = "" if after_stripped.startswith("}") else ","
-    out = text[:orig_brace + 1] + "\n" + indent + block + sep + "\n" + after_stripped
+    out = text[: orig_brace + 1] + "\n" + indent + block + sep + "\n" + after_stripped
 
     # 同时清理 disabled_providers 里的 webai2api
     out = _remove_disabled_provider(out, "webai2api")
@@ -1645,13 +1602,13 @@ def _remove_disabled_provider(text: str, name: str) -> str:
                 break
     if arr_end < 0:
         return text
-    arr_text = text[arr_start + 1:arr_end]
+    arr_text = text[arr_start + 1 : arr_end]
     # 简单正则替换掉包含 name 的项
     pattern = re.compile(r'\s*"' + re.escape(name) + r'"\s*,?')
     new_arr = pattern.sub("", arr_text)
     # 清理末尾逗号
-    new_arr = re.sub(r',\s*]', "]", "[" + new_arr + "]")[1:-1]
-    return text[:arr_start + 1] + new_arr + text[arr_end:]
+    new_arr = re.sub(r",\s*]", "]", "[" + new_arr + "]")[1:-1]
+    return text[: arr_start + 1] + new_arr + text[arr_end:]
 
 
 def _opencode_structure_ok(text: str) -> bool:
@@ -1698,12 +1655,15 @@ def _remove_opencode_provider() -> dict:
         return {"ok": True, "not_present": True, "path": str(path)}
     text = path.read_text(encoding="utf-8")
 
-    in_providers = (_find_provider_span(text, section="providers") is not None
-                    and _provider_has_entry(text, "webai2api", section="providers"))
-    in_legacy = (_find_provider_span(text, section="provider") is not None
-                 and _provider_has_entry(text, "webai2api", section="provider"))
+    in_providers = _find_provider_span(
+        text, section="providers"
+    ) is not None and _provider_has_entry(text, "webai2api", section="providers")
+    in_legacy = _find_provider_span(
+        text, section="provider"
+    ) is not None and _provider_has_entry(text, "webai2api", section="provider")
     in_disabled = '"webai2api"' in _strip_jsonc_comments(text) and (
-        _remove_disabled_provider(text, "webai2api") != text)
+        _remove_disabled_provider(text, "webai2api") != text
+    )
     if not in_providers and not in_legacy and not in_disabled:
         # providers 段不存在，或存在但没有 webai2api：幂等成功，不写文件不出备份
         return {"ok": True, "not_present": True, "path": str(path)}
@@ -1712,30 +1672,34 @@ def _remove_opencode_provider() -> dict:
     if not _opencode_structure_ok(text):
         raise RuntimeError("配置文件 JSONC 格式异常（括号/引号不配对），无法安全移除")
 
-    backup = path.with_name(f"{path.name}.bak_{datetime.now().strftime('%Y%m%d%H%M%S_%f')}")
+    backup = path.with_name(
+        f"{path.name}.bak_{datetime.now().strftime('%Y%m%d%H%M%S_%f')}"
+    )
     backup.write_text(text, encoding="utf-8")
 
-    new_text = _remove_provider_block(text, "webai2api", section="providers") if in_providers else text
+    new_text = (
+        _remove_provider_block(text, "webai2api", section="providers")
+        if in_providers
+        else text
+    )
     new_text = _remove_provider_block(new_text, "webai2api", section="provider")
     # V1 段被摘空后整段移除，避免孤儿键
     legacy = _find_provider_span(new_text, section="provider")
     if legacy:
-        inner = _strip_jsonc_comments(new_text[legacy[0] + 1:legacy[1]]).strip().replace(",", "")
+        inner = (
+            _strip_jsonc_comments(new_text[legacy[0] + 1 : legacy[1]])
+            .strip()
+            .replace(",", "")
+        )
         if not inner:
             new_text = _remove_top_level_section(new_text, "provider")
     new_text = _remove_disabled_provider(new_text, "webai2api")
     if new_text == text:
-        return {"ok": True, "not_present": True, "path": str(path), "backup": str(backup)}
+        return {
+            "ok": True,
+            "not_present": True,
+            "path": str(path),
+            "backup": str(backup),
+        }
     path.write_text(new_text, encoding="utf-8")
     return {"ok": True, "path": str(path), "backup": str(backup)}
-
-
-def _local_license_status() -> dict:
-    try:
-        data_dir = user_data_dir()
-        st = _license_status_fn(data_dir, Store(data_dir / "webai2api.db"))
-        return {"valid": bool(st.get("valid"))}
-    except Exception:
-        return {"valid": False}
-
-
