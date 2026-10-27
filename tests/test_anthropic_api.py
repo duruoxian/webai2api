@@ -608,19 +608,24 @@ def test_e2e_messages_stream_tool_use_roundtrip(tmp_path):
 
 
 def test_panels_have_anthropic_snippet_section():
-    """两面板都要有 Anthropic 客户端接入区：片段容器、构建函数、
-    与 Key 选择联动（rebuildSnippet 里同步填充）。"""
+    """开发端面板要有 Anthropic 客户端接入区（2026-10-28 第五批起拆成
+    Claude Code / ZCode 两段专属片段，lite 面板已冻结退役不再检查）：
+    片段容器、构建函数、与 Key 选择联动（rebuildSnippet 里同步填充）。"""
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1] / "webai2api" / "web"
-    for name in ("index.html", "lite_panel.html"):
-        html = (root / name).read_text(encoding="utf-8")
-        assert 'id="anthSnippet"' in html, f"{name} 缺片段容器"
-        assert "buildAnthSnippet" in html, f"{name} 缺构建函数"
-        assert "ANTHROPIC_BASE_URL" in html, f"{name} 缺 Claude Code 环境变量"
-        assert "anthropic-messages" in html, f"{name} 缺 ZCode 协议指引"
-        # 随所选 Key 联动
-        assert "buildAnthSnippet(k?k.key:'')" in html, f"{name} 片段未跟随 Key 选择刷新"
+    html = (root / "index.html").read_text(encoding="utf-8")
+    assert 'id="claudeSnippet"' in html, "缺 Claude Code 片段容器"
+    assert 'id="zcodeSnippet"' in html, "缺 ZCode 片段容器"
+    assert "buildClaudeSnippet" in html and "buildZCodeSnippet" in html, "缺构建函数"
+    assert "ANTHROPIC_BASE_URL" in html, "缺 Claude Code 环境变量"
+    assert "anthropic-messages" in html, "缺 ZCode 协议指引"
+    # 随所选 Key 联动
+    assert "buildClaudeSnippet(k?k.key:'')" in html, "片段未跟随 Key 选择刷新"
+    # 「接入」独立 tab 存在（五 tab 变六 tab）
+    assert 'data-tab="connect"' in html and 'id="tab-connect"' in html, "缺「接入」tab"
+    # 通用兼容卡模型列表动态生成（不再写死 4 个）
+    assert 'id="guideModels"' in html, "缺动态模型列表容器"
 
 
 # ── 5. system 占位回归（2026-10-27 审查发现的真 bug）──────────

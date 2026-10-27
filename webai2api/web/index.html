@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.43">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.44">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -25,7 +25,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.43"></script>
+<script src="/admin/static/hyalite.js?v=0.1.44"></script>
 </head>
 <body>
 
@@ -59,6 +59,9 @@
       <button data-tab="keys" onclick="switchTab('keys')">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2 20 3m-3 0 3 3m-5 1 2 2"/></svg>
         API Key</button>
+      <button data-tab="connect" onclick="switchTab('connect')">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7V3m6 4V3M7 7h10v4a5 5 0 0 1-10 0V7Z"/><path d="M12 16v5"/></svg>
+        接入</button>
       <button data-tab="usage" onclick="switchTab('usage')">
         <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 5-7"/></svg>
         用量</button>
@@ -75,6 +78,10 @@
 
     <div id="tab-overview" class="tabpane active">
       <div id="alertBar" class="alert-bar" style="display:none"></div>
+      <div class="card" id="guideCard" style="display:none">
+        <div class="card-head"><h2>开始使用</h2><div class="sp"></div><span class="muted" style="font-size:12.5px">三步接入客户端，完成后自动收起</span></div>
+        <div class="guide-steps" id="guideSteps"></div>
+      </div>
       <div class="card">
         <div class="card-head"><h2>用量总览</h2><div class="sp"></div>
           <div class="seg seg-sm" id="rangeSeg">
@@ -211,12 +218,17 @@
           <table id="keyTable"><thead><tr><th>名称</th><th>创建时间</th><th>状态</th><th>最近使用</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
         </div>
       </div>
+    </div>
+
+    <div id="tab-connect" class="tabpane">
       <div class="card">
-        <div class="card-head"><h2>接入方式</h2></div>
-        <div class="hint" style="line-height:2;margin-bottom:14px">
-          <div>接口地址&nbsp;&nbsp;<b id="baseHint2">/v1</b></div>
-          <div>可用模型&nbsp;&nbsp;<b id="modelHint">deepseek-chat</b></div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">API Key
+        <div class="card-head"><h2>OpenAI 兼容</h2><div class="sp"></div>
+          <span class="muted" style="font-size:12.5px">接口地址 <b id="baseHint2">/v1</b> · 可用模型 <b id="modelHint">—</b></span>
+        </div>
+        <div class="set-group">
+          <div class="set-group-title">opencode</div>
+          <p class="hint" style="margin-bottom:8px">opencode 不会自动识别模型能力（上下文 / 推理 / 图片），直接复制下面这段完整配置（已带好能力值），粘进 <code>~/.config/opencode/opencode.jsonc</code> 的 providers 里：</p>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">API Key
             <div class="sel sel-sm" id="sel-ocKeySel" style="min-width:220px">
               <select id="ocKeySel" class="sel-native" onchange="onOcKeyChange()"></select>
               <button type="button" class="sel-btn" onclick="selToggle('ocKeySel')">
@@ -225,44 +237,47 @@
               </button>
               <div class="sel-menu" id="menu-ocKeySel"></div>
             </div>
-            <button class="btn sm" onclick="ocConnectCurrent()">接入</button>
+            <button class="btn sm" onclick="ocConnectCurrent()">一键写入配置</button>
             <button class="btn gray sm" onclick="ocDisconnectCurrent()">移除</button>
           </div>
-        </div>
-
-        <div class="set-group">
-          <div class="set-group-title">OpenCode 配置片段</div>
-          <p class="hint" style="margin-bottom:8px">opencode 不会自动识别模型能力（上下文 / 推理 / 图片），请直接复制下面这段完整配置（已带好能力值），粘进 <code>~/.config/opencode/opencode.jsonc</code> 的 provider 里：</p>
           <pre id="ocSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
           <button class="btn sm" onclick="copyText(document.getElementById('ocSnippet').textContent)" style="margin-top:10px">复制配置片段</button>
         </div>
-
         <div class="set-group" style="margin-top:18px">
-          <div class="set-group-title">Anthropic 客户端（Claude Code / ZCode）</div>
-          <p class="hint" style="margin-bottom:8px">原生说 Anthropic 协议的客户端直接用下面的配置（走 <code>/v1/messages</code> 端点，工具调用/流式/思考均已支持）。Claude Code 把 env 写进 <code>~/.claude/settings.json</code>；ZCode 在自定义模型模板里选 <code>anthropic-messages</code> 协议后填同样的 baseUrl 与 Key：</p>
-          <pre id="anthSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
-          <button class="btn sm" onclick="copyText(document.getElementById('anthSnippet').textContent)" style="margin-top:10px">复制 Anthropic 配置</button>
+          <div class="set-group-title">WorkBuddy</div>
+          <p class="hint" style="margin-bottom:0">WorkBuddy 走 OpenAI 兼容协议：按下面「通用 OpenAI 兼容客户端」的参数表在 WorkBuddy 里新建提供商即可。专属一键写入待接入实测样例后支持。</p>
         </div>
-
         <div class="set-group" style="margin-top:18px">
-          <div class="set-group-title">其他 OpenAI 兼容客户端</div>
-          <p class="muted" style="margin:-2px 0 12px">在任意支持「自定义提供商 / OpenAI 兼容」的客户端里新建提供商，按下表填写。填完点「提交」，再到客户端里添加模型即可。</p>
+          <div class="set-group-title">通用 OpenAI 兼容客户端</div>
+          <p class="muted" style="margin:-2px 0 12px">在任意支持「自定义提供商 / OpenAI 兼容」的客户端里新建提供商，按下表填写：</p>
           <div class="guide">
             <div class="guide-row"><span>提供商 ID</span><code>webai2api</code><button class="btn gray sm" onclick="copyText('webai2api')">复制</button></div>
             <div class="guide-row"><span>显示名称</span><code>webai2api</code><button class="btn gray sm" onclick="copyText('webai2api')">复制</button></div>
             <div class="guide-row"><span>基础 URL</span><code id="guideBase">/v1</code><button class="btn gray sm" onclick="copyText(document.getElementById('guideBase').textContent)">复制</button></div>
-            <div class="guide-row"><span>API 密钥</span><code id="guideKeyHint">在上方列表中选择或生成</code><button class="btn gray sm" onclick="document.getElementById('keyTable').scrollIntoView({behavior:'smooth'})">去创建</button></div>
+            <div class="guide-row"><span>API 密钥</span><code id="guideKeyHint">在上方列表中选择或生成</code><button class="btn gray sm" onclick="switchTab('keys')">去创建</button></div>
             <div class="guide-row"><span>模型</span>
-              <div class="guide-models">
-                <div class="guide-model"><code>deepseek-chat</code><span>DeepSeek V4.1-Flash（非思考）</span><button class="btn gray sm" onclick="copyText('deepseek-chat')">复制 ID</button></div>
-                <div class="guide-model"><code>deepseek-reasoner</code><span>DeepSeek V4.1-Flash 思考</span><button class="btn gray sm" onclick="copyText('deepseek-reasoner')">复制 ID</button></div>
-                <div class="guide-model"><code>GLM-5.3</code><span>GLM-5.3（智谱）</span><button class="btn gray sm" onclick="copyText('GLM-5.3')">复制 ID</button></div>
-                <div class="guide-model"><code>GLM-5.3-Flash</code><span>GLM-5.3-Flash（智谱 · 快速）</span><button class="btn gray sm" onclick="copyText('GLM-5.3-Flash')">复制 ID</button></div>
-              </div>
+              <div class="guide-models" id="guideModels"></div>
             </div>
             <div class="guide-row"><span>请求头</span><code>留空</code></div>
           </div>
-          <p class="muted" style="margin:12px 0 0">添加模型时：左边填<b>模型 ID</b>（照上表），右边填<b>显示名称</b>（可自定义）。注意：通过界面添加模型时，客户端只会保存名称，<b>不会自动带上上下文 / 推理 / 图片能力</b>；需要这些能力请用上方「OpenCode 配置片段」里的完整配置片段。GLM 模型需要先在「账号」页登录智谱账号。</p>
+          <p class="muted" style="margin:12px 0 0">模型列表按本机可用模型动态生成。通过界面添加模型时客户端只保存名称，<b>不会自动带上上下文 / 推理能力</b>；需要完整能力请用上方「opencode」配置片段。GLM 模型需要先在「账号」页登录智谱账号。</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Anthropic 兼容</h2><div class="sp"></div>
+          <span class="muted" style="font-size:12.5px">走 <code>/v1/messages</code> 端点，工具调用 / 流式 / 思考均已支持</span>
+        </div>
+        <div class="set-group">
+          <div class="set-group-title">Claude Code</div>
+          <p class="hint" style="margin-bottom:8px">把 env 段写进 <code>~/.claude/settings.json</code>（或设为系统环境变量）：</p>
+          <pre id="claudeSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
+          <button class="btn sm" onclick="copyText(document.getElementById('claudeSnippet').textContent)" style="margin-top:10px">复制配置</button>
+        </div>
+        <div class="set-group" style="margin-top:18px">
+          <div class="set-group-title">ZCode</div>
+          <p class="hint" style="margin-bottom:8px">自定义模型模板里选 <code>anthropic-messages</code> 协议，baseUrl 与 apiKey 按下面填写：</p>
+          <pre id="zcodeSnippet" style="background:#1d1d1f;color:#e6e8ee;border-radius:12px;padding:16px;overflow:auto;font-size:12.5px;line-height:1.6;font-family:'SF Mono',Consolas,monospace"></pre>
+          <button class="btn sm" onclick="copyText(document.getElementById('zcodeSnippet').textContent)" style="margin-top:10px">复制配置</button>
         </div>
       </div>
     </div>
@@ -937,7 +952,7 @@ const SEG_VALID={
   modelSortSeg:['token','req'],
   barWinSeg:['7','14','30','90'],
   setProvSeg:['deepseek','glm','kimi','qwen'],
-  tabs:['overview','accounts','keys','usage','settings']
+  tabs:['overview','accounts','keys','connect','usage','settings']
 };
 function segGet(id,def){
   try{ const v=localStorage.getItem('ui.seg.'+id); return SEG_VALID[id]&&SEG_VALID[id].includes(v)?v:def; }
@@ -1244,7 +1259,22 @@ function renderOverview(s){
   if(!rows.length)tb.innerHTML='<tr><td colspan="5" class="empty">暂无数据</td></tr>';
   renderDonut(byToken.map(x=>({model:x.label,t:x.t})));
   renderHeatmap(s);
+  renderGuide(s);
 }
+function renderGuide(s){
+  const gc=document.getElementById('guideCard'); if(!gc) return;
+  const accs=s.accounts||[];
+  const steps=[
+    {n:1,t:'添加账号',d:'「账号」页右上角「添加账号」，只填名称即可',done:accs.length>0},
+    {n:2,t:'浏览器登录',d:'点该账号的「浏览器登录」，凭证自动抓取',done:accs.some(a=>a.has_token||a.has_cookie||a.health==='ok')},
+    {n:3,t:'生成 Key 并接入客户端',d:'「API Key」页生成，再到「接入」页复制配置',done:(s.keys||[]).some(k=>k.enabled)},
+  ];
+  gc.style.display=steps.every(x=>x.done)?'none':'';
+  const el=document.getElementById('guideSteps');
+  if(el) el.innerHTML=steps.map(x=>
+    `<div class="guide-step${x.done?' done':''}"><span class="gs-n">${x.done?'✓':x.n}</span><div><b>${esc(x.t)}</b><div class="muted" style="font-size:12px">${esc(x.d)}</div></div></div>`).join('');
+}
+
 let MODEL_SORT=segGet('modelSortSeg','token');
 function setModelSort(k){
   MODEL_SORT=k;
@@ -2497,24 +2527,34 @@ ${lines.join(',\n')}
     const k=selectedKeyObj();
     OC_SNIP=buildSnippet(models, k?k.key:'');
     const el=document.getElementById('ocSnippet'); if(el) el.textContent=OC_SNIP;
-    const ael=document.getElementById('anthSnippet');
-    if(ael) ael.textContent=buildAnthSnippet(k?k.key:'');
+    const cEl=document.getElementById('claudeSnippet');
+    if(cEl) cEl.textContent=buildClaudeSnippet(k?k.key:'');
+    const zEl=document.getElementById('zcodeSnippet');
+    if(zEl) zEl.textContent=buildZCodeSnippet(k?k.key:'');
+    // 通用兼容卡：模型列表按本机可用模型动态生成
+    const gm=document.getElementById('guideModels');
+    if(gm) gm.innerHTML=models.map(m=>
+      `<div class="guide-model"><code>${esc(m)}</code><button class="btn gray sm" onclick="copyText('${esc(m)}')">复制 ID</button></div>`).join('');
   }
-  function buildAnthSnippet(keyVal){
+  function buildClaudeSnippet(keyVal){
     const base=location.origin;
     const k=keyVal||'sk-你的Key';
-    return `# Claude Code —— 把 env 段写进 ~/.claude/settings.json（或设为系统环境变量）
+    return `# 写进 ~/.claude/settings.json（或设为系统环境变量）
 {
   "env": {
     "ANTHROPIC_BASE_URL": "`+base+`",
     "ANTHROPIC_AUTH_TOKEN": "`+k+`"
   }
-}
-
-# ZCode —— 自定义模型模板选 anthropic-messages 协议：
-#   baseUrl: `+base+`        apiKey: `+k+`
-# 模型任选四平台：deepseek-chat / deepseek-reasoner / GLM-5.3-Flash /
-#   kimi-k2.8 / qwen3.7-plus ...（完整清单见「其他 OpenAI 兼容客户端」）`;
+}`;
+  }
+  function buildZCodeSnippet(keyVal){
+    const base=location.origin;
+    const k=keyVal||'sk-你的Key';
+    return `# ZCode —— 自定义模型模板选 anthropic-messages 协议：
+#   baseUrl: `+base+`
+#   apiKey: `+k+`
+# 模型任选四平台：deepseek-chat / GLM-5.3-Flash / kimi-k2.8 / qwen3.7-plus …
+# （完整清单见「通用 OpenAI 兼容客户端」）`;
   }
   window.onOcKeyChange=function(){
     const sel=document.getElementById('ocKeySel');
@@ -2562,8 +2602,8 @@ ${lines.join(',\n')}
     openModal('ocResultModal');
   }
   OC_SNIP=buildSnippet(['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash','kimi-k3','kimi-k2.8','kimi-k2.6','qwen3.7-plus','qwen3.8-max','qwen3.8-omni-flash']);
-  const anthEl = document.getElementById('anthSnippet');
-  if(anthEl) anthEl.textContent = buildAnthSnippet('');
+  const cEl0=document.getElementById('claudeSnippet'); if(cEl0) cEl0.textContent=buildClaudeSnippet('');
+  const zEl0=document.getElementById('zcodeSnippet'); if(zEl0) zEl0.textContent=buildZCodeSnippet('');
   const el = document.getElementById('ocSnippet');
   if(el) el.textContent = OC_SNIP;
   window.__setSnippet=function(models){
