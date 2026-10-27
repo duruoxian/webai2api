@@ -355,3 +355,71 @@ def test_non_stream_truncated_partial_tool_markup_dropped_before_continue():
     calls = out["choices"][0]["message"].get("tool_calls") or []
     assert calls and calls[0]["function"]["name"] == "write"
     assert out["choices"][0]["finish_reason"] == "tool_calls"
+
+
+# ── 审查修复回归（2026-10-27 整合审查）──────────────
+def test_stream_json_truncated_skips_validation():
+    """JSON 模式 + 截断：跳过校验按 length 收场，绝不让已输出的流变 502。
+    （审查发现：半截 JSON 必然校验失败，generator 死掉连 finish 都不发。）"""
+    c = _stub_client([_events_truncated_mid_content()])
+    chunks = _parse_stream(list(c.stream_chat_completion(
+        {**_payload(), "response_format": {"type": "json_object"}})))
+    assert [x for x in chunks if x.get("error")] == [], "截断不能变成 error 事件"
+    finishes = [x["choices"][0].get("finish_reason") for x in chunks
+                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    assert finishes == ["length"]
+
+
+def test_non_stream_json_truncated_skips_validation():
+    c = _stub_client([_events_truncated_mid_content()])
+    out = c.chat_completion(
+        {**_payload(), "response_format": {"type": "json_object"}})
+    assert out["choices"][0]["finish_reason"] == "length"
+    assert "正文开头" in out["choices"][0]["message"]["content"]
+
+
+def test_stream_allows_two_continuations():
+    """续写轮数口径：主轮不计，最多 2 轮续写（此前非流式只允许 1 轮）。"""
+    def _round(text, msgid, done=False):
+        evs = [
+            {"_event_type": "ready", "response_message_id": msgid},
+            {"p": "response/fragments", "o": "APPEND",
+             "v": [{"id": "f", "type": "RESPONSE", "content": ""}]},
+            {"v": text},
+        ]
+        if done:
+            evs.append({"data": {"p": "response/status", "v": "FINISHED"}})
+        return evs
+
+    c = _stub_client([
+        _round("第一段", 101),
+        _round("第二段", 102),
+        _round("第三段", 103, done=True),
+    ])
+    chunks = _parse_stream(list(c.stream_chat_completion(_payload())))
+    contents = "".join(x["choices"][0]["delta"].get("content", "")
+                       for x in chunks if x.get("choices"))
+    assert contents == "第一段第二段第三段"
+    finishes = [x["choices"][0].get("finish_reason") for x in chunks
+                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    assert finishes == ["stop"]
+    assert c.upstream_calls["n"] == 3, "主轮 + 2 轮续写"
+
+
+def test_stream_nested_finish_with_content_recognized():
+    """裸 v 快照携带 response.status=FINISHED（无 close 帧）：完成判定
+    不漏——否则已完成回答会被误续写追加多余内容。"""
+    events = [
+        {"_event_type": "ready", "response_message_id": 900},
+        {"p": "response/fragments", "o": "APPEND",
+         "v": [{"id": "f1", "type": "RESPONSE", "content": ""}]},
+        {"v": "完整回答"},
+        {"v": {"response": {"status": "FINISHED"}}},
+        # 之后流即结束，无 close/0x02
+    ]
+    c = _stub_client(events)
+    chunks = _parse_stream(list(c.stream_chat_completion(_payload())))
+    finishes = [x["choices"][0].get("finish_reason") for x in chunks
+                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    assert finishes == ["stop"], f"嵌套 FINISHED 应视为正常结束，实际 {finishes}"
+    assert c.upstream_calls["n"] == 1, "已完成回答不得触发续写"

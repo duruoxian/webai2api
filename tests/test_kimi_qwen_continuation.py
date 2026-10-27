@@ -312,3 +312,41 @@ def test_qwen_relay_no_anchor_never_continues(mock_server, tmp_path, monkeypatch
     out = c.chat_completion(_payload())
     assert out["choices"][0]["finish_reason"] == "length"
     assert len(Handler.relay_requests) == 1
+
+
+def test_kimi_continuation_failure_keeps_parent_anchor(mock_server):
+    """续写轮失败（无消息 id）时存储回退 cur_parent：下一轮的 parentId
+    才不会倒退回上一轮（此前会话链分叉丢上下文）。"""
+    Handler.kimi_rounds = [
+        (_kimi_events_head(), False),   # 截断，含 assistant id=msg-a
+        ([], True),                     # 续写轮直接被错误帧拒绝
+    ]
+    Handler.kimi_ends = [
+        None,
+        json.dumps({"error": {"code": "x", "message": "y"}}).encode(),
+    ]
+    cfg = KimiConfig(base_url=mock_server, auth_token="t", egress="direct",
+                     anti_rate_limit_enabled=False, session_store_path="")
+    c = KimiWebClient(cfg, logging.getLogger("t"))
+    stores = []
+    c._conv_cache.store = lambda k, sid, extra="": stores.append((sid, extra))
+    out = c.chat_completion(_payload())
+    assert out["choices"][0]["finish_reason"] == "length"
+    assert stores and stores[0] == ("chat-777", "msg-a"), \
+        f"parent 应回退到本轮 assistant id: {stores}"
+
+
+def test_kimi_continuation_state_error_degrades(mock_server):
+    """续写轮收到 error 事件：按截断收场（finish=length），且不再重复
+    发起续写（此前会再打一轮，错误信息被吞）。"""
+    Handler.kimi_rounds = [
+        (_kimi_events_head(), False),
+        ([{"error": "续写出错"}], False),
+        (KIMI_TAIL_EVENTS, True),
+    ]
+    cfg = KimiConfig(base_url=mock_server, auth_token="t", egress="direct",
+                     anti_rate_limit_enabled=False, session_store_path="")
+    c = KimiWebClient(cfg, logging.getLogger("t"))
+    out = c.chat_completion(_payload())
+    assert out["choices"][0]["finish_reason"] == "length"
+    assert len(Handler.kimi_requests) == 2, "error 轮后不得再发起续写"

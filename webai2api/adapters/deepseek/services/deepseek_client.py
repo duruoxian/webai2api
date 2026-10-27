@@ -2042,6 +2042,14 @@ class DeepSeekWebClient:
                             return True
         if event.get("_event_type") == "close":
             return True
+        # 裸 v 快照深处嵌 FINISHED（完整响应快照形态，可能没有 close 帧）——
+        # 认不出它会把已完成回答误判为断流并追加续写
+        for v in (event.get("v"), (event.get("data") or {}).get("v")
+                  if isinstance(event.get("data"), dict) else None):
+            if isinstance(v, dict):
+                resp = v.get("response")
+                if isinstance(resp, dict) and resp.get("status") == "FINISHED":
+                    return True
         return False
 
     def _iter_sse_events(self, response):
