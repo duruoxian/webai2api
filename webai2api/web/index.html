@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.40">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.41">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -23,7 +23,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.40"></script>
+<script src="/admin/static/hyalite.js?v=0.1.41"></script>
 </head>
 <body>
 
@@ -181,13 +181,15 @@
 
     <div id="tab-accounts" class="tabpane">
       <div class="card">
-        <div class="card-head"><h2>账号</h2><div class="sp"></div>
+        <div class="card-head"><h2>账号</h2><span class="hint-dot" tabindex="0" aria-label="账号说明"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r="0.6" fill="currentColor" stroke="none"/></svg></span>
+          <div class="hint-pop">每个账号独立存储、互不干扰，也不影响你自己浏览器里的登录状态。<br>
+          <b>用法：</b>点右上角「添加账号」只填<b>名称</b> → 保存 → 回列表点该账号的<b>「浏览器登录」</b>，在弹出的内置浏览器里登录 DeepSeek 即可，凭证会<b>自动抓取</b>。<br>
+          「清浏览器痕迹」：删除本机残留的一次性登录目录与旧版默认浏览器存储（不影响账号凭证与千问中继登录态）。</div>
+          <div class="sp"></div>
           <button class="btn sm gray" onclick="cleanupBrowserResidue(this)">清浏览器痕迹</button>
+          <button class="btn sm" id="checkAllBtn" onclick="checkAllAcc()">检查全部凭证</button>
           <button class="btn sm" onclick="openAccModal()"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>添加账号</button>
         </div>
-        <p class="card-sub">每个账号独立存储、互不干扰，也不影响你自己浏览器里的登录状态。<br>
-          <b>用法：</b>点右上角「添加账号」只填<b>名称</b> → 保存 → 回列表点该账号的<b>「浏览器登录」</b>，在弹出的内置浏览器里登录 DeepSeek 即可，凭证会<b>自动抓取</b>。<br>
-          「清浏览器痕迹」：删除本机残留的一次性登录目录与旧版默认浏览器存储（不影响账号凭证与千问中继登录态）。</p>
         <div class="tbl-scroll tall">
           <table id="accTable"><thead><tr><th>名称</th><th>平台</th><th>凭证</th><th>状态</th><th style="text-align:right">操作</th></tr></thead><tbody></tbody></table>
         </div>
@@ -290,10 +292,6 @@
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>失败原因</h2></div>
-        <div id="errList" class="err-list"></div>
-      </div>
-      <div class="card">
         <div class="card-head"><h2>最近请求</h2><div class="sp"></div>
           <div class="sel sel-sm" id="sel-recentKey">
             <select id="recentKey" class="sel-native" onchange="onRecentFilter()"></select>
@@ -315,6 +313,7 @@
           <button class="btn gray sm" onclick="recentPage(-1)">上一页</button>
           <button class="btn gray sm" onclick="recentPage(1)">下一页</button>
         </div>
+        <div id="errChips" class="err-chips" style="display:none"></div>
         <div class="tbl-scroll tall">
           <table id="recentTable"><thead><tr><th>时间</th><th>Key</th><th>账号</th><th>模型</th><th>输入</th><th>输出</th><th>合计</th><th>耗时</th><th>状态</th></tr></thead><tbody></tbody></table>
         </div>
@@ -723,6 +722,20 @@
   </div>
 </div>
 
+<div id="confirmModal" class="modal-bg">
+  <div class="modal" style="max-width:430px">
+    <div class="modal-head">
+      <h2 id="confirmTitle">确认操作</h2>
+      <div class="sp"></div>
+    </div>
+    <p class="modal-sub" id="confirmMsg" style="white-space:pre-wrap;margin-bottom:18px"></p>
+    <div class="modal-foot">
+      <button class="btn gray" id="confirmNo" onclick="closeModal('confirmModal')">取消</button>
+      <button class="btn" id="confirmYes" onclick="_confirmYes=true;closeModal('confirmModal')">确定</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast hyalite"></div>
 
 <div id="datePicker" class="dp">
@@ -779,9 +792,34 @@ async function doLogin(){
 }
 async function logout(){try{await api('/logout','POST')}catch(e){}TOKEN='';localStorage.removeItem('wapi_token');showLogin();}
 
+/* ── 胶囊段选滑动指示层：选中胶囊平滑滑到目标按钮 ── */
+function segSlide(seg){
+  if(!seg||!seg.offsetParent) return;   // 隐藏 tab 里的 seg 量不到尺寸，切换时再测
+  const btn=seg.querySelector('button.active');
+  let ind=seg.querySelector('.seg-ind');
+  if(!btn){ if(ind) ind.style.opacity='0'; return; }
+  if(!ind){
+    ind=document.createElement('span');
+    ind.className='seg-ind';
+    seg.insertBefore(ind,seg.firstChild);
+    seg.classList.add('has-ind');
+  }
+  ind.style.opacity='1';
+  ind.style.width=btn.offsetWidth+'px';
+  ind.style.transform='translateX('+btn.offsetLeft+'px)';
+}
+document.addEventListener('click',e=>{
+  const seg=e.target.closest('.seg');
+  if(seg) requestAnimationFrame(()=>segSlide(seg));
+});
+window.addEventListener('resize',()=>document.querySelectorAll('.seg').forEach(segSlide));
+if(document.fonts&&document.fonts.ready) document.fonts.ready.then(()=>document.querySelectorAll('.seg').forEach(segSlide));
+
 function switchTab(name){
+  segSet('tabs',name);
   document.querySelectorAll('.seg button').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active',p.id==='tab-'+name));
+  requestAnimationFrame(()=>document.querySelectorAll('.seg').forEach(segSlide));
   if(name==='accounts') loadRisk();
   // 切页回到顶部，避免停在上一页的滚动位置
   try{ window.scrollTo({top:0, behavior:'auto'}); }catch(e){ window.scrollTo(0,0); }
@@ -871,7 +909,25 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','
 function fmtTime(ts){if(!ts)return '–';const d=new Date(ts*1000);
   return d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
 
-let RANGE='all', RANGE_START='', RANGE_END='';
+/* ── 段选记忆：默认选第一项 + 记住上次选择（跨打开恢复） ── */
+const SEG_VALID={
+  rangeSeg:['today','7d','30d','month','all','custom'],
+  modelSortSeg:['token','req'],
+  barWinSeg:['7','14','30','90'],
+  setProvSeg:['deepseek','glm','kimi','qwen'],
+  tabs:['overview','accounts','keys','usage','settings']
+};
+function segGet(id,def){
+  try{ const v=localStorage.getItem('ui.seg.'+id); return SEG_VALID[id]&&SEG_VALID[id].includes(v)?v:def; }
+  catch(e){ return def; }
+}
+function segSet(id,v){ try{ localStorage.setItem('ui.seg.'+id,String(v)); }catch(e){} }
+let RANGE=segGet('rangeSeg','today');
+let RANGE_START='', RANGE_END='';
+try{
+  const cr=JSON.parse(localStorage.getItem('ui.seg.customRange')||'null');
+  if(cr){ RANGE_START=cr.s||''; RANGE_END=cr.e||''; }
+}catch(e){}
 let LAST_STATE=null;
 
 /* ── 自绘日历 ── */
@@ -989,6 +1045,7 @@ document.addEventListener('mousedown', e=>{
 
 function setRange(r){
   RANGE=r;
+  segSet('rangeSeg',r);
   document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range===r));
   const box=document.getElementById('customRange');
   box.classList.toggle('show', r==='custom');
@@ -1012,6 +1069,7 @@ function cancelCustomRange(){
   closeDatePicker();
   document.getElementById('customRange').classList.remove('show');
   RANGE='all'; RANGE_START=''; RANGE_END='';
+  segSet('rangeSeg','all');
   document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range==='all'));
   refresh();
 }
@@ -1019,6 +1077,8 @@ function applyCustomRange(){
   if(!RANGE_START){ toast('请选择开始日期'); return; }
   if(RANGE_END && RANGE_END<RANGE_START){ toast('结束日期不能早于开始日期'); return; }
   RANGE='custom';
+  segSet('rangeSeg','custom');
+  try{ localStorage.setItem('ui.seg.customRange',JSON.stringify({s:RANGE_START,e:RANGE_END})); }catch(e){}
   closeDatePicker();
   document.getElementById('customRange').classList.remove('show');
   document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range==='custom'));
@@ -1036,6 +1096,7 @@ async function refresh(){
   qs += `${sep}limit=${RECENT_LIMIT}&offset=${RECENT_OFFSET}`;
   if(RECENT_KEY) qs+='&key_id='+encodeURIComponent(RECENT_KEY);
   if(RECENT_ACC) qs+='&account_id='+encodeURIComponent(RECENT_ACC);
+  if(RECENT_STATUS) qs+='&status='+encodeURIComponent(RECENT_STATUS);
   const s=await api('/state'+qs);
   document.body.classList.remove('loading');
   if(!s||!s.ok)return;
@@ -1076,23 +1137,42 @@ function keyNameHTML(id,name,kids){
   return `<b>${esc(name||'–')}</b>${del?' <span class="tag err">已删除</span>':''}`;
 }
 
+/* ── 通知条关闭记忆：信息类永久（localStorage），告警类仅本会话（sessionStorage） ── */
+let ALERT_INFO_GONE=[],ALERT_WARN_GONE=[];
+try{ALERT_INFO_GONE=JSON.parse(localStorage.getItem('wapi_alert_gone')||'[]')}catch(e){}
+try{ALERT_WARN_GONE=JSON.parse(sessionStorage.getItem('wapi_alert_gone')||'[]')}catch(e){}
+function alertGone(id,warn){ return (warn?ALERT_WARN_GONE:ALERT_INFO_GONE).includes(id); }
+function dismissAlert(id,warn){
+  (warn?ALERT_WARN_GONE:ALERT_INFO_GONE).push(id);
+  try{
+    if(warn) sessionStorage.setItem('wapi_alert_gone',JSON.stringify(ALERT_WARN_GONE));
+    else localStorage.setItem('wapi_alert_gone',JSON.stringify(ALERT_INFO_GONE));
+  }catch(e){}
+  if(LAST_STATE) renderOverview(LAST_STATE);
+}
 function renderOverview(s){
   const alerts=[];
   const ku=s.key_usage||{};
   (s.keys||[]).forEach(k=>{
     const u=ku[k.id]||{today:0,month:0};
-    if(k.quota_daily&&u.today>=k.quota_daily*0.8) alerts.push(`Key「${k.name}」今日额度已用 ${Math.round(u.today/k.quota_daily*100)}%`);
-    if(k.quota_monthly&&u.month>=k.quota_monthly*0.8) alerts.push(`Key「${k.name}」本月额度已用 ${Math.round(u.month/k.quota_monthly*100)}%`);
+    if(k.quota_daily&&u.today>=k.quota_daily*0.8) alerts.push({id:'quota:'+k.id+':daily',t:`Key「${k.name}」今日额度已用 ${Math.round(u.today/k.quota_daily*100)}%`,w:1});
+    if(k.quota_monthly&&u.month>=k.quota_monthly*0.8) alerts.push({id:'quota:'+k.id+':monthly',t:`Key「${k.name}」本月额度已用 ${Math.round(u.month/k.quota_monthly*100)}%`,w:1});
   });
-  (s.accounts||[]).forEach(a=>{ if(a.health==='expired') alerts.push(`账号「${a.name}」凭证已失效，请重新登录`); });
+  (s.accounts||[]).forEach(a=>{ if(a.health==='expired') alerts.push({id:'expired:'+a.id,t:`账号「${a.name}」凭证已失效，请重新登录`,w:1}); });
   const net=s.network||{};
   window.__clashProxy=net.clash_proxy||'';
-  if(net.tun) alerts.push(net.tun_note||`检测到 TUN 网卡「${net.tun}」：规则模式下国内站直连有效，全局模式下会走节点`);
+  if(net.tun) alerts.push({id:'tun',t:net.tun_note||`检测到 TUN 网卡「${net.tun}」：规则模式下国内站直连有效，全局模式下会走节点`,w:0});
   const directCount=(s.accounts||[]).filter(a=>(a.egress||'system')==='direct').length;
-  if(net.tun&&directCount&&net.global_mode) alerts.push(`有 ${directCount} 个账号设为「直连」：Clash 处于全局模式时它们也会走节点`);
+  if(net.tun&&directCount&&net.global_mode) alerts.push({id:'tun_direct',t:`有 ${directCount} 个账号设为「直连」：Clash 处于全局模式时它们也会走节点`,w:0});
   const ab=document.getElementById('alertBar');
   if(ab){
-    if(alerts.length){ ab.style.display=''; ab.innerHTML=alerts.slice(0,5).map(x=>`<div class="alert-item">${esc(x)}</div>`).join(''); }
+    // 先过滤已关闭再截断，被关掉的不占名额
+    const vis=alerts.filter(x=>!alertGone(x.id,x.w)).slice(0,5);
+    if(vis.length){
+      ab.style.display='';
+      ab.innerHTML=vis.map(x=>
+        `<div class="alert-item">${esc(x.t)}<button class="alert-x" onclick="dismissAlert('${x.id}',${x.w?1:0})" title="${x.w?'本会话内不再显示':'不再显示'}" aria-label="关闭通知"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`).join('');
+    }
     else ab.style.display='none';
   }
   const t=s.usage.total||{};
@@ -1132,9 +1212,10 @@ function renderOverview(s){
   renderDonut(byToken.map(x=>({model:x.label,t:x.t})));
   renderHeatmap(s);
 }
-let MODEL_SORT='token';
+let MODEL_SORT=segGet('modelSortSeg','token');
 function setModelSort(k){
   MODEL_SORT=k;
+  segSet('modelSortSeg',k);
   document.querySelectorAll('#modelSortSeg button').forEach(b=>b.classList.toggle('active',b.dataset.sort===k));
   if(LAST_STATE) renderOverview(LAST_STATE);
 }
@@ -1217,11 +1298,12 @@ function ymdLocal(dt){
   return y+'-'+m+'-'+d;
 }
 /* ── 每日 Token 柱状图（可按 Key 切换，带滑动条） ── */
-let BAR_DATA=[], BAR_WIN=14, BAR_OFFSET=0, DAILY_KEY='', BAR_SCROLL_SIG='';
+let BAR_DATA=[], BAR_WIN=Number(segGet('barWinSeg','7')), BAR_OFFSET=0, DAILY_KEY='', BAR_SCROLL_SIG='';
 let KEY_DAILY={}, KEY_NAMES={};
 
 function setBarWindow(days){
   BAR_WIN=days;
+  segSet('barWinSeg',days);
   document.querySelectorAll('#barWinSeg button').forEach(b=>b.classList.toggle('active',Number(b.dataset.win)===days));
   BAR_OFFSET=0;
   renderBars();
@@ -1331,9 +1413,17 @@ function renderAccounts(s){
   const tb=document.querySelector('#accTable tbody');
   const cd=s.cooldowns||{};
   let __rows='';let __sig='';
-  s.accounts.forEach(a=>{
-    const cred=[a.has_token&&'token',a.has_device&&'device',a.has_settings&&'settings',a.has_cookie&&'cookie']
-      .filter(Boolean).join(' · ')||'未填写';
+  // 排序：启用且正常在前，未检查/未使用居中，验证不通过与停用沉底
+  const usedIds=new Set(((s.usage&&s.usage.by_account)||[]).map(x=>x.account_id));
+  const rank=a=>{
+    if(!a.enabled) return 10;
+    if(a.health==='expired'||a.health==='error') return 9;
+    if(a.health!=='ok') return 2;
+    if(!usedIds.has(a.id)) return 3;
+    return 0;
+  };
+  [...s.accounts].sort((a,b)=>rank(a)-rank(b)||String(a.name).localeCompare(String(b.name))).forEach(a=>{
+    const credEmpty=!(a.has_token||a.has_device||a.has_settings||a.has_cookie);
     const pr=a.profile||{};
     const who=pr.email||pr.phone||pr.nickname||'';
     let healthBadge='';
@@ -1351,7 +1441,7 @@ function renderAccounts(s){
     else if(lg.status==='error') loginBadge='<span class="tag err">'+esc(lg.message||'失败')+'</span>';
     __sig+=`${a.id}|${a.name}|${a.enabled}|${a.health}|${a.provider}|${a.has_token}${a.has_device}${a.has_settings}${a.has_cookie}|${a.egress};`;
     __rows+=`<tr data-acc="${a.id}"><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
-      <td class="muted mono">${cred} ${loginBadge} ${healthBadge} ${egressTag(a.egress)}</td>
+      <td class="muted mono">${credEmpty?'<span class="tag off">未填写凭证</span> ':''}${loginBadge} ${healthBadge} ${egressTag(a.egress)}</td>
       <td><label class="switch" title="${a.enabled?'点击停用':'点击启用'}"><input type="checkbox" ${a.enabled?'checked':''} aria-label="启用或停用账号" onchange="toggleAcc('${a.id}',${a.enabled?0:1})"><span class="knob"></span></label>${cdBadge}</td>
       <td style="text-align:right;white-space:nowrap">
         <button class="btn sm" onclick="browserLogin('${a.id}')">浏览器登录</button>
@@ -1385,7 +1475,7 @@ async function browserLogin(id){
   else toast((r&&r.error)||'启动失败');
 }
 async function cleanupBrowserResidue(btn){
-  if(!confirm('清除本机残留的浏览器登录痕迹？\n（一次性登录目录 + 旧版默认浏览器存储；不影响账号凭证）'))return;
+  if(!(await uiConfirm('清除本机残留的浏览器登录痕迹？\n（一次性登录目录 + 旧版默认浏览器存储；不影响账号凭证）',{title:'清除痕迹',danger:true})))return;
   const r=await api('/browser/cleanup','POST');
   if(r&&r.ok){ toast('已清除'+(r.removed&&r.removed.length?('，移除 '+r.removed.length+' 项'):'，没有发现残留')); }
   else toast((r&&r.error)||'清理失败');
@@ -1406,10 +1496,15 @@ function renderKeys(s){
       <td style="text-align:right;white-space:nowrap">
         <button class="btn sm" onclick="openKeyView('${k.id}')">查看</button>
         <button class="btn gray sm" onclick="openKeyEdit('${k.id}')">编辑</button>
-        <button class="btn gray sm" onclick="toggleKey('${k.id}',${k.enabled?0:1})">${k.enabled?'停用':'启用'}</button>
-        <button class="btn sm" onclick="ocConnect('${k.id}')">接入</button>
-        <button class="btn gray sm" onclick="ocDisconnect('${k.id}')">移除</button>
-        <button class="btn danger sm" onclick="delKey('${k.id}')">删除</button></td></tr>`;});
+        <span class="row-menu-wrap">
+          <button class="btn gray sm" onclick="toggleAccMenu(this,event)">⋯</button>
+          <div class="row-menu">
+            <button onclick="toggleKey('${k.id}',${k.enabled?0:1})">${k.enabled?'停用':'启用'}</button>
+            <button onclick="ocConnect('${k.id}')">接入</button>
+            <button onclick="ocDisconnect('${k.id}')">移除</button>
+            <button class="danger" onclick="delKey('${k.id}')">删除</button>
+          </div>
+        </span></td></tr>`;});
   const ksame = tb.dataset.sig === __ksig;
   tb.dataset.sig = __ksig;
   tb.innerHTML = __krows;
@@ -1428,10 +1523,12 @@ function renderUsage(s){
     <div class="today-item"><span>今日 Token</span><b>${fmtTok(td.t)}</b><em>昨日 ${fmtTok(yd.t)} · ${diff(td.t,yd.t)}%</em></div>
     <div class="today-item"><span>成功率</span><b>${td.n?((td.ok/td.n*100).toFixed(1)+'%'):'–'}</b><em>昨日 ${yd.n?((yd.ok/yd.n*100).toFixed(1)+'%'):'–'}</em></div>
     <div class="today-item"><span>平均耗时</span><b>${td.avg_ms?((td.avg_ms/1000).toFixed(2)+'s'):'–'}</b><em>首 Token ${td.avg_ttft?((td.avg_ttft/1000).toFixed(2)+'s'):'–'}</em></div>`;
-  const el=document.getElementById('errList');
-  if(el){
+  const ec=document.getElementById('errChips');
+  if(ec){
     const errs=s.usage.errors||[];
-    el.innerHTML=errs.length?errs.map(e=>`<div class="err-row"><span class="tag err">${esc(e.code)}</span><b>${fmt(e.n)}</b></div>`).join(''):'<div class="muted">当前时间范围内没有失败请求</div>';
+    ec.style.display=errs.length?'':'none';
+    ec.innerHTML=errs.map(e=>
+      `<button type="button" class="err-chip${RECENT_STATUS==='error'?' on':''}" onclick="toggleRecentStatus()" title="${esc(errHint(e.code))}（点击只看失败请求）"><span class="tag err">${esc(e.code)}</span><b>${fmt(e.n)}</b></button>`).join('');
   }
   const kids=new Set((s.keys||[]).map(k=>k.id));
   const accIds=new Set((s.accounts||[]).map(a=>a.id));
@@ -1464,13 +1561,14 @@ function renderUsage(s){
   if(!byAccAlive.length)tb.innerHTML=empty('暂无数据',4);
   tb=document.querySelector('#recentTable tbody');tb.innerHTML='';
   const recentAlive=(s.recent||[]).filter(r=>
-    !(r.api_key_id&&!kids.has(r.api_key_id)) && !(r.account_id&&!accIds.has(r.account_id)));
+    !(r.api_key_id&&!kids.has(r.api_key_id)) && !(r.account_id&&!accIds.has(r.account_id))
+    &&!(RECENT_STATUS==='error'&&r.status==='ok'));
   recentAlive.forEach(r=>{tb.innerHTML+=`<tr><td class="muted">${fmtTime(r.ts)}</td>
     <td>${keyName(r.api_key_id,r.api_key_name)}</td><td>${esc(r.account_name||'–')}</td>
     <td class="mono">${esc(r.model)}</td><td class="num-t">${fmtTok(r.prompt_tokens)}</td>
     <td class="num-t">${fmtTok(r.completion_tokens)}</td><td class="num-t"><b>${fmtTok(r.total_tokens)}</b></td>
     <td class="num-t">${r.latency_ms?((r.latency_ms/1000).toFixed(1)+'s'):'–'}</td>
-    <td>${r.status==='ok'?'<span class="tag on">成功</span>':'<span class="tag err">'+esc(r.error_code||r.status)+'</span>'}</td></tr>`;});
+    <td>${r.status==='ok'?'<span class="tag on">成功</span>':`<span class="tag err" title="${esc(errHint(r.error_code||r.status))}">${esc(r.error_code||r.status)}</span>`}</td></tr>`;});
   if(!recentAlive.length)tb.innerHTML=empty('暂无记录');
   const info=document.getElementById('recentInfo');
   if(info){
@@ -1483,7 +1581,28 @@ function renderUsage(s){
   }
 }
 let RECENT_LIMIT=50, RECENT_OFFSET=0;
-let RECENT_KEY='', RECENT_ACC='';
+let RECENT_KEY='', RECENT_ACC='', RECENT_STATUS='';
+/* 错误码→可能原因悬停解释（基于本机 usage_log 实际出现过的 code 盘点，2026-10-28） */
+const ERR_HINTS=[
+  [/^cancelled$/i,'请求已取消：客户端中断或自动换号，不是故障'],
+  [/^auth$/i,'凭证失效或登录态过期：到「账号」页重新「浏览器登录」'],
+  [/GlmError/i,'智谱上游报错：多为网页版临时波动，稍后重试'],
+  [/QwenError/i,'千问上游报错：auth 表示需重新登录千问，其余多为临时波动'],
+  [/UpstreamAPIError|AttributeError|Error/i,'上游异常：多为网页版临时波动或代理问题，重试或换账号'],
+  [/^429/,'触发限流：账号已自动冷却，稍后自动恢复'],
+  [/^40[13]/,'被上游拒绝：凭证失效或触发风控，重新登录该账号'],
+  [/^5\d\d/,'上游服务错误：网页版临时波动或代理问题'],
+];
+function errHint(code){
+  const s=String(code||'');
+  for(const [re,h] of ERR_HINTS){ if(re.test(s)) return h; }
+  return '请求失败：详情见「设置 → 查看日志」';
+}
+function toggleRecentStatus(){
+  RECENT_STATUS=RECENT_STATUS==='error'?'':'error';
+  RECENT_OFFSET=0;
+  refresh();
+}
 function onRecentFilter(){
   RECENT_KEY=document.getElementById('recentKey').value;
   RECENT_ACC=document.getElementById('recentAcc').value;
@@ -1739,11 +1858,29 @@ function onProviderChange(){
   };
   if(t) t.textContent = hints[p] || 'DeepSeek：浏览器登录后会自动抓取，下面的凭证可以留空。';
 }
+/* ── 主题化确认弹窗：替代原生 confirm()，Promise 风格 ── */
+let _confirmResolve=null,_confirmYes=false;
+function uiConfirm(msg,opts){
+  opts=opts||{};
+  return new Promise(resolve=>{
+    _confirmResolve=resolve;_confirmYes=false;
+    const t=document.getElementById('confirmTitle');
+    if(t) t.textContent=opts.title||'确认操作';
+    document.getElementById('confirmMsg').textContent=msg;
+    const yes=document.getElementById('confirmYes');
+    yes.textContent=opts.yes||'确定';
+    yes.classList.toggle('danger',!!opts.danger);
+    openModal('confirmModal');
+  });
+}
 function closeModal(id){
   document.getElementById(id).classList.remove('show');
   if(!document.querySelector('.modal-bg.show')){
     document.body.classList.remove('modal-open');
     document.documentElement.classList.remove('modal-open');
+  }
+  if(id==='confirmModal'&&_confirmResolve){
+    const r=_confirmResolve;_confirmResolve=null;r(_confirmYes);
   }
 }
 function openModal(id){
@@ -1833,7 +1970,25 @@ async function checkAcc(id){
   if(j&&j.ok){toast('账号正常');refresh();}
   else toast((j&&j.error)||'凭证已失效，请重新登录');
 }
-async function delAcc(id){if(confirm('确定删除该账号？')){await api('/accounts/'+id,'DELETE');refresh();toast('已删除');}}
+let CHECKING_ALL=false;
+async function checkAllAcc(){
+  if(CHECKING_ALL) return;
+  const accs=((LAST_STATE&&LAST_STATE.accounts)||[]);
+  if(!accs.length){ toast('还没有账号'); return; }
+  CHECKING_ALL=true;
+  const btn=document.getElementById('checkAllBtn');
+  const orig=btn?btn.textContent:'';
+  // 串行逐个检查：避免并发打上游触发风控
+  for(let i=0;i<accs.length;i++){
+    if(btn) btn.textContent=`检查中 ${i+1}/${accs.length}`;
+    try{ await api('/accounts/'+accs[i].id+'/check','POST',{}); }catch(e){}
+  }
+  CHECKING_ALL=false;
+  if(btn) btn.textContent=orig;
+  toast('全部账号凭证检查完成');
+  refresh();
+}
+async function delAcc(id){if(await uiConfirm('确定删除该账号？',{title:'删除账号',danger:true})){await api('/accounts/'+id,'DELETE');refresh();toast('已删除');}}
 function openKeyModal(){document.getElementById('keyName').value='';
   document.getElementById('keyResult').style.display='none';
   const btn=document.getElementById('keyGenBtn');btn.disabled=false;btn.textContent='生成';
@@ -1963,7 +2118,7 @@ async function exportCsv(){
     toast('已导出');
   }catch(e){toast('导出失败');}
 }
-async function delKey(id){if(confirm('确定删除该 Key？')){await api('/keys/'+id,'DELETE');refresh();toast('已删除');}}
+async function delKey(id){if(await uiConfirm('确定删除该 Key？',{title:'删除 Key',danger:true})){await api('/keys/'+id,'DELETE');refresh();toast('已删除');}}
 async function saveTray(){
   const on=document.getElementById('setTray').checked;
   await api('/settings','POST',{tray_enabled:on?'true':'false'});
@@ -1996,7 +2151,7 @@ async function loadSystem(){
 async function cleanUsageNow(){
   const days=Number((document.getElementById('setRetain').value||'0').trim())||0;
   if(days<=0){ toast('请先把保留天数设为大于 0 的值'); return; }
-  if(!confirm(`将删除 ${days} 天前的历史用量记录，确定继续？`)) return;
+  if(!(await uiConfirm(`将删除 ${days} 天前的历史用量记录，确定继续？`,{title:'清理历史用量',danger:true}))) return;
   const j=await api('/system/usage/clean','POST',{days});
   if(j&&j.ok){
     toast(j.removed?`已清理 ${j.removed} 条`:'没有需要清理的记录');
@@ -2020,13 +2175,14 @@ async function showLogs(){
   openModal('logModal');
 }
 async function doShutdown(){
-  if(!confirm('确定退出 webai2api？退出后接口将不可用。')) return;
+  if(!(await uiConfirm('确定退出 webai2api？退出后接口将不可用。',{title:'退出程序',danger:true}))) return;
   await api('/system/shutdown','POST',{});
   toast('已退出');
 }
-let SETTINGS_PROV='deepseek';
+let SETTINGS_PROV=segGet('setProvSeg','deepseek');
 function setSettingsProvider(p){
   SETTINGS_PROV=p;
+  segSet('setProvSeg',p);
   document.querySelectorAll('#setProvSeg button').forEach(b=>b.classList.toggle('active',b.dataset.prov===p));
   const blocks={deepseek:'dsSettings',glm:'glmSettings',kimi:'kimiSettings',qwen:'qwenSettings'};
   Object.entries(blocks).forEach(([k,id])=>{
@@ -2330,7 +2486,7 @@ ${lines.join(',\n')}
   };
   async function ocConnect(id){
     if(!id){ toast('请先创建并启用一个 Key'); return; }
-    if(!confirm('确定将该 Key 写入 opencode 配置？')) return;
+    if(!(await uiConfirm('确定将该 Key 写入 opencode 配置？',{title:'接入 opencode'}))) return;
     try{
       const r=await api('/keys/'+id+'/opencode/connect','POST');
       if(r&&r.ok){ toast('已写入 opencode 配置，重启 opencode 生效'); }
@@ -2378,6 +2534,17 @@ ${lines.join(',\n')}
     const mh=document.getElementById('modelHint');
     if(mh) mh.textContent=models.join(' / ');
   };
+  // 应用段选记忆：激活态在首次数据加载前同步，避免“数字与选中对不上”
+  document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range===RANGE));
+  document.querySelectorAll('#modelSortSeg button').forEach(b=>b.classList.toggle('active',b.dataset.sort===MODEL_SORT));
+  document.querySelectorAll('#barWinSeg button').forEach(b=>b.classList.toggle('active',Number(b.dataset.win)===BAR_WIN));
+  setSettingsProvider(SETTINGS_PROV);
+  const tab0=segGet('tabs','overview');
+  if(tab0!=='overview'){
+    document.querySelectorAll('.seg button[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab0));
+    document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active',p.id==='tab-'+tab0));
+  }
+  requestAnimationFrame(()=>document.querySelectorAll('.seg').forEach(segSlide));
   ['accProvider','accEgress'].forEach(selBuild);
   if(TOKEN){document.body.classList.add('loading');try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
   setInterval(()=>{

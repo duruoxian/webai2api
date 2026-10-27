@@ -1236,3 +1236,52 @@ body.theme-fade{animation:themeFade .45s ease}
   *,*::before,*::after{animation-duration:.01ms !important;
     animation-iteration-count:1 !important;transition-duration:.01ms !important}
 }
+
+/* ── 2026-10-28 第二批：通知叉号 / 错误chips / ⓘ悬停气泡 / 胶囊滑动指示层 ── */
+.alert-bar .alert-x{
+  margin-left:auto;flex:0 0 auto;width:20px;height:20px;padding:0;
+  border:none;background:transparent;border-radius:6px;color:inherit;opacity:.45;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+}
+.alert-bar .alert-x svg{width:12px;height:12px}
+.alert-bar .alert-x:hover{opacity:1;background:rgba(0,0,0,.07)}
+html[data-theme=dark] .alert-bar .alert-x:hover,html[data-theme=neon] .alert-bar .alert-x:hover,html[data-theme=terminal] .alert-bar .alert-x:hover,html[data-theme=mono-dark] .alert-bar .alert-x:hover{background:rgba(255,255,255,.10)}
+
+.err-chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.err-chip{
+  display:inline-flex;align-items:center;gap:7px;padding:4px 10px;border-radius:10px;
+  border:1px solid var(--line,rgba(0,0,0,.08));background:var(--card-bg,transparent);
+  cursor:pointer;font-size:12.5px;color:var(--text2);
+  transition:all .2s cubic-bezier(.4,0,.2,1);
+}
+.err-chip:hover{border-color:rgba(255,59,48,.4);background:rgba(255,59,48,.06)}
+.err-chip.on{border-color:rgba(255,59,48,.5);background:rgba(255,59,48,.10);color:var(--text)}
+.err-chip b{font-size:12.5px}
+
+.card-head{position:relative}
+.hint-dot{
+  display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;
+  border-radius:50%;color:var(--text2);cursor:help;flex:0 0 auto;margin-left:2px;
+}
+.hint-dot svg{width:15px;height:15px;opacity:.55}
+.hint-dot:hover svg,.hint-dot:focus-visible svg{opacity:1}
+.hint-pop{
+  display:none;position:absolute;z-index:40;top:calc(100% + 8px);left:0;max-width:640px;
+  background:var(--card-bg,#fff);border:1px solid var(--line,rgba(0,0,0,.08));
+  border-radius:12px;box-shadow:0 14px 36px -14px rgba(16,24,40,.32);
+  padding:12px 14px;font-size:12.5px;line-height:1.9;color:var(--text2);text-align:left;
+}
+.hint-dot:hover+.hint-pop,.hint-dot:focus-visible+.hint-pop,.hint-pop:hover{display:block}
+
+.seg{position:relative}
+.seg .seg-ind{
+  position:absolute;top:3px;bottom:3px;left:0;width:0;border-radius:11px;
+  background:var(--seg-thumb);
+  box-shadow:0 1px 2px rgba(16,24,40,.10),0 3px 10px -4px rgba(16,24,40,.22),0 0 0 .5px rgba(0,0,0,.04);
+  transition:transform .3s cubic-bezier(.4,0,.2,1),width .3s cubic-bezier(.4,0,.2,1),opacity .2s;
+  pointer-events:none;z-index:0;
+}
+.seg-sm .seg-ind{top:2px;bottom:2px;border-radius:9px}
+.seg.has-ind>button{position:relative;z-index:1}
+.seg.has-ind>button.active{background:transparent;box-shadow:none}
+@media (prefers-reduced-motion:reduce){.seg .seg-ind{transition:none}}

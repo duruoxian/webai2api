@@ -533,8 +533,11 @@ class Store:
             conds.append("model = ?")
             args.append(model)
         if status:
-            conds.append("status = ?")
-            args.append(status)
+            if status == "error":  # “只看失败”：包含 error:* 与 cancelled 等一切非 ok
+                conds.append("status != 'ok'")
+            else:
+                conds.append("status = ?")
+                args.append(status)
         if key_id:
             conds.append("api_key_id = ?")
             args.append(key_id)
