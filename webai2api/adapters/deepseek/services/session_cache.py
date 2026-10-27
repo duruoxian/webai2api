@@ -33,6 +33,8 @@ class SessionState:
     last_used: float = field(default_factory=time.time)
     msg_count: int = 0
     history_hash: str = ""
+    # 该上游会话累计消耗的 token，「快满了就换会话」依据
+    used_tokens: int = 0
 
 
 def prefix_hash(messages: list[dict], model: str = "") -> str:
@@ -151,6 +153,7 @@ class SessionCache:
                     last_used=float(item.get("last_used") or now),
                     msg_count=int(item.get("msg_count") or 0),
                     history_hash=str(item.get("history_hash") or ""),
+                    used_tokens=int(item.get("used_tokens") or 0),
                 )
             except (TypeError, ValueError):
                 continue
@@ -186,6 +189,7 @@ class SessionCache:
                     "last_used": v.last_used,
                     "msg_count": v.msg_count,
                     "history_hash": v.history_hash,
+                    "used_tokens": v.used_tokens,
                 }
                 for k, v in self._store.items()
             }

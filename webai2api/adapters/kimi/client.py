@@ -8,6 +8,7 @@
   3. 响应是 Connect 流：每帧 5 字节帧头 + JSON 事件（op=set/append + mask）
   4. 会话缓存：同一段对话复用 chat_id，多轮只发增量；超限轮换
 """
+
 from __future__ import annotations
 
 import gzip
@@ -55,14 +56,20 @@ _SCENARIO_AGENT = "SCENARIO_OK_COMPUTER"
 
 # 对外模型名 → 网页版选择器（按优先级）。前一项 invalid_argument 会自动降到下一项。
 _MODEL_CANDIDATES: dict[str, tuple[tuple[str, str], ...]] = {
-    "kimi-k3": (("k3-agent", _SCENARIO_AGENT),
-                (DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT)),
-    "kimi-k2.8": (("k28-agent-preview", _SCENARIO_AGENT),
-                  ("k28-instant", _SCENARIO_CHAT),
-                  (DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT)),
+    "kimi-k3": (
+        ("k3-agent", _SCENARIO_AGENT),
+        (DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT),
+    ),
+    "kimi-k2.8": (
+        ("k28-agent-preview", _SCENARIO_AGENT),
+        ("k28-instant", _SCENARIO_CHAT),
+        (DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT),
+    ),
     "kimi-k2.6": ((DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT),),
-    "kimi-k2.5": (("k2d5-chat", _SCENARIO_CHAT),
-                  (DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT)),
+    "kimi-k2.5": (
+        ("k2d5-chat", _SCENARIO_CHAT),
+        (DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT),
+    ),
     "kimi-k2": ((DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT),),
     "kimi": ((DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT),),
     "moonshot-v1": ((DEFAULT_INTERNAL_MODEL, _SCENARIO_CHAT),),
@@ -137,7 +144,9 @@ def _estimate_tokens(text: str) -> int:
 
 def _usage(payload: dict, text: str) -> dict:
     msgs = payload.get("messages") or []
-    p = max(1, _estimate_tokens("".join(_text_of(m) for m in msgs if isinstance(m, dict))))
+    p = max(
+        1, _estimate_tokens("".join(_text_of(m) for m in msgs if isinstance(m, dict)))
+    )
     c = max(1, _estimate_tokens(text or ""))
     return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
 
@@ -200,7 +209,9 @@ def _tools_prompt(tools: list) -> str:
             for k, v in props.items():
                 typ = (v or {}).get("type", "string")
                 mark = "（必填）" if k in req else ""
-                lines.append(f"    参数 {k} ({typ}){mark}: {(v or {}).get('description','')}")
+                lines.append(
+                    f"    参数 {k} ({typ}){mark}: {(v or {}).get('description', '')}"
+                )
     return "\n".join(lines)
 
 
@@ -257,7 +268,9 @@ def _effort_to_payload(effort: str, model: str = "") -> dict:
     return {"thinking": True, "reasoningEffort": "REASONING_EFFORT_MAX"}
 
 
-def _internal_models(model: str | None, *, has_tools: bool = False) -> list[tuple[str, str]]:
+def _internal_models(
+    model: str | None, *, has_tools: bool = False
+) -> list[tuple[str, str]]:
     """对外模型名 → [(内部 model id, scenario), ...]（按优先级）。
 
     has_tools：请求带工具时跳过 OK_COMPUTER（agent 场景）——抓帧实测该
@@ -398,8 +411,11 @@ class KimiWebClient:
         self._token_ttl = 300.0  # 5 分钟内不重复续期
         # 会话缓存：conv_key -> (chat_id, last_used, turns, last_message_id)
         self._conv_cache = conv_cache.ConversationCache(
-            config=config, logger=logger, tag="Kimi",
-            id_field="chat_id", extra_field="last_message_id",
+            config=config,
+            logger=logger,
+            tag="Kimi",
+            id_field="chat_id",
+            extra_field="last_message_id",
             persist_path=str(getattr(config, "session_store_path", "") or ""),
             bump=self._bump,
         )
@@ -418,16 +434,20 @@ class KimiWebClient:
     def _cached_last_msg(self, key: str) -> str:
         return self._conv_cache.cached(key)[1]
 
-    def _store_conv(self, key: str, chat_id: str, last_msg: str = "") -> None:
-        self._conv_cache.store(key, chat_id, last_msg)
+    def _store_conv(
+        self, key: str, chat_id: str, last_msg: str = "", used_tokens: int = 0
+    ) -> None:
+        self._conv_cache.store(key, chat_id, last_msg, used_tokens=used_tokens)
 
     def _conv_key(self, payload: dict) -> str:
         """会话指纹（tool_bridge.conv_fingerprint）：system + 首条 user +
         首条 assistant 指纹 + model + key_id。首条 assistant 防跨会话串台
         （不同会话 system/开场白可能相同，模型回复几乎必然不同）。"""
         return tool_bridge.conv_fingerprint(
-            payload.get("messages") or [], payload.get("model") or "",
-            payload.get("_wapi_key_id") or "")
+            payload.get("messages") or [],
+            payload.get("model") or "",
+            payload.get("_wapi_key_id") or "",
+        )
 
     def risk_stats(self) -> dict:
         """风控指标（面板展示，进程累计；缓存规模/活跃度来自共享缓存）。"""
@@ -462,7 +482,8 @@ class KimiWebClient:
 
     def _conn(self, url: str, timeout: int):
         return netutil.open_conn(
-            url, timeout,
+            url,
+            timeout,
             egress=getattr(self.config, "egress", "system"),
             proxy=str(getattr(self.config, "proxy", "") or ""),
             default_host="www.kimi.com",
@@ -491,7 +512,8 @@ class KimiWebClient:
                 if resp.status == 429:
                     self._bump("rate_limit")
                 raise KimiError(
-                    f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
+                    f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}"
+                )
             try:
                 data = json.loads(raw.decode("utf-8")) if raw else {}
             except Exception:
@@ -509,8 +531,12 @@ class KimiWebClient:
         conn = self._conn(url, timeout)
         _, path = self._split(url)
         try:
-            conn.request("POST", path, body=_frame(payload),
-                         headers=_connect_headers(self.config, token))
+            conn.request(
+                "POST",
+                path,
+                body=_frame(payload),
+                headers=_connect_headers(self.config, token),
+            )
             resp = conn.getresponse()
         except Exception:
             conn.close()
@@ -521,7 +547,8 @@ class KimiWebClient:
             if resp.status == 429:
                 self._bump("rate_limit")
             raise KimiError(
-                f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
+                f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}"
+            )
         return conn, resp
 
     # ── accessToken 自动续期 ────────────────────────────
@@ -534,7 +561,11 @@ class KimiWebClient:
         """
         with self._token_lock:
             now = time.time()
-            if not force and self._access_token and now - self._token_checked_at < self._token_ttl:
+            if (
+                not force
+                and self._access_token
+                and now - self._token_checked_at < self._token_ttl
+            ):
                 return self._access_token
             if not self._refresh_token:
                 self._token_checked_at = now
@@ -558,8 +589,11 @@ class KimiWebClient:
                 conn.close()
                 if resp.status >= 400:
                     self._bump("rate_limit" if resp.status == 429 else "upstream")
-                    self.logger.warning("Kimi 续期失败 HTTP %s: %s",
-                                        resp.status, raw[:160].decode("utf-8", "replace"))
+                    self.logger.warning(
+                        "Kimi 续期失败 HTTP %s: %s",
+                        resp.status,
+                        raw[:160].decode("utf-8", "replace"),
+                    )
                     self._token_checked_at = now
                     return self._access_token
                 data = json.loads(raw.decode("utf-8"))
@@ -613,16 +647,19 @@ class KimiWebClient:
         if not chat_id and (system_text or tools):
             delivery = []
             if system_text:
-                delivery.append("<system_instructions>\n" + system_text
-                                + "\n</system_instructions>")
+                delivery.append(
+                    "<system_instructions>\n" + system_text + "\n</system_instructions>"
+                )
             if tools:
-                delivery.append("<tool_protocol>\n" + _tools_protocol(tools)
-                                + "\n</tool_protocol>")
+                delivery.append(
+                    "<tool_protocol>\n" + _tools_protocol(tools) + "\n</tool_protocol>"
+                )
             delivery.append(user_text)
             user_text = "\n\n---\n\n".join(delivery)
         model = str(payload.get("model") or self.config.default_model)
         opts = _effort_to_payload(
-            str(payload.get("reasoning_effort") or self.config.default_effort), model)
+            str(payload.get("reasoning_effort") or self.config.default_effort), model
+        )
         options: dict = {
             "thinking": bool(opts.get("thinking")),
             "model": internal_model or _internal_models(model)[0][0],
@@ -643,10 +680,12 @@ class KimiWebClient:
         if parent_id:
             body["message"]["parentId"] = parent_id
         if self.config.search_enabled:
-            body["tools"] = [{
-                "type": "TOOL_TYPE_SEARCH",
-                "search": {"force": False},
-            }]
+            body["tools"] = [
+                {
+                    "type": "TOOL_TYPE_SEARCH",
+                    "search": {"force": False},
+                }
+            ]
         return body
 
     def _throttle(self) -> None:
@@ -673,6 +712,7 @@ class KimiWebClient:
             delay = random.uniform(20, 60)
         else:
             import math
+
             mid = max(0.1, (lo + hi) / 2)
             delay = random.lognormvariate(math.log(mid), 0.6)
         delay = min(max(delay, lo), max(1.0, hi * 3))
@@ -690,8 +730,11 @@ class KimiWebClient:
         removed = 0
         for _key, chat_id in stale:
             try:
-                self._rpc("DeleteChat", {"chatId": chat_id},
-                          timeout=min(self.config.request_timeout, 15))
+                self._rpc(
+                    "DeleteChat",
+                    {"chatId": chat_id},
+                    timeout=min(self.config.request_timeout, 15),
+                )
                 removed += 1
             except Exception:  # noqa: BLE001
                 pass
@@ -701,7 +744,9 @@ class KimiWebClient:
                 self._bump("deleted")
 
     # ── 流式事件 ───────────────────────────────────────
-    def _model_candidates(self, model: str, *, has_tools: bool = False) -> list[tuple[str, str]]:
+    def _model_candidates(
+        self, model: str, *, has_tools: bool = False
+    ) -> list[tuple[str, str]]:
         candidates = _internal_models(model, has_tools=has_tools)
         resolved = self._resolved_models.get(model)
         if resolved and resolved in candidates:
@@ -713,8 +758,11 @@ class KimiWebClient:
         conv_key = self._conv_key(payload)
         # 首轮绝不复用：新客户端会话的首轮指纹常与旧会话相同（同样的
         # system + 开场白），复用会让模型接着旧上下文聊
-        cached = "" if tool_bridge.is_first_turn(payload.get("messages")) \
+        cached = (
+            ""
+            if tool_bridge.is_first_turn(payload.get("messages"))
             else self._cached_conv(conv_key)
+        )
         if not cached:
             self._bump("miss")
         parent = self._cached_last_msg(conv_key) if cached else ""
@@ -724,23 +772,32 @@ class KimiWebClient:
 
         model = str(payload.get("model") or self.config.default_model)
         candidates = self._model_candidates(
-            model, has_tools=bool(payload.get("tools"))
-            and payload.get("tool_choice") != "none")
+            model,
+            has_tools=bool(payload.get("tools"))
+            and payload.get("tool_choice") != "none",
+        )
         last_error: KimiError | None = None
 
         for idx, (internal, scenario) in enumerate(candidates):
-            body = self._body(payload, chat_id=cached, parent_id=parent,
-                              internal_model=internal, scenario=scenario)
+            body = self._body(
+                payload,
+                chat_id=cached,
+                parent_id=parent,
+                internal_model=internal,
+                scenario=scenario,
+            )
             try:
                 conn, resp = self._open_chat(
-                    body, self._valid_token(), self.config.request_timeout)
+                    body, self._valid_token(), self.config.request_timeout
+                )
             except KimiError as exc:
                 # accessToken 过期（15 分钟）→ 用 refreshToken 换新后重试一次
                 if "401" not in str(exc):
                     raise
                 self.logger.info("Kimi 返回 401，尝试续期后重试")
                 conn, resp = self._open_chat(
-                    body, self._valid_token(force=True), self.config.request_timeout)
+                    body, self._valid_token(force=True), self.config.request_timeout
+                )
 
             state = _ReplyState()
             retry_model = False
@@ -755,9 +812,12 @@ class KimiWebClient:
                         if err is not None:
                             code, message = err
                             last_error = KimiError(f"{code}: {message}")
-                            if (code == "invalid_argument"
-                                    and not state.text and not state.think
-                                    and idx + 1 < len(candidates)):
+                            if (
+                                code == "invalid_argument"
+                                and not state.text
+                                and not state.think
+                                and idx + 1 < len(candidates)
+                            ):
                                 retry_model = True
                                 break
                             raise last_error
@@ -788,8 +848,12 @@ class KimiWebClient:
                     pass
 
             if retry_model:
-                self.logger.info("Kimi 模型 %s(%s) 不可用，尝试 %s",
-                                 internal, scenario, candidates[idx + 1])
+                self.logger.info(
+                    "Kimi 模型 %s(%s) 不可用，尝试 %s",
+                    internal,
+                    scenario,
+                    candidates[idx + 1],
+                )
                 continue
 
             # ── 断流自动续写 ──
@@ -815,24 +879,30 @@ class KimiWebClient:
                 self._bump("auto_continued")
                 self.logger.warning(
                     "上游流提前中断（未见结束信号），自动续写 %d/%d",
-                    _cont_rounds, MAX_AUTO_CONTINUATIONS,
+                    _cont_rounds,
+                    MAX_AUTO_CONTINUATIONS,
                 )
                 base_text += state.text_value()
                 base_reasoning += state.think_value()
                 state = _ReplyState()
                 cont_finished = False
                 try:
-                    cont_payload = {"model": model,
-                                    "messages": [{"role": "user",
-                                                  "content": CONTINUE_PROMPT}]}
+                    cont_payload = {
+                        "model": model,
+                        "messages": [{"role": "user", "content": CONTINUE_PROMPT}],
+                    }
                     if payload.get("reasoning_effort"):
                         cont_payload["reasoning_effort"] = payload["reasoning_effort"]
                     cont_body = self._body(
-                        cont_payload, chat_id=cur_chat, parent_id=cur_parent,
-                        internal_model=internal, scenario=scenario)
+                        cont_payload,
+                        chat_id=cur_chat,
+                        parent_id=cur_parent,
+                        internal_model=internal,
+                        scenario=scenario,
+                    )
                     conn, resp = self._open_chat(
-                        cont_body, self._valid_token(),
-                        self.config.request_timeout)
+                        cont_body, self._valid_token(), self.config.request_timeout
+                    )
                     try:
                         for flag, raw in _iter_connect_frames(resp):
                             if flag == 0x02:
@@ -842,7 +912,9 @@ class KimiWebClient:
                                     # 续写被上游拒绝：按截断收场，绝不误报 stop
                                     self.logger.warning(
                                         "续写轮被上游拒绝（按截断返回）: %s: %s",
-                                        err[0], err[1])
+                                        err[0],
+                                        err[1],
+                                    )
                                     cont_failed = True
                                 break
                             try:
@@ -852,7 +924,8 @@ class KimiWebClient:
                             state.apply(event)
                             if state.error:
                                 self.logger.warning(
-                                    "续写轮错误（按截断返回）: %s", state.error)
+                                    "续写轮错误（按截断返回）: %s", state.error
+                                )
                                 cont_failed = True
                                 break
                             yield {
@@ -877,8 +950,9 @@ class KimiWebClient:
                     self.logger.warning("自动续写失败（按截断返回）: %s", exc)
                     break
                 finished = (cont_finished or state.done) and not cont_failed
-                cur_parent = (state.assistant_message_id
-                              or state.last_message_id or cur_parent)
+                cur_parent = (
+                    state.assistant_message_id or state.last_message_id or cur_parent
+                )
 
             self._resolved_models[model] = (internal, scenario)
             chat_id = state.chat_id or cached or cur_chat
@@ -887,19 +961,26 @@ class KimiWebClient:
                 # 把本轮 assistant（解析后的调用或文本）追加进历史再算指纹
                 reply = base_text + state.text_value()
                 calls = _parse_tool_calls(reply, payload.get("tools") or [])
-                asst = {"role": "assistant",
-                        "content": None if calls else reply,
-                        "tool_calls": calls or None}
+                asst = {
+                    "role": "assistant",
+                    "content": None if calls else reply,
+                    "tool_calls": calls or None,
+                }
                 store_key = tool_bridge.conv_fingerprint(
                     (payload.get("messages") or []) + [asst],
                     payload.get("model") or "",
-                    payload.get("_wapi_key_id") or "")
+                    payload.get("_wapi_key_id") or "",
+                )
                 # 最后一轮可能是失败的续写（无消息 id）：回退到 cur_parent，
                 # 绝不把缓存里的 parent 倒退回上一轮（会话链会分叉丢上下文）
                 self._store_conv(
-                    store_key, chat_id,
-                    state.assistant_message_id or state.last_message_id
-                    or cur_parent)
+                    store_key,
+                    chat_id,
+                    state.assistant_message_id or state.last_message_id or cur_parent,
+                    used_tokens=conv_cache.estimate_tokens(
+                        state.text_value() if hasattr(state, "text_value") else ""
+                    ),
+                )
             yield {
                 "__done__": True,
                 "text": base_text + state.text_value(),
@@ -922,10 +1003,12 @@ class KimiWebClient:
         """
         self.logger.info("Kimi tool_choice=required 首轮未调用工具，加强指令重试一次")
         retry = dict(payload)
-        retry["messages"] = list(payload.get("messages") or []) + [{
-            "role": "user",
-            "content": tool_bridge.required_nudge(dsml=True),
-        }]
+        retry["messages"] = list(payload.get("messages") or []) + [
+            {
+                "role": "user",
+                "content": tool_bridge.required_nudge(dsml=True),
+            }
+        ]
         text = reasoning = ""
         for ev in self._stream_events(retry):
             text, reasoning = ev["text"], ev["reasoning"]
@@ -933,7 +1016,8 @@ class KimiWebClient:
         if not calls:
             raise KimiError(
                 "工具调用强校验失败：重试一次后模型仍未按要求调用工具"
-                "（tool_choice=required）")
+                "（tool_choice=required）"
+            )
         return text, reasoning, calls
 
     def chat_completion(self, payload: dict) -> dict:
@@ -956,35 +1040,48 @@ class KimiWebClient:
                 "object": "chat.completion",
                 "created": int(time.time()),
                 "model": model,
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": None,
-                                "reasoning_content": reasoning or None,
-                                "tool_calls": calls},
-                    "finish_reason": "tool_calls",
-                }],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "reasoning_content": reasoning or None,
+                            "tool_calls": calls,
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
                 "usage": _usage(payload, text),
             }
 
         # 空正文兜底：Kimi 全系实测会把最终答案写进思考块（正文空白），
         # content 为空时用 reasoning 顶上，保证客户端拿得到答案
         content, reasoning = reasoning_bridge.finalize_reasoning(
-            _strip_tool_block(text), reasoning,
-            legacy=self.config.legacy_reasoning_in_content)
+            _strip_tool_block(text),
+            reasoning,
+            legacy=self.config.legacy_reasoning_in_content,
+        )
         if not finish_seen:
             self.logger.warning(
-                "上游流提前中断（续写未救回），按截断返回 finish=length")
+                "上游流提前中断（续写未救回），按截断返回 finish=length"
+            )
         return {
             "id": completion_id,
             "object": "chat.completion",
             "created": int(time.time()),
             "model": model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": content,
-                            "reasoning_content": reasoning or None},
-                "finish_reason": "stop" if finish_seen else "length",
-            }],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                        "reasoning_content": reasoning or None,
+                    },
+                    "finish_reason": "stop" if finish_seen else "length",
+                }
+            ],
             "usage": _usage(payload, text),
         }
 
@@ -995,8 +1092,10 @@ class KimiWebClient:
 
         def chunk(delta: dict, finish=None, usage=None) -> str:
             obj = {
-                "id": completion_id, "object": "chat.completion.chunk",
-                "created": created, "model": model,
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
             }
             if usage is not None:
@@ -1020,7 +1119,9 @@ class KimiWebClient:
                     text, reasoning = ev["text"], ev["reasoning"]
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning("Kimi 流式请求失败: %s", exc)
-                err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
+                err = {
+                    "error": {"message": f"上游错误: {exc}", "type": "upstream_error"}
+                }
                 yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
@@ -1029,12 +1130,15 @@ class KimiWebClient:
                 try:
                     text, reasoning, calls = self._forced_retry(payload, tools)
                 except KimiError as exc:
-                    err = {"error": {"message": str(exc), "type": "tool_required_error"}}
+                    err = {
+                        "error": {"message": str(exc), "type": "tool_required_error"}
+                    }
                     yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
             rs = reasoning_bridge.ReasoningStream(
-                legacy=self.config.legacy_reasoning_in_content)
+                legacy=self.config.legacy_reasoning_in_content
+            )
             out_r, out_c = rs.feed(reasoning, "")
             if out_r:
                 yield chunk({"reasoning_content": out_r})
@@ -1043,12 +1147,18 @@ class KimiWebClient:
             tail = rs.close_think()
             if tail:
                 yield chunk({"content": tail})
-            yield chunk({"tool_calls": [{
-                "index": 0,
-                "id": calls[0]["id"],
-                "type": "function",
-                "function": calls[0]["function"],
-            }]})
+            yield chunk(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": calls[0]["id"],
+                            "type": "function",
+                            "function": calls[0]["function"],
+                        }
+                    ]
+                }
+            )
             yield chunk({}, usage=_usage(payload, text))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
@@ -1056,9 +1166,7 @@ class KimiWebClient:
 
         # 有工具时扣住标记文本，不让 DSML/旧标记漏进 content（增量口径）
         buf = (
-            tool_bridge.DeltaToolBuffer(
-                [tool_bridge.DSML_TOOL_CALLS_OPEN, TOOL_MARKER]
-            )
+            tool_bridge.DeltaToolBuffer([tool_bridge.DSML_TOOL_CALLS_OPEN, TOOL_MARKER])
             if tools
             else None
         )
@@ -1068,15 +1176,16 @@ class KimiWebClient:
         # 思考增量统一走分发器：legacy 开关决定走 reasoning_content 还是
         # <think> 并入 content；收尾做空正文兜底
         rs = reasoning_bridge.ReasoningStream(
-            legacy=self.config.legacy_reasoning_in_content)
+            legacy=self.config.legacy_reasoning_in_content
+        )
         try:
             for ev in self._stream_events(payload):
                 if ev.get("__done__"):
                     finish_seen = bool(ev.get("finish_seen", True))
-                d_reason = ev["reasoning"][len(sent_reasoning):]
+                d_reason = ev["reasoning"][len(sent_reasoning) :]
                 if d_reason:
                     sent_reasoning = ev["reasoning"]
-                d_text = ev["text"][len(sent_text):]
+                d_text = ev["text"][len(sent_text) :]
                 sent_text = ev["text"]
                 d_out = buf.feed_delta(d_text) if buf is not None else d_text
                 out_r, out_c = rs.feed(d_reason, d_out)
@@ -1093,18 +1202,27 @@ class KimiWebClient:
 
         # 工具调用：网页版没有原生 function calling，改成解析约定标记后按
         # OpenAI 流式 tool_calls 分片下发，客户端才能真的执行本地工具。
-        calls = _parse_tool_calls(buf.text if buf is not None else sent_text,
-                                  tools) if tools else []
+        calls = (
+            _parse_tool_calls(buf.text if buf is not None else sent_text, tools)
+            if tools
+            else []
+        )
         if calls:
             tail = rs.close_think()
             if tail:
                 yield chunk({"content": tail})
-            yield chunk({"tool_calls": [{
-                "index": 0,
-                "id": calls[0]["id"],
-                "type": "function",
-                "function": calls[0]["function"],
-            }]})
+            yield chunk(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": calls[0]["id"],
+                            "type": "function",
+                            "function": calls[0]["function"],
+                        }
+                    ]
+                }
+            )
             yield chunk({}, usage=_usage(payload, sent_text))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
@@ -1128,6 +1246,7 @@ class KimiWebClient:
         yield chunk({}, usage=_usage(payload, sent_text))
         if not finish_seen:
             self.logger.warning(
-                "上游流提前中断（续写未救回），按截断返回 finish=length")
+                "上游流提前中断（续写未救回），按截断返回 finish=length"
+            )
         yield chunk({}, finish="stop" if finish_seen else "length")
         yield "data: [DONE]\n\n"

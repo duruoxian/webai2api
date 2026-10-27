@@ -814,6 +814,20 @@ class DeepSeekWebClient:
                 self._bump("cache_stale")
                 cached = None
 
+        # 校验：累计 token 达上限 → 主动轮换新会话（「快满了就换」）
+        if cached:
+            max_tokens = int(getattr(self.config, "max_tokens_per_session", 0) or 0)
+            if max_tokens > 0 and cached.used_tokens >= max_tokens:
+                self.logger.info(
+                    "Cache STALE | conv=%s... | token cap reached (%d >= %d) → fresh",
+                    conv[:12],
+                    cached.used_tokens,
+                    max_tokens,
+                )
+                self.session_cache.delete(conv)
+                self._bump("cache_stale")
+                cached = None
+
         if cached:
             ds_payload = convert_openai_to_deepseek_incremental(payload, self.config)
             ds_payload["chat_session_id"] = cached.session_id
@@ -877,6 +891,7 @@ class DeepSeekWebClient:
         assistant_content: str,
         request_message_id: str | None = None,
         tool_calls: list[ParsedToolCall] | None = None,
+        used_tokens: int = 0,
     ) -> None:
         if not self.cache_enabled:
             if session_id:
@@ -912,6 +927,10 @@ class DeepSeekWebClient:
         new_hash = prefix_hash(new_prefix, model=resolved["model"])
 
         next_turn = (resolved.get("turn_count") or 0) + 1
+        prev_state = self.session_cache.get(resolved["cache_key"])
+        prev_tokens = (
+            int(getattr(prev_state, "used_tokens", 0) or 0) if prev_state else 0
+        )
         self.session_cache.put(
             resolved["cache_key"],
             SessionState(
@@ -920,6 +939,7 @@ class DeepSeekWebClient:
                 last_message_id=request_message_id,
                 msg_count=int(resolved.get("msg_count", 0) or 0),
                 history_hash=new_hash,
+                used_tokens=prev_tokens + max(0, int(used_tokens or 0)),
             ),
         )
 
@@ -1123,6 +1143,8 @@ class DeepSeekWebClient:
                             parsed.clean_text,
                             last_response_message_id,
                             tool_calls=parsed.calls,
+                            used_tokens=accumulated_tokens
+                            or _estimate_tokens(parsed.clean_text),
                         )
                         if (
                             self.config.delete_conversation
@@ -1161,7 +1183,12 @@ class DeepSeekWebClient:
                         self._validate_response_format(payload, full_text)
 
                     self._store_after_response(
-                        resolved, session_id, full_text, last_response_message_id
+                        resolved,
+                        session_id,
+                        full_text,
+                        last_response_message_id,
+                        used_tokens=accumulated_tokens
+                        or _estimate_tokens(full_text) + _estimate_tokens(full_reasoning),
                     )
 
                     if (
@@ -1644,6 +1671,8 @@ class DeepSeekWebClient:
                                 stored_text,
                                 last_response_message_id,
                                 tool_calls=emitted_calls or None,
+                                used_tokens=accumulated_tokens
+                                or _estimate_tokens(stored_text) + _estimate_tokens(full_reasoning),
                             )
 
                         if (

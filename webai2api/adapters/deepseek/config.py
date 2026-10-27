@@ -50,8 +50,11 @@ class AppConfig:
     session_store_path: str = ""
     daily_request_limit: int = 150
     long_pause_chance: float = 0.02
-    max_turns_per_session: int = 40
-    min_request_interval: float = 1.2
+    max_turns_per_session: int = 80
+    # 单会话累计 token 达到此值即轮换新会话（0=不限）。
+    # 「快满了就换」比等上游报上下文超限更主动，避免长上下文既费钱又像机器。
+    max_tokens_per_session: int = 800_000
+    min_request_interval: float = 2.5
     proxy: str = ""  # 账号级出口代理（custom 模式使用）
     egress: str = "system"  # direct / system / custom
 

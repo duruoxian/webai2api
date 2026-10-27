@@ -40,9 +40,11 @@ class KimiConfig:
     user_agent: str = ""
     device_model: str = ""
     long_pause_chance: float = 0.02
-    min_request_interval: float = 1.2
+    min_request_interval: float = 2.5
     daily_request_limit: int = 600
-    max_turns_per_session: int = 200
+    max_turns_per_session: int = 80
+    # 单会话累计 token 达此值即轮换（0=不限）
+    max_tokens_per_session: int = 200000
     session_store_path: str = ""
     proxy: str = ""
     egress: str = "system"
@@ -140,9 +142,10 @@ def build_config(store, account: dict) -> KimiConfig:
         user_agent=str(prof.get("ua") or ""),
         device_model=str(prof.get("platform") or ""),
         long_pause_chance=float(g("kimi_long_pause_chance", "0.02")),
-        min_request_interval=float(g("kimi_min_request_interval", "1.2")),
+        min_request_interval=float(g("kimi_min_request_interval", "2.5")),
         daily_request_limit=int(g("kimi_daily_limit", "600")),
-        max_turns_per_session=int(g("kimi_max_turns", "200")),
+        max_turns_per_session=int(g("kimi_max_turns", "80")),
+        max_tokens_per_session=int(g("kimi_tokens", "200000")),
         session_store_path=_session_store_path(account),
         proxy=str(account.get("proxy") or ""),
         egress=str(account.get("egress") or "system"),

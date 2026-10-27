@@ -16,6 +16,7 @@ risk_stats 的缓存部分` 在三个 client 里是逐字复制粘贴的三份�
   语义，GLM 无 extra 不受影响）+ 首见 bump created；
 - 落盘字段名参数化（id_field / extra_field），**旧缓存文件格式完全兼容**。
 """
+
 from __future__ import annotations
 
 import json
@@ -25,6 +26,20 @@ import time
 from logging import Logger
 
 _PERSIST_MIN_INTERVAL = 5.0
+
+
+def estimate_tokens(text: str, reasoning: str = "") -> int:
+    """粗估一次回复的 token 数（上游网页版不返回精确用量）。
+
+    中文约 1 字 1 token、英文约 4 字符 1 token，按 UTF-8 中文字符数
+    加权估算。只用于「会话快满了就换」的相对判断，不要求精确。
+    """
+    total = (text or "") + (reasoning or "")
+    if not total:
+        return 0
+    cjk = sum(1 for ch in total if "\u4e00" <= ch <= "\u9fff")
+    other = len(total) - cjk
+    return int(cjk + other / 4) + 1
 
 
 class ConversationCache:
@@ -47,8 +62,9 @@ class ConversationCache:
         self._bump_cb = bump
         self._path = str(persist_path or "")
         self._lock = threading.Lock()
-        # 统一四元组：(session_id, last_used, turns, extra)
-        self._cache: dict[str, tuple[str, float, int, str]] = {}
+        # 统一五元组：(session_id, last_used, turns, extra, tokens)
+        # tokens = 该上游会话累计消耗的 token（用于「快满了就换会话」）
+        self._cache: dict[str, tuple[str, float, int, str, int]] = {}
         self._dirty = False
         self._last_persist = 0.0
         if self._path:
@@ -84,12 +100,13 @@ class ConversationCache:
             try:
                 ts = float(item.get("last_used") or now)
                 turns = int(item.get("turns") or 0)
+                tokens = int(item.get("tokens") or 0)
             except (TypeError, ValueError):
                 continue
             if now - ts > self._config.session_cache_ttl:
                 continue
             extra = str(item.get(self._extra_field) or "") if self._extra_field else ""
-            self._cache[key] = (sid, ts, turns, extra)
+            self._cache[key] = (sid, ts, turns, extra, tokens)
             loaded += 1
         while len(self._cache) > self._config.session_cache_max_size:
             oldest = min(self._cache.items(), key=lambda kv: kv[1][1])[0]
@@ -108,8 +125,15 @@ class ConversationCache:
             return
         try:
             data = {}
-            for k, (sid, ts, turns, extra) in self._cache.items():
-                item = {self._id_field: sid, "last_used": ts, "turns": turns}
+            for k, item in self._cache.items():
+                sid, ts, turns, extra = item[0], item[1], item[2], item[3]
+                tokens = item[4] if len(item) > 4 else 0
+                item = {
+                    self._id_field: sid,
+                    "last_used": ts,
+                    "turns": turns,
+                    "tokens": tokens,
+                }
                 if self._extra_field:
                     item[self._extra_field] = extra
                 data[k] = item
@@ -131,7 +155,8 @@ class ConversationCache:
             item = self._cache.get(key)
             if not item:
                 return "", ""
-            sid, ts, turns, extra = item
+            sid, ts, turns, extra = item[0], item[1], item[2], item[3]
+            tokens = item[4] if len(item) > 4 else 0
             if time.time() - ts > self._config.session_cache_ttl:
                 self._cache.pop(key, None)
                 self._persist()
@@ -144,13 +169,30 @@ class ConversationCache:
                 self._bump("stale")
                 self._logger.info("会话轮次已达上限(%d) → 新建会话", max_turns)
                 return "", ""
-            self._cache[key] = (sid, time.time(), turns, extra)
+            # 「快满了就换」：累计 token 达到该模型上限的阈值比例 → 主动轮换。
+            # 不换的话上下文会持续膨胀，既费 token 也是最典型的风控特征。
+            max_tokens = int(getattr(self._config, "max_tokens_per_session", 0) or 0)
+            if max_tokens > 0 and tokens >= max_tokens:
+                self._cache.pop(key, None)
+                self._persist()
+                self._bump("stale")
+                self._logger.info(
+                    "会话 token 已达上限(%d/%d) → 新建会话", tokens, max_tokens
+                )
+                return "", ""
+            self._cache[key] = (sid, time.time(), turns, extra, tokens)
             self._persist()
             self._bump("hit")
             return sid, extra
 
-    def store(self, key: str, session_id: str, extra: str = "") -> None:
-        """写入/更新会话；同一会话重复 store 时轮次 +1、空 extra 保留旧值。"""
+    def store(
+        self, key: str, session_id: str, extra: str = "", used_tokens: int = 0
+    ) -> None:
+        """写入/更新会话；同一会话重复 store 时轮次 +1、空 extra 保留旧值。
+
+        used_tokens：本次请求消耗的 token，累加到该会话的总消耗上，
+        供「快满了就换会话」判定（见 cached()）。
+        """
         if not self._config.session_cache_enabled or not session_id:
             return
         with self._lock:
@@ -158,10 +200,13 @@ class ConversationCache:
                 oldest = min(self._cache.items(), key=lambda kv: kv[1][1])[0]
                 self._cache.pop(oldest, None)
             prev = self._cache.get(key)
-            turns = (prev[2] + 1) if prev and prev[0] == session_id else 1
-            first_time = prev is None or prev[0] != session_id
-            kept = extra or (prev[3] if prev and prev[0] == session_id else "")
-            self._cache[key] = (session_id, time.time(), turns, kept)
+            same = bool(prev and prev[0] == session_id)
+            turns = (prev[2] + 1) if same else 1
+            first_time = not same
+            kept = extra or (prev[3] if same else "")
+            prev_tokens = (prev[4] if prev and len(prev) > 4 else 0) if same else 0
+            tokens = prev_tokens + max(0, int(used_tokens or 0))
+            self._cache[key] = (session_id, time.time(), turns, kept, tokens)
             self._persist()
             if first_time:
                 self._bump("created")
@@ -180,10 +225,16 @@ class ConversationCache:
         now = time.time()
         ttl = self._config.session_cache_ttl
         max_turns = int(getattr(self._config, "max_turns_per_session", 40) or 40)
+        max_tokens = int(getattr(self._config, "max_tokens_per_session", 0) or 0)
         stale: list[tuple[str, str]] = []
         with self._lock:
-            for key, (sid, ts, turns, _extra) in list(self._cache.items()):
+            for key, item in list(self._cache.items()):
+                sid, ts, turns = item[0], item[1], item[2]
+                tokens = item[4] if len(item) > 4 else 0
                 if now - ts > ttl or turns >= max_turns:
+                    stale.append((key, sid))
+                    self._cache.pop(key, None)
+                elif max_tokens > 0 and tokens >= max_tokens:
                     stale.append((key, sid))
                     self._cache.pop(key, None)
             if stale:
@@ -196,7 +247,8 @@ class ConversationCache:
             total = len(self._cache)
             now = time.time()
             active = sum(
-                1 for (_s, ts, _t, _e) in self._cache.values()
-                if now - ts <= self._config.session_cache_ttl
+                1
+                for item in self._cache.values()
+                if now - item[1] <= self._config.session_cache_ttl
             )
             return {"cache_size": total, "active_sessions": active}

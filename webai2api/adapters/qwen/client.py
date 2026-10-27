@@ -6,6 +6,7 @@
   2. POST /api/v2/chat/completions?chat_id=<会话id>，返回 SSE（OpenAI chunk 形态）
   3. 会话缓存：同一对话复用 chat_id（OpenWebUI 服务端保存历史）
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -171,7 +172,9 @@ def _estimate_tokens(text: str) -> int:
 
 def _usage(payload: dict, text: str) -> dict:
     msgs = payload.get("messages") or []
-    p = max(1, _estimate_tokens("".join(_text_of(m) for m in msgs if isinstance(m, dict))))
+    p = max(
+        1, _estimate_tokens("".join(_text_of(m) for m in msgs if isinstance(m, dict)))
+    )
     c = max(1, _estimate_tokens(text or ""))
     return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
 
@@ -261,7 +264,7 @@ class UpstreamResponseFilter:
                     self._accepted = rid
                 elif self._accepted is None and idx is None:
                     self._accepted = rid
-            return (not rid or self._accepted is None or rid == self._accepted)
+            return not rid or self._accepted is None or rid == self._accepted
         rid = ev.get("response_id")
         if not isinstance(rid, str) or not rid:
             return True
@@ -292,8 +295,11 @@ class QwenWebClient:
         self._last_call_lock = threading.Lock()
         # 会话缓存：conv_key -> (chat_id, last_used, turns, response_id)
         self._conv_cache = conv_cache.ConversationCache(
-            config=config, logger=logger, tag="Qwen",
-            id_field="chat_id", extra_field="response_id",
+            config=config,
+            logger=logger,
+            tag="Qwen",
+            id_field="chat_id",
+            extra_field="response_id",
             persist_path=str(getattr(config, "session_store_path", "") or ""),
             bump=self._bump,
         )
@@ -305,8 +311,10 @@ class QwenWebClient:
     def _conv_key(self, payload: dict) -> str:
         """会话指纹（tool_bridge.conv_fingerprint），首条 assistant 防串台。"""
         return tool_bridge.conv_fingerprint(
-            payload.get("messages") or [], payload.get("model") or "",
-            payload.get("_wapi_key_id") or "")
+            payload.get("messages") or [],
+            payload.get("model") or "",
+            payload.get("_wapi_key_id") or "",
+        )
 
     def _cached_conv(self, key: str) -> str:
         return self._conv_cache.cached(key)[0]
@@ -340,8 +348,10 @@ class QwenWebClient:
     def _stat(self, name: str) -> int:
         return getattr(self, f"_stat_{name}", 0)
 
-    def _store_conv(self, key: str, chat_id: str, response_id: str = "") -> None:
-        self._conv_cache.store(key, chat_id, response_id)
+    def _store_conv(
+        self, key: str, chat_id: str, response_id: str = "", used_tokens: int = 0
+    ) -> None:
+        self._conv_cache.store(key, chat_id, response_id, used_tokens=used_tokens)
 
     # ── HTTP 基础 ──────────────────────────────────────
     @staticmethod
@@ -350,7 +360,8 @@ class QwenWebClient:
 
     def _conn(self, url: str, timeout: int):
         return netutil.open_conn(
-            url, timeout,
+            url,
+            timeout,
             egress=getattr(self.config, "egress", "system"),
             proxy=str(getattr(self.config, "proxy", "") or ""),
             default_host="chat.qwen.ai",
@@ -361,13 +372,17 @@ class QwenWebClient:
         conn = self._conn(url, timeout)
         try:
             _, path = self._split(url)
-            conn.request("POST", path, body=json.dumps(body).encode("utf-8"), headers=headers)
+            conn.request(
+                "POST", path, body=json.dumps(body).encode("utf-8"), headers=headers
+            )
             resp = conn.getresponse()
             raw = resp.read()
             if resp.status >= 400:
                 if resp.status == 429:
                     self._bump("rate_limit")
-                raise QwenError(f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
+                raise QwenError(
+                    f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}"
+                )
             try:
                 return json.loads(raw.decode("utf-8"))
             except Exception as exc:  # noqa: BLE001
@@ -381,14 +396,18 @@ class QwenWebClient:
     def _open_stream(self, url: str, body: dict, headers: dict, timeout: int):
         conn = self._conn(url, timeout)
         _, path = self._split(url)
-        conn.request("POST", path, body=json.dumps(body).encode("utf-8"), headers=headers)
+        conn.request(
+            "POST", path, body=json.dumps(body).encode("utf-8"), headers=headers
+        )
         resp = conn.getresponse()
         if resp.status >= 400:
             if resp.status == 429:
                 self._bump("rate_limit")
             raw = resp.read()
             conn.close()
-            raise QwenError(f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}")
+            raise QwenError(
+                f"HTTP {resp.status}: {raw[:200].decode('utf-8', 'replace')}"
+            )
         return conn, resp
 
     # ── access_token 自动续期 ───────────────────────────
@@ -401,7 +420,11 @@ class QwenWebClient:
         """
         with self._token_lock:
             now = time.time()
-            if not force and self._access_token and now - self._token_checked_at < self._token_ttl:
+            if (
+                not force
+                and self._access_token
+                and now - self._token_checked_at < self._token_ttl
+            ):
                 return self._access_token
             if not self.config.cookie:
                 self._token_checked_at = now
@@ -455,8 +478,12 @@ class QwenWebClient:
             "chat_id": chat_id,
             "incremental_output": True,
         }
-        body.update(_effort_to_payload(
-            str(payload.get("reasoning_effort") or self.config.default_effort), model))
+        body.update(
+            _effort_to_payload(
+                str(payload.get("reasoning_effort") or self.config.default_effort),
+                model,
+            )
+        )
         if self.config.search_enabled:
             body["web_search"] = "auto"
         return body
@@ -485,6 +512,7 @@ class QwenWebClient:
             delay = random.uniform(20, 60)
         else:
             import math
+
             mid = max(0.1, (lo + hi) / 2)
             delay = random.lognormvariate(math.log(mid), 0.6)
         delay = min(max(delay, lo), max(1.0, hi * 3))
@@ -508,7 +536,9 @@ class QwenWebClient:
             try:
                 conn = self._conn(self.config.chat_delete_url(chat_id), 15)
                 _, path = self._split(self.config.chat_delete_url(chat_id))
-                conn.request("DELETE", path, headers=_build_headers(self.config, stream=False))
+                conn.request(
+                    "DELETE", path, headers=_build_headers(self.config, stream=False)
+                )
                 resp = conn.getresponse()
                 resp.read()
                 conn.close()
@@ -525,8 +555,11 @@ class QwenWebClient:
         try:
             raw = json.dumps({"chat_id": chat_id}, ensure_ascii=False).encode("utf-8")
             req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/delete", data=raw, method="POST",
-                headers={"Content-Type": "application/json"})
+                f"http://127.0.0.1:{port}/delete",
+                data=raw,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
             with urllib.request.urlopen(req, timeout=35) as resp:
                 data = json.loads(resp.read().decode("utf-8", "replace") or "{}")
             return bool(data.get("ok"))
@@ -546,7 +579,9 @@ class QwenWebClient:
                 content = delta.get("content") or ""
                 if not isinstance(content, str):
                     content = str(content)
-                reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                reasoning = (
+                    delta.get("reasoning_content") or delta.get("reasoning") or ""
+                )
                 if not isinstance(reasoning, str):
                     reasoning = str(reasoning)
                 return content, reasoning
@@ -589,8 +624,11 @@ class QwenWebClient:
         conv_key = self._conv_key(payload)
         # 首轮绝不复用：新客户端会话的首轮指纹常与旧会话相同（同样的
         # system + 开场白），复用会让模型接着旧上下文聊
-        cached = "" if tool_bridge.is_first_turn(payload.get("messages")) \
+        cached = (
+            ""
+            if tool_bridge.is_first_turn(payload.get("messages"))
             else self._cached_conv(conv_key)
+        )
         parent = self._cached_response_id(conv_key) if cached else ""
         if not cached:
             self._bump("miss")
@@ -640,9 +678,11 @@ class QwenWebClient:
         url = f"http://127.0.0.1:{port}/chat"
         raw = json.dumps(req_body, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
-            url, data=raw, method="POST",
-            headers={"Content-Type": "application/json",
-                     "Accept": "text/event-stream"})
+            url,
+            data=raw,
+            method="POST",
+            headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+        )
         try:
             resp = urllib.request.urlopen(req, timeout=self.config.request_timeout)
         except urllib.error.HTTPError as exc:
@@ -662,9 +702,9 @@ class QwenWebClient:
         base_text = ""
         base_reasoning = ""
         saw_done = False
-        _cont_rounds = 0          # 已发起的续写轮数（不含主轮）
+        _cont_rounds = 0  # 已发起的续写轮数（不含主轮）
         cont_failed = False
-        anchor_seen = False       # 本轮是否拿到过 assistant 锚点（response_id）
+        anchor_seen = False  # 本轮是否拿到过 assistant 锚点（response_id）
         try:
             while True:
                 round_text = ""
@@ -696,22 +736,28 @@ class QwenWebClient:
                             if isinstance(rid, str) and rid:
                                 response_id = rid
                                 anchor_seen = True
-                            yield {"text": base_text + round_text,
-                                   "reasoning": base_reasoning + round_reasoning,
-                                   "chat_id": chat_id or response_id,
-                                   "finish_seen": saw_done}
+                            yield {
+                                "text": base_text + round_text,
+                                "reasoning": base_reasoning + round_reasoning,
+                                "chat_id": chat_id or response_id,
+                                "finish_seen": saw_done,
+                            }
                         elif typ == "reasoning":
                             round_reasoning += str(event.get("content") or "")
-                            yield {"text": base_text + round_text,
-                                   "reasoning": base_reasoning + round_reasoning,
-                                   "chat_id": chat_id or response_id,
-                                   "finish_seen": saw_done}
+                            yield {
+                                "text": base_text + round_text,
+                                "reasoning": base_reasoning + round_reasoning,
+                                "chat_id": chat_id or response_id,
+                                "finish_seen": saw_done,
+                            }
                         elif typ == "delta":
                             round_text += str(event.get("content") or "")
-                            yield {"text": base_text + round_text,
-                                   "reasoning": base_reasoning + round_reasoning,
-                                   "chat_id": chat_id or response_id,
-                                   "finish_seen": saw_done}
+                            yield {
+                                "text": base_text + round_text,
+                                "reasoning": base_reasoning + round_reasoning,
+                                "chat_id": chat_id or response_id,
+                                "finish_seen": saw_done,
+                            }
                         elif typ == "done":
                             cid = event.get("chat_id")
                             if isinstance(cid, str) and cid:
@@ -725,8 +771,10 @@ class QwenWebClient:
                         elif typ == "error":
                             if is_cont:
                                 # 续写轮报错：按截断收场，不让已输出的流变报错
-                                self.logger.warning("续写轮中继错误（按截断返回）: %s",
-                                                    event.get("message"))
+                                self.logger.warning(
+                                    "续写轮中继错误（按截断返回）: %s",
+                                    event.get("message"),
+                                )
                                 cont_failed = True
                                 break
                             self.logger.warning("Qwen 中继错误: %s", event)
@@ -741,11 +789,14 @@ class QwenWebClient:
                     except Exception:
                         pass
 
-                if (saw_done or cont_failed
-                        or _cont_rounds >= MAX_AUTO_CONTINUATIONS):
+                if saw_done or cont_failed or _cont_rounds >= MAX_AUTO_CONTINUATIONS:
                     break
-                if not (chat_id and anchor_seen
-                        and response_id and response_id != anchor_base):
+                if not (
+                    chat_id
+                    and anchor_seen
+                    and response_id
+                    and response_id != anchor_base
+                ):
                     # 无锚点（连会话 id / assistant response id 都没拿到）：
                     # 「继续」会挂到上一轮的 response 上成为孤儿分支，不续写
                     break
@@ -755,18 +806,30 @@ class QwenWebClient:
                 self._bump("auto_continued")
                 self.logger.warning(
                     "上游流提前中断（未见 done 事件），自动续写 %d/%d",
-                    _cont_rounds, MAX_AUTO_CONTINUATIONS,
+                    _cont_rounds,
+                    MAX_AUTO_CONTINUATIONS,
                 )
-                cont_body = dict(req_body, prompt=CONTINUE_PROMPT, system="",
-                                 chat_id=chat_id, parent_id=response_id)
+                cont_body = dict(
+                    req_body,
+                    prompt=CONTINUE_PROMPT,
+                    system="",
+                    chat_id=chat_id,
+                    parent_id=response_id,
+                )
                 raw = json.dumps(cont_body, ensure_ascii=False).encode("utf-8")
                 req = urllib.request.Request(
-                    url, data=raw, method="POST",
-                    headers={"Content-Type": "application/json",
-                             "Accept": "text/event-stream"})
+                    url,
+                    data=raw,
+                    method="POST",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "text/event-stream",
+                    },
+                )
                 try:
                     resp = urllib.request.urlopen(
-                        req, timeout=self.config.request_timeout)
+                        req, timeout=self.config.request_timeout
+                    )
                 except Exception as exc:  # noqa: BLE001
                     self.logger.warning("自动续写失败（按截断返回）: %s", exc)
                     break
@@ -780,18 +843,28 @@ class QwenWebClient:
         reasoning = base_reasoning + round_reasoning
         if chat_id and self.config.session_cache_enabled:
             store_key = tool_bridge.conv_fingerprint(
-                (payload.get("messages") or []) + [
-                    {"role": "assistant", "content": text}],
+                (payload.get("messages") or [])
+                + [{"role": "assistant", "content": text}],
                 payload.get("model") or "",
-                payload.get("_wapi_key_id") or "")
-            self._store_conv(store_key, chat_id,
-                             response_id if anchor_seen else "")
+                payload.get("_wapi_key_id") or "",
+            )
+            self._store_conv(
+                store_key,
+                chat_id,
+                response_id if anchor_seen else "",
+                used_tokens=conv_cache.estimate_tokens(text, reasoning),
+            )
         if not saw_done:
             self.logger.warning(
-                "上游流提前中断（续写未救回），按截断返回 finish=length")
-        yield {"__done__": True, "text": text, "reasoning": reasoning,
-               "chat_id": chat_id or response_id,
-               "finish_seen": saw_done}
+                "上游流提前中断（续写未救回），按截断返回 finish=length"
+            )
+        yield {
+            "__done__": True,
+            "text": text,
+            "reasoning": reasoning,
+            "chat_id": chat_id or response_id,
+            "finish_seen": saw_done,
+        }
 
     def _stream_events(self, payload: dict):
         if self.config.relay_enabled and self.config.account_id:
@@ -800,8 +873,11 @@ class QwenWebClient:
 
         conv_key = self._conv_key(payload)
         # 首轮绝不复用（同 _stream_via_relay）
-        cached = "" if tool_bridge.is_first_turn(payload.get("messages")) \
+        cached = (
+            ""
+            if tool_bridge.is_first_turn(payload.get("messages"))
             else self._cached_conv(conv_key)
+        )
         if not cached:
             self._bump("miss")
 
@@ -813,15 +889,21 @@ class QwenWebClient:
         body = self._body(payload, chat_id=cached)
         try:
             conn, resp = self._open_stream(
-                url, body, _build_headers(self.config, self._valid_token()),
-                self.config.request_timeout)
+                url,
+                body,
+                _build_headers(self.config, self._valid_token()),
+                self.config.request_timeout,
+            )
         except QwenError as exc:
             if "401" not in str(exc):
                 raise
             self.logger.info("Qwen 返回 401，尝试续期后重试")
             conn, resp = self._open_stream(
-                url, body, _build_headers(self.config, self._valid_token(force=True)),
-                self.config.request_timeout)
+                url,
+                body,
+                _build_headers(self.config, self._valid_token(force=True)),
+                self.config.request_timeout,
+            )
         chat_id = cached
         text = ""
         reasoning = ""
@@ -849,32 +931,43 @@ class QwenWebClient:
 
         if chat_id and self.config.session_cache_enabled:
             store_key = tool_bridge.conv_fingerprint(
-                (payload.get("messages") or []) + [
-                    {"role": "assistant", "content": text}],
+                (payload.get("messages") or [])
+                + [{"role": "assistant", "content": text}],
                 payload.get("model") or "",
-                payload.get("_wapi_key_id") or "")
+                payload.get("_wapi_key_id") or "",
+            )
             self._store_conv(store_key, chat_id)
-        yield {"__done__": True, "text": text, "reasoning": reasoning, "chat_id": chat_id}
+        yield {
+            "__done__": True,
+            "text": text,
+            "reasoning": reasoning,
+            "chat_id": chat_id,
+        }
 
     # ── 对外接口 ───────────────────────────────────────
     def _forced_retry(self, payload: dict, tools: list) -> tuple[str, str, list]:
         """tool_choice=required 强校验重试：加强指令再问一次（上限 1 次）。"""
         self.logger.info("Qwen tool_choice=required 首轮未调用工具，加强指令重试一次")
         retry = dict(payload)
-        retry["messages"] = list(payload.get("messages") or []) + [{
-            "role": "user",
-            "content": tool_bridge.required_nudge(
-                tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER),
-        }]
+        retry["messages"] = list(payload.get("messages") or []) + [
+            {
+                "role": "user",
+                "content": tool_bridge.required_nudge(
+                    tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+                ),
+            }
+        ]
         text = reasoning = ""
         for ev in self._stream_events(retry):
             text, reasoning = ev["text"], ev["reasoning"]
         calls = tool_bridge.parse_tool_calls(
-            text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER)
+            text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+        )
         if not calls:
             raise QwenError(
                 "工具调用强校验失败：重试一次后模型仍未按要求调用工具"
-                "（tool_choice=required）")
+                "（tool_choice=required）"
+            )
         return text, reasoning, calls
 
     def chat_completion(self, payload: dict) -> dict:
@@ -888,8 +981,13 @@ class QwenWebClient:
             if ev.get("__done__"):
                 finish_seen = bool(ev.get("finish_seen", True))
 
-        calls = tool_bridge.parse_tool_calls(
-            text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER) if tools else []
+        calls = (
+            tool_bridge.parse_tool_calls(
+                text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+            )
+            if tools
+            else []
+        )
         if not calls and tools and tool_bridge.is_forced_tool_choice(payload):
             text, reasoning, calls = self._forced_retry(payload, tools)
         if calls:
@@ -898,37 +996,53 @@ class QwenWebClient:
                 "object": "chat.completion",
                 "created": int(time.time()),
                 "model": model,
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": None,
-                                "reasoning_content": reasoning or None,
-                                "tool_calls": calls},
-                    "finish_reason": "tool_calls",
-                }],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "reasoning_content": reasoning or None,
+                            "tool_calls": calls,
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
                 "usage": _usage(payload, text),
             }
 
         # 带工具但没解析出调用：剥掉可能残留的标记再下发；
         # 空正文兜底——思考里就是答案时顶上来
-        content = tool_bridge.strip_tool_markup(
-            text, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER) if tools else text
+        content = (
+            tool_bridge.strip_tool_markup(
+                text, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+            )
+            if tools
+            else text
+        )
         content, reasoning = reasoning_bridge.finalize_reasoning(
-            content, reasoning,
-            legacy=self.config.legacy_reasoning_in_content)
+            content, reasoning, legacy=self.config.legacy_reasoning_in_content
+        )
         if not finish_seen:
             self.logger.warning(
-                "上游流提前中断（续写未救回），按截断返回 finish=length")
+                "上游流提前中断（续写未救回），按截断返回 finish=length"
+            )
         return {
             "id": completion_id,
             "object": "chat.completion",
             "created": int(time.time()),
             "model": model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": content,
-                            "reasoning_content": reasoning or None},
-                "finish_reason": "stop" if finish_seen else "length",
-            }],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                        "reasoning_content": reasoning or None,
+                    },
+                    "finish_reason": "stop" if finish_seen else "length",
+                }
+            ],
             "usage": _usage(payload, text),
         }
 
@@ -939,8 +1053,10 @@ class QwenWebClient:
 
         def chunk(delta: dict, finish=None, usage=None) -> str:
             obj = {
-                "id": completion_id, "object": "chat.completion.chunk",
-                "created": created, "model": model,
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
             }
             if usage is not None:
@@ -961,22 +1077,28 @@ class QwenWebClient:
                     text, reasoning = ev["text"], ev["reasoning"]
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning("Qwen 流式请求失败: %s", exc)
-                err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
+                err = {
+                    "error": {"message": f"上游错误: {exc}", "type": "upstream_error"}
+                }
                 yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
             calls = tool_bridge.parse_tool_calls(
-                text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER)
+                text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+            )
             if not calls:
                 try:
                     text, reasoning, calls = self._forced_retry(payload, tools)
                 except QwenError as exc:
-                    err = {"error": {"message": str(exc), "type": "tool_required_error"}}
+                    err = {
+                        "error": {"message": str(exc), "type": "tool_required_error"}
+                    }
                     yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                     yield "data: [DONE]\n\n"
                     return
             rs = reasoning_bridge.ReasoningStream(
-                legacy=self.config.legacy_reasoning_in_content)
+                legacy=self.config.legacy_reasoning_in_content
+            )
             out_r, out_c = rs.feed(reasoning, "")
             if out_r:
                 yield chunk({"reasoning_content": out_r})
@@ -985,12 +1107,18 @@ class QwenWebClient:
             tail = rs.close_think()
             if tail:
                 yield chunk({"content": tail})
-            yield chunk({"tool_calls": [{
-                "index": 0,
-                "id": calls[0]["id"],
-                "type": "function",
-                "function": calls[0]["function"],
-            }]})
+            yield chunk(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": calls[0]["id"],
+                            "type": "function",
+                            "function": calls[0]["function"],
+                        }
+                    ]
+                }
+            )
             yield chunk({}, usage=_usage(payload, text))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
@@ -998,23 +1126,27 @@ class QwenWebClient:
 
         # 有工具时扣住标记文本：<tool_call> 出现前照常流式，出现后扣留等解析，
         # 标记 JSON 不会漏进 content（增量口径扣留器）
-        buf = tool_bridge.DeltaToolBuffer(
-            [f"<{QWEN_TOOL_TAG}>", QWEN_TOOL_MARKER]) if tools else None
+        buf = (
+            tool_bridge.DeltaToolBuffer([f"<{QWEN_TOOL_TAG}>", QWEN_TOOL_MARKER])
+            if tools
+            else None
+        )
         sent_text = ""
         sent_reasoning = ""
         # 思考增量统一走分发器：legacy 开关决定走 reasoning_content 还是
         # <think> 并入 content；收尾做空正文兜底
         rs = reasoning_bridge.ReasoningStream(
-            legacy=self.config.legacy_reasoning_in_content)
+            legacy=self.config.legacy_reasoning_in_content
+        )
         finish_seen = True
         try:
             for ev in self._stream_events(payload):
                 if ev.get("__done__"):
                     finish_seen = bool(ev.get("finish_seen", True))
-                d_reason = ev["reasoning"][len(sent_reasoning):]
+                d_reason = ev["reasoning"][len(sent_reasoning) :]
                 if d_reason:
                     sent_reasoning = ev["reasoning"]
-                d_text = ev["text"][len(sent_text):]
+                d_text = ev["text"][len(sent_text) :]
                 sent_text = ev["text"]
                 d_out = buf.feed_delta(d_text) if buf is not None else d_text
                 out_r, out_c = rs.feed(d_reason, d_out)
@@ -1030,18 +1162,29 @@ class QwenWebClient:
             return
 
         full_text = buf.text if buf is not None else sent_text
-        calls = tool_bridge.parse_tool_calls(
-            full_text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER) if tools else []
+        calls = (
+            tool_bridge.parse_tool_calls(
+                full_text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+            )
+            if tools
+            else []
+        )
         if calls:
             tail = rs.close_think()
             if tail:
                 yield chunk({"content": tail})
-            yield chunk({"tool_calls": [{
-                "index": 0,
-                "id": calls[0]["id"],
-                "type": "function",
-                "function": calls[0]["function"],
-            }]})
+            yield chunk(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": calls[0]["id"],
+                            "type": "function",
+                            "function": calls[0]["function"],
+                        }
+                    ]
+                }
+            )
             yield chunk({}, usage=_usage(payload, full_text))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
@@ -1052,7 +1195,9 @@ class QwenWebClient:
             # （白名单外的调用如网页内置 browser，剥掉好过漏给用户）
             tail = tool_bridge.strip_call_json(
                 tool_bridge.strip_tool_markup(
-                    buf.flush(), tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER))
+                    buf.flush(), tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+                )
+            )
             if tail:
                 out_r, out_c = rs.feed("", tail)
                 if out_r:
@@ -1067,6 +1212,7 @@ class QwenWebClient:
         yield chunk({}, usage=_usage(payload, full_text))
         if not finish_seen:
             self.logger.warning(
-                "上游流提前中断（续写未救回），按截断返回 finish=length")
+                "上游流提前中断（续写未救回），按截断返回 finish=length"
+            )
         yield chunk({}, finish="stop" if finish_seen else "length")
         yield "data: [DONE]\n\n"

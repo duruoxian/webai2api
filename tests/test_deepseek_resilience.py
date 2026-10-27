@@ -12,6 +12,7 @@
 2. 正文一个字没发、思考有货 → 思考顶成正文下发；
 3. 正常带 finish 的流行为完全不变。
 """
+
 from __future__ import annotations
 
 import json
@@ -30,8 +31,11 @@ def _events_reasoning_only_no_finish():
     """思考片段 + 掐流：只发 reasoning，永远等不到 finish 帧。"""
     return [
         {"_event_type": "ready"},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f1", "type": "THINK", "content": ""}]},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f1", "type": "THINK", "content": ""}],
+        },
         {"v": "用户问1+1，"},
         {"v": "答案是2。我要只输出数字。"},
         # —— 上游在此断流，没有 response/status=FINISHED ——
@@ -42,11 +46,17 @@ def _events_normal():
     """正常流：思考 + 正文 + finish 帧。"""
     return [
         {"_event_type": "ready"},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f1", "type": "THINK", "content": ""}]},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f1", "type": "THINK", "content": ""}],
+        },
         {"v": "想一下"},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f2", "type": "RESPONSE", "content": ""}]},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f2", "type": "RESPONSE", "content": ""}],
+        },
         {"v": "正文答案"},
         {"data": {"p": "response/status", "v": "FINISHED"}},
     ]
@@ -56,11 +66,17 @@ def _events_truncated_mid_content():
     """正文发一半被掐：有 reasoning 有半截 content，无 finish。"""
     return [
         {"_event_type": "ready"},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f1", "type": "THINK", "content": ""}]},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f1", "type": "THINK", "content": ""}],
+        },
         {"v": "思考若干"},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f2", "type": "RESPONSE", "content": ""}]},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f2", "type": "RESPONSE", "content": ""}],
+        },
         {"v": "正文开头"},
         # —— 掐流 ——
     ]
@@ -69,21 +85,25 @@ def _events_truncated_mid_content():
 def _stub_client(rounds) -> DeepSeekWebClient:
     """rounds: 每次上游调用返回一组事件（断流续写测试用多组）。"""
     if rounds and isinstance(rounds[0], dict):
-        rounds = [rounds]          # 单轮便捷写法
+        rounds = [rounds]  # 单轮便捷写法
     state = {"n": 0}
 
     c = DeepSeekWebClient.__new__(DeepSeekWebClient)
     c.config = SimpleNamespace(
-        strip_citations=False, delete_conversation=False,
-        debug_dump_all=False, default_model="deepseek-chat",
-        request_timeout=10, search_enabled=False,
+        strip_citations=False,
+        delete_conversation=False,
+        debug_dump_all=False,
+        default_model="deepseek-chat",
+        request_timeout=10,
+        search_enabled=False,
     )
     c.logger = logging.getLogger("ds.resilience.test")
-    c.request_queue = ConcurrentRequestQueue(c.logger, wait_timeout=1, max_concurrency=1)
+    c.request_queue = ConcurrentRequestQueue(
+        c.logger, wait_timeout=1, max_concurrency=1
+    )
     c._stats_lock = threading.Lock()
     c._stats = {}
-    c.session_cache = SimpleNamespace(
-        get=lambda k: None, delete=lambda k: None, size=0)
+    c.session_cache = SimpleNamespace(get=lambda k: None, delete=lambda k: None, size=0)
     c.stored = []
     c.upstream_calls = {"n": 0}
 
@@ -97,21 +117,26 @@ def _stub_client(rounds) -> DeepSeekWebClient:
         return iter(rounds[min(c.upstream_calls["n"], len(rounds)) - 1])
 
     c._resolve_conversation = lambda payload: {
-        "model": "deepseek-chat", "ds_payload": {"prompt": "hi"},
-        "mode": "fresh", "session_id": "sess-1",
+        "model": "deepseek-chat",
+        "ds_payload": {"prompt": "hi"},
+        "mode": "fresh",
+        "session_id": "sess-1",
     }
     c._open_chat_stream = _open
     c._iter_sse_events = _iter
     c._store_after_response = (
-        lambda resolved, sid, text, msg_id, tool_calls=None:
-        c.stored.append((text, tool_calls))
+        lambda resolved, sid, text, msg_id, tool_calls=None, used_tokens=0: (
+            c.stored.append((text, tool_calls))
+        )
     )
     return c
 
 
 def _payload() -> dict:
-    return {"model": "deepseek-chat",
-            "messages": [{"role": "user", "content": "1+1等于几"}]}
+    return {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": "1+1等于几"}],
+    }
 
 
 def _parse_stream(chunks_raw: list[str]) -> list[dict]:
@@ -126,11 +151,15 @@ def _parse_stream(chunks_raw: list[str]) -> list[dict]:
 def test_stream_truncated_promotes_reasoning_and_marks_length():
     c = _stub_client([_events_reasoning_only_no_finish()])
     chunks = _parse_stream(list(c.stream_chat_completion(_payload())))
-    contents = [x["choices"][0]["delta"].get("content", "")
-                for x in chunks if x.get("choices")]
+    contents = [
+        x["choices"][0]["delta"].get("content", "") for x in chunks if x.get("choices")
+    ]
     assert "".join(contents) == "用户问1+1，答案是2。我要只输出数字。"
-    finishes = [x["choices"][0].get("finish_reason") for x in chunks
-                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    finishes = [
+        x["choices"][0].get("finish_reason")
+        for x in chunks
+        if x.get("choices") and x["choices"][0].get("finish_reason")
+    ]
     assert finishes == ["length"], f"截断流应返回 length，实际 {finishes}"
     # 兜底顶上来的正文也要进会话存储（多轮上下文一致）
     assert c.stored and c.stored[0][0] == "用户问1+1，答案是2。我要只输出数字。"
@@ -139,22 +168,30 @@ def test_stream_truncated_promotes_reasoning_and_marks_length():
 def test_stream_normal_finish_unchanged():
     c = _stub_client([_events_normal()])
     chunks = _parse_stream(list(c.stream_chat_completion(_payload())))
-    contents = "".join(x["choices"][0]["delta"].get("content", "")
-                       for x in chunks if x.get("choices"))
+    contents = "".join(
+        x["choices"][0]["delta"].get("content", "") for x in chunks if x.get("choices")
+    )
     assert contents == "正文答案"
-    finishes = [x["choices"][0].get("finish_reason") for x in chunks
-                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    finishes = [
+        x["choices"][0].get("finish_reason")
+        for x in chunks
+        if x.get("choices") and x["choices"][0].get("finish_reason")
+    ]
     assert finishes == ["stop"]
 
 
 def test_stream_truncated_mid_content_keeps_partial_text_and_marks_length():
     c = _stub_client([_events_truncated_mid_content()])
     chunks = _parse_stream(list(c.stream_chat_completion(_payload())))
-    contents = "".join(x["choices"][0]["delta"].get("content", "")
-                       for x in chunks if x.get("choices"))
+    contents = "".join(
+        x["choices"][0]["delta"].get("content", "") for x in chunks if x.get("choices")
+    )
     assert "正文开头" in contents
-    finishes = [x["choices"][0].get("finish_reason") for x in chunks
-                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    finishes = [
+        x["choices"][0].get("finish_reason")
+        for x in chunks
+        if x.get("choices") and x["choices"][0].get("finish_reason")
+    ]
     assert finishes == ["length"]
     # 有正文时不应把思考再重复塞进正文
     assert "思考若干" not in contents
@@ -183,22 +220,47 @@ def test_truncated_partial_dsml_does_not_emit_broken_tool_call():
     """工具参数流到一半被掐：残缺 DSML 被丢弃，绝不给客户端半个调用。"""
     events = [
         {"_event_type": "ready"},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f1", "type": "RESPONSE", "content": ""}]},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f1", "type": "RESPONSE", "content": ""}],
+        },
         {"v": '<|tool_call|>{"name": "write", "arguments": {"file'},
         # —— 掐流：DSML 未闭合 ——
     ]
     c = _stub_client(events)
-    chunks = _parse_stream(list(c.stream_chat_completion(
-        {**_payload(), "tools": [{"type": "function", "function": {
-            "name": "write", "parameters": {"type": "object",
-            "properties": {"file": {"type": "string"}}}}}]},
-    )))
-    tool_chunks = [x for x in chunks if x.get("choices")
-                   and x["choices"][0]["delta"].get("tool_calls")]
+    chunks = _parse_stream(
+        list(
+            c.stream_chat_completion(
+                {
+                    **_payload(),
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "write",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {"file": {"type": "string"}},
+                                },
+                            },
+                        }
+                    ],
+                },
+            )
+        )
+    )
+    tool_chunks = [
+        x
+        for x in chunks
+        if x.get("choices") and x["choices"][0]["delta"].get("tool_calls")
+    ]
     assert tool_chunks == []
-    finishes = [x["choices"][0].get("finish_reason") for x in chunks
-                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    finishes = [
+        x["choices"][0].get("finish_reason")
+        for x in chunks
+        if x.get("choices") and x["choices"][0].get("finish_reason")
+    ]
     assert finishes == ["length"]
 
 
@@ -207,8 +269,11 @@ def _truncated_with_msgid():
     """第 1 轮：正文发一半 + ready 带消息 id，无 finish → 触发续写。"""
     return [
         {"_event_type": "ready", "response_message_id": 1001},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f1", "type": "RESPONSE", "content": ""}]},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f1", "type": "RESPONSE", "content": ""}],
+        },
         {"v": "回答开头，"},
         # —— 掐流 ——
     ]
@@ -218,8 +283,11 @@ def _continuation_completes():
     """第 2 轮（续写）：把剩余正文说完并正常 finish。"""
     return [
         {"_event_type": "ready", "response_message_id": 1002},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f2", "type": "RESPONSE", "content": ""}]},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f2", "type": "RESPONSE", "content": ""}],
+        },
         {"v": "答案的剩余部分"},
         {"data": {"p": "response/status", "v": "FINISHED"}},
     ]
@@ -230,11 +298,15 @@ def test_stream_truncated_auto_continues_to_complete_answer():
     finish 回到 stop（不再是 length）。"""
     c = _stub_client([_truncated_with_msgid(), _continuation_completes()])
     chunks = _parse_stream(list(c.stream_chat_completion(_payload())))
-    contents = "".join(x["choices"][0]["delta"].get("content", "")
-                       for x in chunks if x.get("choices"))
+    contents = "".join(
+        x["choices"][0]["delta"].get("content", "") for x in chunks if x.get("choices")
+    )
     assert contents == "回答开头，答案的剩余部分"
-    finishes = [x["choices"][0].get("finish_reason") for x in chunks
-                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    finishes = [
+        x["choices"][0].get("finish_reason")
+        for x in chunks
+        if x.get("choices") and x["choices"][0].get("finish_reason")
+    ]
     assert finishes == ["stop"], f"续写成功应返回 stop，实际 {finishes}"
     # 存储的是合并后的完整正文（下一轮前缀哈希才能匹配客户端历史）
     assert c.stored and c.stored[0][0] == "回答开头，答案的剩余部分"
@@ -250,8 +322,11 @@ def test_stream_truncated_no_msgid_falls_back_to_length():
         ev.pop("response_message_id", None)
     c = _stub_client(c_rounds)
     chunks = _parse_stream(list(c.stream_chat_completion(_payload())))
-    finishes = [x["choices"][0].get("finish_reason") for x in chunks
-                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    finishes = [
+        x["choices"][0].get("finish_reason")
+        for x in chunks
+        if x.get("choices") and x["choices"][0].get("finish_reason")
+    ]
     assert finishes == ["length"]
     assert c.upstream_calls["n"] == 1
 
@@ -267,13 +342,18 @@ def test_stream_truncated_continuation_fails_gracefully():
         if c.upstream_calls["n"] >= 2:
             raise RuntimeError("continuation upstream down")
         return object(), "sess-1"
+
     c._open_chat_stream = _open_fail
     chunks = _parse_stream(list(c.stream_chat_completion(_payload())))
-    contents = "".join(x["choices"][0]["delta"].get("content", "")
-                       for x in chunks if x.get("choices"))
+    contents = "".join(
+        x["choices"][0]["delta"].get("content", "") for x in chunks if x.get("choices")
+    )
     assert "回答开头，" in contents
-    finishes = [x["choices"][0].get("finish_reason") for x in chunks
-                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    finishes = [
+        x["choices"][0].get("finish_reason")
+        for x in chunks
+        if x.get("choices") and x["choices"][0].get("finish_reason")
+    ]
     assert finishes == ["length"]
     errors = [x for x in chunks if x.get("error")]
     assert errors == [], "续写失败不能变成 SSE error 事件"
@@ -285,27 +365,47 @@ def test_stream_truncated_mid_tool_call_recovered_by_continuation():
     D = tc._DSML  # DeepSeek 真实 DSML 标记（全角竖线）
     r1 = [
         {"_event_type": "ready", "response_message_id": 2001},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f1", "type": "RESPONSE", "content": ""}]},
-        {"v": f'<{D} calls><{D} invoke name="write">'
-              f'<{D} parameter name="filePath" string="true">a'},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f1", "type": "RESPONSE", "content": ""}],
+        },
+        {
+            "v": f'<{D} calls><{D} invoke name="write">'
+            f'<{D} parameter name="filePath" string="true">a'
+        },
         # —— 掐流：DSML 半截 ——
     ]
     r2 = [
         {"_event_type": "ready", "response_message_id": 2002},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f2", "type": "RESPONSE", "content": ""}]},
-        {"v": f'<{D} calls><{D} invoke name="write">'
-              f'<{D} parameter name="filePath" string="true">a.txt</{D} parameter>'
-              f'</{D} invoke></{D} calls>'},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f2", "type": "RESPONSE", "content": ""}],
+        },
+        {
+            "v": f'<{D} calls><{D} invoke name="write">'
+            f'<{D} parameter name="filePath" string="true">a.txt</{D} parameter>'
+            f"</{D} invoke></{D} calls>"
+        },
         {"data": {"p": "response/status", "v": "FINISHED"}},
     ]
-    tools = [{"type": "function", "function": {
-        "name": "write", "parameters": {"type": "object",
-        "properties": {"filePath": {"type": "string"}}}}}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "write",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"filePath": {"type": "string"}},
+                },
+            },
+        }
+    ]
     c = _stub_client([r1, r2])
-    chunks = _parse_stream(list(c.stream_chat_completion(
-        {**_payload(), "tools": tools})))
+    chunks = _parse_stream(
+        list(c.stream_chat_completion({**_payload(), "tools": tools}))
+    )
     calls = []
     for x in chunks:
         if x.get("choices"):
@@ -315,8 +415,11 @@ def test_stream_truncated_mid_tool_call_recovered_by_continuation():
     assert calls, "续写后应拿到完整 tool_calls"
     head = calls[0]
     assert head["function"]["name"] == "write"
-    finishes = [x["choices"][0].get("finish_reason") for x in chunks
-                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    finishes = [
+        x["choices"][0].get("finish_reason")
+        for x in chunks
+        if x.get("choices") and x["choices"][0].get("finish_reason")
+    ]
     assert finishes == ["tool_calls"]
 
 
@@ -333,23 +436,42 @@ def test_non_stream_truncated_partial_tool_markup_dropped_before_continue():
     D = tc._DSML
     r1 = [
         {"_event_type": "ready", "response_message_id": 3001},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f1", "type": "RESPONSE", "content": ""}]},
-        {"v": f'<{D} calls><{D} invoke name="write">'
-              f'<{D} parameter name="filePath" string="true">a'},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f1", "type": "RESPONSE", "content": ""}],
+        },
+        {
+            "v": f'<{D} calls><{D} invoke name="write">'
+            f'<{D} parameter name="filePath" string="true">a'
+        },
     ]
     r2 = [
         {"_event_type": "ready", "response_message_id": 3002},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f2", "type": "RESPONSE", "content": ""}]},
-        {"v": f'<{D} calls><{D} invoke name="write">'
-              f'<{D} parameter name="filePath" string="true">a.txt</{D} parameter>'
-              f'</{D} invoke></{D} calls>'},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f2", "type": "RESPONSE", "content": ""}],
+        },
+        {
+            "v": f'<{D} calls><{D} invoke name="write">'
+            f'<{D} parameter name="filePath" string="true">a.txt</{D} parameter>'
+            f"</{D} invoke></{D} calls>"
+        },
         {"data": {"p": "response/status", "v": "FINISHED"}},
     ]
-    tools = [{"type": "function", "function": {
-        "name": "write", "parameters": {"type": "object",
-        "properties": {"filePath": {"type": "string"}}}}}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "write",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"filePath": {"type": "string"}},
+                },
+            },
+        }
+    ]
     c = _stub_client([r1, r2])
     out = c.chat_completion({**_payload(), "tools": tools})
     calls = out["choices"][0]["message"].get("tool_calls") or []
@@ -362,46 +484,63 @@ def test_stream_json_truncated_skips_validation():
     """JSON 模式 + 截断：跳过校验按 length 收场，绝不让已输出的流变 502。
     （审查发现：半截 JSON 必然校验失败，generator 死掉连 finish 都不发。）"""
     c = _stub_client([_events_truncated_mid_content()])
-    chunks = _parse_stream(list(c.stream_chat_completion(
-        {**_payload(), "response_format": {"type": "json_object"}})))
+    chunks = _parse_stream(
+        list(
+            c.stream_chat_completion(
+                {**_payload(), "response_format": {"type": "json_object"}}
+            )
+        )
+    )
     assert [x for x in chunks if x.get("error")] == [], "截断不能变成 error 事件"
-    finishes = [x["choices"][0].get("finish_reason") for x in chunks
-                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    finishes = [
+        x["choices"][0].get("finish_reason")
+        for x in chunks
+        if x.get("choices") and x["choices"][0].get("finish_reason")
+    ]
     assert finishes == ["length"]
 
 
 def test_non_stream_json_truncated_skips_validation():
     c = _stub_client([_events_truncated_mid_content()])
-    out = c.chat_completion(
-        {**_payload(), "response_format": {"type": "json_object"}})
+    out = c.chat_completion({**_payload(), "response_format": {"type": "json_object"}})
     assert out["choices"][0]["finish_reason"] == "length"
     assert "正文开头" in out["choices"][0]["message"]["content"]
 
 
 def test_stream_allows_two_continuations():
     """续写轮数口径：主轮不计，最多 2 轮续写（此前非流式只允许 1 轮）。"""
+
     def _round(text, msgid, done=False):
         evs = [
             {"_event_type": "ready", "response_message_id": msgid},
-            {"p": "response/fragments", "o": "APPEND",
-             "v": [{"id": "f", "type": "RESPONSE", "content": ""}]},
+            {
+                "p": "response/fragments",
+                "o": "APPEND",
+                "v": [{"id": "f", "type": "RESPONSE", "content": ""}],
+            },
             {"v": text},
         ]
         if done:
             evs.append({"data": {"p": "response/status", "v": "FINISHED"}})
         return evs
 
-    c = _stub_client([
-        _round("第一段", 101),
-        _round("第二段", 102),
-        _round("第三段", 103, done=True),
-    ])
+    c = _stub_client(
+        [
+            _round("第一段", 101),
+            _round("第二段", 102),
+            _round("第三段", 103, done=True),
+        ]
+    )
     chunks = _parse_stream(list(c.stream_chat_completion(_payload())))
-    contents = "".join(x["choices"][0]["delta"].get("content", "")
-                       for x in chunks if x.get("choices"))
+    contents = "".join(
+        x["choices"][0]["delta"].get("content", "") for x in chunks if x.get("choices")
+    )
     assert contents == "第一段第二段第三段"
-    finishes = [x["choices"][0].get("finish_reason") for x in chunks
-                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    finishes = [
+        x["choices"][0].get("finish_reason")
+        for x in chunks
+        if x.get("choices") and x["choices"][0].get("finish_reason")
+    ]
     assert finishes == ["stop"]
     assert c.upstream_calls["n"] == 3, "主轮 + 2 轮续写"
 
@@ -411,15 +550,21 @@ def test_stream_nested_finish_with_content_recognized():
     不漏——否则已完成回答会被误续写追加多余内容。"""
     events = [
         {"_event_type": "ready", "response_message_id": 900},
-        {"p": "response/fragments", "o": "APPEND",
-         "v": [{"id": "f1", "type": "RESPONSE", "content": ""}]},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f1", "type": "RESPONSE", "content": ""}],
+        },
         {"v": "完整回答"},
         {"v": {"response": {"status": "FINISHED"}}},
         # 之后流即结束，无 close/0x02
     ]
     c = _stub_client(events)
     chunks = _parse_stream(list(c.stream_chat_completion(_payload())))
-    finishes = [x["choices"][0].get("finish_reason") for x in chunks
-                if x.get("choices") and x["choices"][0].get("finish_reason")]
+    finishes = [
+        x["choices"][0].get("finish_reason")
+        for x in chunks
+        if x.get("choices") and x["choices"][0].get("finish_reason")
+    ]
     assert finishes == ["stop"], f"嵌套 FINISHED 应视为正常结束，实际 {finishes}"
     assert c.upstream_calls["n"] == 1, "已完成回答不得触发续写"

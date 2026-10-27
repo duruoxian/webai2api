@@ -34,9 +34,11 @@ class GlmConfig:
     user_agent: str = ""           # 登录时抓到的 UA，缺失时按 device_id 稳定选一个
     device_model: str = ""         # 登录平台的近似值
     long_pause_chance: float = 0.02
-    min_request_interval: float = 1.2
+    min_request_interval: float = 2.5
     daily_request_limit: int = 600
-    max_turns_per_session: int = 200
+    max_turns_per_session: int = 80
+    # 单会话累计 token 达此值即轮换（0=不限）
+    max_tokens_per_session: int = 200000
     session_store_path: str = ""   # 会话缓存落盘路径（空=不持久化）
     proxy: str = ""                # 账号级出口代理（custom 模式使用）
     egress: str = "system"         # direct / system / custom
@@ -122,9 +124,10 @@ def build_config(store, account: dict) -> GlmConfig:
         user_agent=str(prof.get("ua") or ""),
         device_model=str(prof.get("platform") or ""),
         long_pause_chance=float(g("glm_long_pause_chance", "0.02")),
-        min_request_interval=float(g("glm_min_request_interval", "1.2")),
+        min_request_interval=float(g("glm_min_request_interval", "2.5")),
         daily_request_limit=int(g("glm_daily_limit", "600")),
-        max_turns_per_session=int(g("glm_max_turns", "200")),
+        max_turns_per_session=int(g("glm_max_turns", "80")),
+        max_tokens_per_session=int(g("glm_tokens", "200000")),
         session_store_path=_session_store_path(account),
         proxy=str(account.get("proxy") or ""),
         egress=str(account.get("egress") or "system"),

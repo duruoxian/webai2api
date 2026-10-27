@@ -371,7 +371,9 @@ class _GlmParts:
     正文的总根源。
     """
 
-    def __init__(self, is_silent: bool = False, allowed_tools: set | None = None) -> None:
+    def __init__(
+        self, is_silent: bool = False, allowed_tools: set | None = None
+    ) -> None:
         self._is_silent = is_silent
         self._allowed_tools = allowed_tools
         self._order: list[str] = []  # lid 首见序
@@ -478,7 +480,9 @@ class ChatGlmWebClient:
         self._token_expire = 0.0
         # 会话缓存：同一段对话复用 conversation_id，多轮只发增量（与 DeepSeek 行为一致）
         self._conv_cache = conv_cache.ConversationCache(
-            config=config, logger=logger, tag="GLM",
+            config=config,
+            logger=logger,
+            tag="GLM",
             id_field="conversation_id",
             persist_path=str(getattr(config, "session_store_path", "") or ""),
             bump=self._bump,
@@ -495,8 +499,8 @@ class ChatGlmWebClient:
     def _cached_conv(self, key: str) -> str:
         return self._conv_cache.cached(key)[0]
 
-    def _store_conv(self, key: str, conv_id: str) -> None:
-        self._conv_cache.store(key, conv_id)
+    def _store_conv(self, key: str, conv_id: str, used_tokens: int = 0) -> None:
+        self._conv_cache.store(key, conv_id, used_tokens=used_tokens)
 
     def _conv_key(self, payload: dict) -> str:
         """会话指纹（tool_bridge.conv_fingerprint），首条 assistant 防串台。"""
@@ -538,7 +542,8 @@ class ChatGlmWebClient:
 
     def _conn(self, url: str, timeout: int):
         return netutil.open_conn(
-            url, timeout,
+            url,
+            timeout,
             egress=getattr(self.config, "egress", "system"),
             proxy=str(getattr(self.config, "proxy", "") or ""),
             default_host="chatglm.cn",
@@ -873,7 +878,8 @@ class ChatGlmWebClient:
                 self._bump("auto_continued")
                 self.logger.warning(
                     "上游流提前中断（未见 finish 帧），自动续写 %d/%d",
-                    _cont_rounds, MAX_AUTO_CONTINUATIONS,
+                    _cont_rounds,
+                    MAX_AUTO_CONTINUATIONS,
                 )
                 base_text += acc.text
                 base_reasoning += acc.reasoning
@@ -940,7 +946,11 @@ class ChatGlmWebClient:
                     payload.get("model") or "",
                     payload.get("_wapi_key_id") or "",
                 )
-                self._store_conv(store_key, conv_id)
+                self._store_conv(
+                    store_key,
+                    conv_id,
+                    used_tokens=_estimate_tokens(text) + _estimate_tokens(reasoning),
+                )
             elif self.config.delete_conversation:
                 self._delete_conversation(conv_id, token)
         yield {
@@ -1034,7 +1044,8 @@ class ChatGlmWebClient:
         )
         if not finish_seen:
             self.logger.warning(
-                "上游流提前中断（续写未救回），按截断返回 finish=length")
+                "上游流提前中断（续写未救回），按截断返回 finish=length"
+            )
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -1140,9 +1151,7 @@ class ChatGlmWebClient:
         # 扣留器用增量口径（DeltaToolBuffer）——快照口径的 buf 会回扣
         # 尾部使输出非单调，嵌套在前缀差链里会错位咬字（GLM 实测）
         buf = (
-            tool_bridge.DeltaToolBuffer(
-                [TOOL_MARKER, tool_bridge.DSML_TOOL_CALLS_OPEN]
-            )
+            tool_bridge.DeltaToolBuffer([TOOL_MARKER, tool_bridge.DSML_TOOL_CALLS_OPEN])
             if has_tools
             else None
         )
@@ -1221,6 +1230,7 @@ class ChatGlmWebClient:
         yield chunk({}, usage=_usage(payload, sent_text))
         if not finish_seen:
             self.logger.warning(
-                "上游流提前中断（续写未救回），按截断返回 finish=length")
+                "上游流提前中断（续写未救回），按截断返回 finish=length"
+            )
         yield chunk({}, finish="stop" if finish_seen else "length")
         yield "data: [DONE]\n\n"
