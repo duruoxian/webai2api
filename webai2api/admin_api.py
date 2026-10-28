@@ -22,7 +22,6 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from . import __version__
-from .paths import user_data_dir
 from .providers import DEFAULT_LIMITS, MAX_LIMITS, ProviderRegistry, infer_provider
 from .store import Store
 
@@ -953,17 +952,6 @@ STATE_SETTING_DEFAULTS = {
 }
 
 
-def _reveal_file(path) -> None:
-    """在资源管理器里定位到文件。"""
-    try:
-        if os.name == "nt":
-            import subprocess
-
-            subprocess.Popen(["explorer", "/select,", str(path)])
-    except Exception:
-        pass
-
-
 def _proxy_probe(proxy_url: str) -> dict:
     """通过指定代理请求一个回显 IP 的服务，返回出口 IP 与耗时。
 
@@ -1342,12 +1330,6 @@ def _strip_jsonc_comments(text: str) -> str:
         out.append(ch)
         i += 1
     return "".join(out)
-
-
-def _skip_ws(text: str, i: int) -> int:
-    while i < len(text) and text[i] in " \t\r\n":
-        i += 1
-    return i
 
 
 def _match_close(text: str, open_idx: int) -> int:

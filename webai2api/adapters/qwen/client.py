@@ -9,8 +9,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import http.client
 import json
 import random
 import threading

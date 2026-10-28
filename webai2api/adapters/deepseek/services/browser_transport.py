@@ -34,14 +34,13 @@ logger = logging.getLogger("deepseek2api.browser_transport")
 # 当前 UA 伪装 Firefox，故拟 Firefox 指纹。
 DEFAULT_IMPERSONATE = "firefox133"
 
-_IMPORT_ERROR: str | None = None
 _CURL_AVAILABLE = False
 try:  # pragma: no cover - 环境相关
     from curl_cffi import requests as _curl_requests
 
     _CURL_AVAILABLE = True
-except Exception as exc:  # noqa: BLE001
-    _IMPORT_ERROR = str(exc)
+except Exception:  # noqa: BLE001
+    _CURL_AVAILABLE = False
 
 
 def available() -> bool:
@@ -115,10 +114,6 @@ def _system_ca_bundle() -> str:
         except Exception:  # noqa: BLE001
             _CA_PATH_CACHE = ""
     return _CA_PATH_CACHE
-
-
-def import_error() -> str | None:
-    return _IMPORT_ERROR
 
 
 class _BufferedResponse:

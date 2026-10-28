@@ -19,29 +19,12 @@ HOST = "127.0.0.1"
 def _default_port() -> int:
     if os.environ.get("WEBAI2API_PORT"):
         return int(os.environ["WEBAI2API_PORT"])
-    if getattr(sys, "frozen", False):
-        try:
-            from webai2api.edition import is_lite
-            return 8802 if is_lite() else 8800
-        except Exception:
-            return 8800
     return 8800
 
 
-def _is_lite_edition() -> bool:
-    # 只在打包环境判定（main 仓库根可能残留陈旧 edition.txt，源码一律按 Pro）
-    if not getattr(sys, "frozen", False):
-        return False
-    try:
-        from webai2api.edition import is_lite
-        return is_lite()
-    except Exception:
-        return False
-
-
 DEFAULT_PORT = _default_port()
-WINDOW_TITLE = "webai2api 客户版" if _is_lite_edition() else "webai2api 控制台"
-APP_ICON_NAME = "webai2api-lite.ico" if _is_lite_edition() else "webai2api.ico"
+WINDOW_TITLE = "webai2api 控制台"
+APP_ICON_NAME = "webai2api.ico"
 
 
 def _graceful_exit() -> None:
@@ -87,106 +70,11 @@ def _wait_port(port: int, timeout: float = 20.0) -> bool:
     return False
 
 
-_RESIZE_PROC = None
-
-
-def _install_frameless_resize(win) -> None:
-    """给无边框窗口补回「拖边缘缩放」（Windows 原生 hit-test）。"""
-    global _RESIZE_PROC
-    if sys.platform != "win32":
-        return
-    import ctypes
-    from ctypes import wintypes
-
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-    user32.SetWindowLongPtrW.restype = ctypes.c_void_p
-    user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
-    user32.GetWindowLongPtrW.restype = ctypes.c_void_p
-    user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
-    user32.CallWindowProcW.restype = ctypes.c_ssize_t
-    user32.CallWindowProcW.argtypes = [ctypes.c_void_p, wintypes.HWND, ctypes.c_uint,
-                                       ctypes.c_size_t, ctypes.c_ssize_t]
-    CALLBACK = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, ctypes.c_uint,
-                                  ctypes.c_size_t, ctypes.c_ssize_t)
-
-    try:
-        hwnd = int(win.native.Handle.ToInt64())
-    except Exception:
-        return
-
-    GWL_STYLE = -16
-    WS_THICKFRAME = 0x00040000
-    try:
-        style = int(user32.GetWindowLongPtrW(hwnd, GWL_STYLE) or 0)
-        user32.SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME)
-    except Exception:
-        pass
-
-    border = 6
-    old_proc = [0]
-
-    def proc(h, msg, wp, lp):
-        if msg == 0x0084:  # WM_NCHITTEST
-            try:
-                rect = wintypes.RECT()
-                user32.GetWindowRect(h, ctypes.byref(rect))
-                x = ctypes.c_short(lp & 0xFFFF).value
-                y = ctypes.c_short((lp >> 16) & 0xFFFF).value
-                left, right = x - rect.left, rect.right - x
-                top, bottom = y - rect.top, rect.bottom - y
-                if left < border and top < border: return 13
-                if right < border and top < border: return 14
-                if left < border and bottom < border: return 16
-                if right < border and bottom < border: return 17
-                if left < border: return 10
-                if right < border: return 11
-                if top < border: return 12
-                if bottom < border: return 15
-            except Exception:
-                pass
-        return user32.CallWindowProcW(old_proc[0], h, msg, wp, lp)
-
-    new_proc = CALLBACK(proc)
-    old_proc[0] = user32.SetWindowLongPtrW(hwnd, -4, new_proc)
-    _RESIZE_PROC = (new_proc, old_proc)
-
-
-class WindowApi:
-    """暴露给页面的无边框窗口控制。"""
-
-    def __init__(self) -> None:
-        self._win = None
-        self._maximized = False
-
-    def bind(self, win) -> None:
-        self._win = win
-
-    def minimize(self) -> None:
-        if self._win:
-            self._win.minimize()
-
-    def toggle_max(self) -> bool:
-        if not self._win:
-            return False
-        if self._maximized:
-            self._win.restore()
-            self._maximized = False
-        else:
-            self._win.maximize()
-            self._maximized = True
-        return self._maximized
-
-    def close(self) -> None:
-        if self._win:
-            self._win.destroy()
-
-
 def _open_log(log_dir: str):
     """尝试在 log_dir 写日志；无权限时回退到用户数据目录。
 
-    lite 客户版可能被装进 Program Files（所有用户安装），普通权限写不了
-    exe 目录，必须回退到数据目录，否则启动第一步就 PermissionError。
+    exe 被装进 Program Files 等普通权限写不了的目录时，必须回退到
+    数据目录，否则启动第一步就 PermissionError。
     """
     candidates = [log_dir]
     try:
@@ -243,7 +131,7 @@ def main() -> None:
     logger = logging.getLogger("webai2api")
 
     # 单实例锁：同一个 data 目录只允许一个进程写库
-    # （lite 装在 Program Files 时 log_dir 可能回退成数据目录，
+    # （exe 装在 Program Files 时 log_dir 可能回退成数据目录，
     #   锁必须永远落在 user_data_dir，不能跟着 log_dir 走）
     from webai2api.paths import user_data_dir as _udd
     data_dir = str(_udd())
@@ -362,7 +250,7 @@ def main() -> None:
 
         from webai2api.paths import resource_path, user_data_dir
 
-        win = webview.create_window(
+        webview.create_window(
             WINDOW_TITLE, admin_url,
             width=1180, height=800, min_size=(900, 600),
             background_color="#eceef1",

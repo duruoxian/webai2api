@@ -1677,11 +1677,7 @@ class DeepSeekWebClient:
                             """
                             nonlocal full_text, full_reasoning
                             nonlocal last_response_message_id, accumulated_tokens
-                            nonlocal \
-                                tool_calls_emitted, \
-                                emitted_calls, \
-                                upstream_finish_reason
-                            nonlocal content_emitted, anything_yielded
+                            nonlocal upstream_finish_reason, anything_yielded
                             st = StreamState()
                             for event in self._iter_sse_events(resp):
                                 if not event:

@@ -811,7 +811,6 @@ def create_gateway_router(
             AnthropicStreamTranslator,
             anthropic_error,
             anthropic_to_openai,
-            openai_error_to_anthropic,
             openai_to_anthropic,
         )
 

@@ -30,26 +30,6 @@ def normalize_egress(value: str | None) -> str:
     return v if v in VALID_EGRESS else EGRESS_SYSTEM
 
 
-def resolve_proxy_url(egress: str, proxy: str) -> str:
-    """把账号的 egress 设置翻译成「实际要用的代理 URL」。
-
-    返回空串表示：不主动设置代理。
-    注意：system 模式返回空串，由调用方（urllib）自动读系统代理；
-    direct 模式必须由调用方显式禁用代理。
-    """
-    mode = normalize_egress(egress)
-    if mode == EGRESS_CUSTOM:
-        return (proxy or "").strip()
-    if mode == EGRESS_SYSTEM:
-        return ""
-    return ""
-
-
-def direct_opener() -> urllib.request.OpenerDirector:
-    """构造一个完全不使用代理的 opener（direct 模式专用）。"""
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
 def proxy_map_for(egress: str, proxy: str) -> dict[str, str]:
     """返回 urllib ProxyHandler 的代理映射。
 
@@ -193,16 +173,6 @@ def apply_system_proxy(conn, host: str) -> bool:
         return False
     px.apply(conn, host)
     return True
-
-
-def describe_egress(egress: str, proxy: str) -> str:
-    mode = normalize_egress(egress)
-    if mode == EGRESS_DIRECT:
-        return "直连"
-    if mode == EGRESS_CUSTOM:
-        px = parse_proxy(proxy)
-        return f"代理 {px.describe()}" if px else "自定义代理（未填写/无效）"
-    return "跟随系统代理"
 
 
 def system_proxy_enabled() -> bool:

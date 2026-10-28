@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import random
 import threading
 import time
@@ -350,19 +349,6 @@ def _render_part(part: dict, is_silent: bool = False) -> tuple[str, str]:
                 ):
                     text += f"![图像]({u})"
             text += "\n"
-    return text, reasoning
-
-
-def _extract_parts(parts: list, is_silent: bool = False) -> tuple[str, str]:
-    """（保留兼容）按到达序一次性渲染 parts 快照。流式路径请用 _GlmParts。"""
-    text = ""
-    reasoning = ""
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        t, r = _render_part(part, is_silent)
-        text += t
-        reasoning += r
     return text, reasoning
 
 

@@ -203,44 +203,20 @@ build-exe.cmd
 > 只有"登录拿凭证"那一下需要浏览器，这里用**系统已装的 WebView2**（pywebview 内嵌窗口），
 > 不打包上百 MB 的 Chromium，**也不调用你日常浏览器的 profile**（零冲突）。
 
-## 双版本构建（历史存档 · v0.1.35 及以前）
+## 版本合并与授权体系（历史存档 · 已物理删除）
 
-> ⚠️ **本章节为历史存档。** 自 v0.1.36 起项目合并为单一版本，不再构建 Lite 客户版，
-> 也不再使用授权码。以下内容仅用于理解旧版本的产物结构。
-
-v0.1.26 起，专业版与客户版出自**同一份代码、同一个分支**，版本差异由构建时的 `edition.txt` 决定，
-运行期 `webai2api.edition.is_lite()` 自动分派端口（8802/8800）、面板（`lite_panel.html`/`index.html`）、
-授权卡/签发卡、托盘图标与数据目录（lite 装在 Program Files 时数据自动回退到
-`%LOCALAPPDATA%\webai2api-lite\data`）。
-
-| 版本 | 默认端口 | 面板 | 安装/部署位置 | 产物 |
-|---|---|---|---|---|
-| **Pro**（spec：`webai2api.spec`） | `127.0.0.1:8800` | `index.html`（全部功能 + 签发卡） | `%LOCALAPPDATA%\Programs\webai2api`（pyinstaller onedir） | `dist/webai2api/webai2api.exe` |
-| **Lite**（spec：`webai2api-lite.spec`，2026-10-28 起面板统一 `index.html`，lite 面板已退役） | `127.0.0.1:8802` | `index.html` | `{localappdata}\Programs\webai2api-lite`（Inno Setup 安装） | `dist-lite/webai2api-lite/webai2api-lite.exe` |
-
-### 版本 bump 点
-
-| 位置 | 内容 |
-|---|---|
-| `webai2api/__init__.py` | `__version__ = "x.y.z"` |
-| `pyproject.toml` | `version = "x.y.z"` |
-| `webai2api/web/index.html` | 静态资源版本串 `?v=x.y.z` |
-| `installer/webai2api-lite.iss` | `#define MyAppVersion "x.y.z"`（决定安装包文件名） |
-
-### 构建与发布
-
-```powershell
-# 专业版
-.venv\Scripts\pyinstaller.exe webai2api.spec --noconfirm --distpath dist --workpath build
-robocopy "dist\webai2api" "$env:LOCALAPPDATA\Programs\webai2api" /E /XD data /XF webai2api.log current_port.txt
-
-# 客户版（同一棵源码树）
-.venv\Scripts\pyinstaller.exe webai2api-lite.spec --noconfirm --distpath dist-lite --workpath build-lite
-& "C:\Users\<你>\AppData\Local\Programs\Inno Setup 6\ISCC.exe" installer\webai2api-lite.iss
-```
-
-`/XD data` 是关键：否则新包里的空 `data` 会盖掉账号库与授权记录。
-CI 按 tag 后缀自动选版本：推 `vX.Y.Z` → 构建专业版并发 Release；推 `vX.Y.Z-lite` → 客户版。
+> ⚠️ **历史记录，当前代码里已不存在对应实现。**
+> - v0.1.36 起不再使用授权码（完全开源免费，无激活/到期/机器绑定）；
+> - v0.1.43 起 lite 面板代码层退役（单面板）；
+> - 2026-10-29 起 **lite 版物理删除**：`edition.py`、`webai2api-lite.spec`、
+>   `lite_panel.html`、`installer/webai2api-lite.iss`、lite 图标与 `usage-lite.txt`
+>   全部移除，CI 不再有 `-lite` tag 分支，永远只构建开发端（8800）。
+>
+> 旧版差异机制（仅存档）：专业版与客户版曾出自同一份代码，由构建时的 `edition.txt`
+> 决定运行形态——端口（8802/8800）、面板文件、托盘图标、数据目录
+> （lite 装在 Program Files 时回退 `%LOCALAPPDATA%\webai2api-lite\data`）。
+> 授权体系曾为 Ed25519 签名码（`WB2.<payload>.<sig>`），激活记录三副本防删、
+> 防时钟回拨，签发走开发端「授权签发」卡，私钥四不原则（不入库/不进包/不发客户/不进日志）。
 
 ### 发版前冒烟测试（必跑）
 
@@ -250,41 +226,6 @@ CI 按 tag 后缀自动选版本：推 `vX.Y.Z` → 构建专业版并发 Releas
 
 对本地实例逐个验证四家平台：最小对话 + 完整工具链（真实执行文件写入、回填结果、继续对话）。
 任一平台失败退出码为 1。Key 自动从本机开发端数据库读取，也可用 `--key` 指定。
-
-### 授权体系简表（历史存档 · 已停用）
-
-> ⚠️ **自 v0.1.36 起不再使用授权码。** 软件完全开源免费，无激活、无到期、无机器绑定。
-> 以下为旧版本实现记录。
-
-| 项 | 实现 |
-|---|---|
-| 码格式 | `WB2.<payload>.<sig>`，Ed25519 签名（纯 Python `webai2api/ed25519.py`，无 cryptography 依赖） |
-| payload | 固定 **10 字节**：版本 1B / 码 ID 4B / 有效天数 uint16 / 签发日 uint16 / edition 1B |
-| 码内机器号 | **不绑定**。首次激活时才在本地绑定机器码并记录激活时间；同码换机 → `other_device`（「此授权码已在其他设备激活」） |
-| 计时 | 从**首次激活时刻**起算，精确到分钟；面板倒计时 `X天 X小时 X分`，到期即 `license.key` 失效、`/v1/*` 返回 403（面板本身仍可用） |
-| 记录保护 | 激活记录带防篡改校验，手改记录文件会被判为「被修改」 |
-| 面板接口 | `GET/POST /admin/api/license`（查状态）、`POST /admin/api/license/install`（激活/续期，旧别名 `/license/activate`） |
-| 三副本 | 激活记录在数据目录、隐藏影子文件、注册表三处各存一份并交叉自愈；删 `data/` 不会重置授权 |
-| 防时钟回拨 | `license.check_clock()` 记录上次运行时间，回拨累计 `license_clock_strikes`，`strikes >= 3` 判可疑并拒绝 |
-| 机器码 | 硬件指纹（**刻意不含硬盘**，换盘不失效），形如 `ABCD-EFGH-IJKL-MNOP` |
-
-### 签发流程（作者侧）
-
-1. 私钥查找顺序：环境变量 `WEBAI2API_AUTHOR_KEY` → `%LOCALAPPDATA%\webai2api-author\private_key.txt` → 仓库 `tools\private_key.txt`。
-   私钥**四不原则**：不入库、不进包、不发客户、不进日志。
-2. 打开开发端（8800）→「设置 → 授权签发」卡：选天数 / 备注 → 生成 → 拿到授权码，同时写入签发记录。
-3. 签发记录落盘在数据目录：`data/issued_codes.json`，导出 CSV 为 `data/issued_codes.csv`（含有效授权码，属**敏感文件**）。
-4. 客户侧激活接口是 `POST /admin/api/license/install`（旧名 `/admin/api/license/activate` 保留为别名），
-   面板「设置 → 授权」卡片就是调它。
-5. 客户续期直接粘贴新码覆盖；换机报 `other_device`，让客户提供授权卡上的**授权编号**（码 ID）再补发。
-
-### 安全红线
-
-1. `tools\private_key.txt`、`%LOCALAPPDATA%\webai2api-author\` **绝不入库、绝不进包、绝不发客户**。
-2. 公钥内嵌 `license.py`（验签用）；更换私钥必须同步换公钥并**重发客户版**。
-3. 签发记录（`issued_codes.json` / `issued_codes.csv`）含有效授权码，属敏感文件，不要随包分发。
-4. 客户版永不显示签发卡，`/license/issue` 在 lite 下一律拒绝；面板与日志都不要回显私钥。
-5. 交付给客户的内容只有：安装包 + `使用说明.txt`。不要把 8800 开发端、签发器、`tools\` 一并带出去。
 
 ## 目录结构
 
@@ -298,13 +239,12 @@ webai2api/
 │   ├── login.py          # 内置浏览器登录管理（启动子进程 + 读状态）
 │   ├── login_webview.py  # 内置浏览器（内嵌 WebView2）登录并抓取凭证
 │   ├── store.py          # SQLite 存储（账号/Key/用量）
-│   ├── web/index.html    # 中文面板（单文件，两分支共用，lite 版按 edition 隐藏签发卡）
+│   ├── web/index.html    # 中文面板（单文件；lite 面板已于 2026-10-29 物理删除，永远只有开发端）
 │   └── adapters/
 │       └── deepseek/     # DeepSeek 适配内核（基于 deepseek2api，MIT）
-├── data/                 # 数据库 / 浏览器 profile / license.key / issued_codes.*（运行时生成，已 gitignore）
-├── tools/                # 作者私钥 keygen CLI（禁入库、禁进包）
-├── webai2api.spec        # PyInstaller 打包配置（Pro）
-└── webai2api-lite.spec   # PyInstaller 打包配置（lite 分支）
+├── data/                 # 数据库 / 浏览器 profile（运行时生成，已 gitignore）
+├── tools/                # 历史授权体系的遗留公钥（代码已删，仅存档）
+├── webai2api.spec        # PyInstaller 打包配置（唯一版本）
 ```
 
 ## 路线图

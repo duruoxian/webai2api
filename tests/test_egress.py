@@ -3,16 +3,12 @@ from __future__ import annotations
 
 import urllib.request
 
-import pytest
-
 from webai2api.egress import (
     EGRESS_CUSTOM,
     EGRESS_DIRECT,
     EGRESS_SYSTEM,
-    describe_egress,
     egress_opener,
     normalize_egress,
-    resolve_proxy_url,
     system_proxy_enabled,
 )
 
@@ -25,21 +21,6 @@ def test_normalize_egress() -> None:
     assert normalize_egress("") == EGRESS_SYSTEM
     assert normalize_egress(None) == EGRESS_SYSTEM
     assert normalize_egress("bogus") == EGRESS_SYSTEM
-
-
-def test_resolve_proxy_url() -> None:
-    assert resolve_proxy_url(EGRESS_DIRECT, "http://1.2.3.4:1") == ""
-    assert resolve_proxy_url(EGRESS_SYSTEM, "http://1.2.3.4:1") == ""
-    assert resolve_proxy_url(EGRESS_CUSTOM, "http://1.2.3.4:1") == "http://1.2.3.4:1"
-    assert resolve_proxy_url(EGRESS_CUSTOM, "") == ""
-
-
-def test_describe_egress() -> None:
-    assert describe_egress(EGRESS_DIRECT, "") == "直连"
-    assert describe_egress(EGRESS_SYSTEM, "") == "跟随系统代理"
-    desc = describe_egress(EGRESS_CUSTOM, "http://u:p@1.2.3.4:8080")
-    assert "1.2.3.4:8080" in desc and "p@1.2.3.4" not in desc  # 密码脱敏
-    assert "未填写" in describe_egress(EGRESS_CUSTOM, "")
 
 
 def test_direct_opener_has_no_proxy() -> None:

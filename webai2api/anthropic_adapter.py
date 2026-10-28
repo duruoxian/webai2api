@@ -12,7 +12,6 @@ OpenAI 形状，复用既有网关链路（鉴权/额度/选号/重试/用量统
 from __future__ import annotations
 
 import json
-import time
 import uuid
 
 __all__ = [

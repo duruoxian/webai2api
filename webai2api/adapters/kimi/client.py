@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import gzip
-import hashlib
 import json
 import random
 import struct
