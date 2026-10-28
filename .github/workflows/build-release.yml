@@ -30,17 +30,19 @@ jobs:
       - name: Pick edition by tag
         shell: pwsh
         run: |
-          # 同一代码库双版本：tag 以 -lite 结尾 → 客户版（lite spec），否则专业版
+          # 同一代码库双版本：tag 以 -lite 结尾 → lite 版（lite spec），否则专业版
           if ($env:GITHUB_REF -like "refs/tags/*-lite") {
             "EDITION=lite"     | Out-File -FilePath $env:GITHUB_ENV -Append
             "SPEC=webai2api-lite.spec" | Out-File -FilePath $env:GITHUB_ENV -Append
             "DIST=dist-lite"   | Out-File -FilePath $env:GITHUB_ENV -Append
             "WORK=build-lite"  | Out-File -FilePath $env:GITHUB_ENV -Append
+            "APPNAME=webai2api-lite" | Out-File -FilePath $env:GITHUB_ENV -Append
           } else {
             "EDITION=pro"      | Out-File -FilePath $env:GITHUB_ENV -Append
             "SPEC=webai2api.spec" | Out-File -FilePath $env:GITHUB_ENV -Append
             "DIST=dist"        | Out-File -FilePath $env:GITHUB_ENV -Append
             "WORK=build"       | Out-File -FilePath $env:GITHUB_ENV -Append
+            "APPNAME=webai2api" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
           Write-Output "picked edition=$env:EDITION ref=$env:GITHUB_REF"
 
@@ -51,7 +53,7 @@ jobs:
       - name: Copy usage note
         shell: pwsh
         run: |
-          $app = "$env:DIST/webai2api"
+          $app = "$env:DIST/$env:APPNAME"
           New-Item -ItemType Directory -Force -Path $app | Out-Null
           Copy-Item "scripts/usage-$env:EDITION.txt" "$app/使用说明.txt" -Force
           Get-Content "$app/使用说明.txt" -TotalCount 3
@@ -59,7 +61,7 @@ jobs:
       - name: Package zip
         shell: pwsh
         run: |
-          $app = "$env:DIST/webai2api"
+          $app = "$env:DIST/$env:APPNAME"
           Remove-Item -Recurse -Force "$app/data" -ErrorAction SilentlyContinue
           Remove-Item -Force "$app/webai2api.log" -ErrorAction SilentlyContinue
           Remove-Item -Force "$app/current_port.txt" -ErrorAction SilentlyContinue

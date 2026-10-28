@@ -985,23 +985,136 @@ html[data-theme=terminal] body{
     linear-gradient(180deg,#070b08 0%,#050806 55%,#040604 100%);
 }
 
-/* ── 主题选择器（设置卡片里的色板行）── */
-.theme-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-.theme-chip{
-  display:inline-flex;align-items:center;gap:6px;
-  border:1px solid var(--hairline);border-radius:999px;
-  background:var(--surface-flat);color:var(--text2);
-  padding:5px 12px 5px 6px;font-size:12.5px;cursor:pointer;
-  transition:all .18s ease;
+/* ── 外观区：统一的行式布局（左标签 / 右控件），无边框、无卡片、无强调色 ── */
+.setup-row{display:grid;grid-template-columns:92px 1fr;align-items:center;
+  gap:10px 18px;padding:9px 0}
+.setup-row + .setup-row{border-top:1px solid var(--hairline-soft,rgba(0,0,0,.06))}
+.setup-label{font-size:13px;color:var(--text2);align-self:center}
+.setup-control{display:flex;align-items:center;gap:10px;min-width:0;flex-wrap:wrap}
+
+/* 主题：一行文字选项，色点（描边圆环，不用实心黑点）+ 名称 + 右侧勾 */
+.theme-list{display:flex;flex-wrap:wrap;gap:2px;align-items:center}
+.theme-opt{
+  display:inline-flex;align-items:center;gap:7px;padding:5px 9px;border-radius:8px;
+  border:none;background:none;cursor:pointer;font-size:13px;color:var(--text3);
+  transition:background .15s,color .15s;
 }
-.theme-chip:hover{border-color:var(--hairline-strong);color:var(--text)}
-.theme-chip .sw{
-  width:18px;height:18px;border-radius:50%;
-  border:2px solid rgba(255,255,255,.65);
-  box-shadow:0 0 0 1px rgba(0,0,0,.12) inset;
-}
-.theme-chip.on{border-color:var(--accent);color:var(--text);
-  background:var(--accent-soft);font-weight:600}
+.theme-opt:hover{background:var(--row-hover, rgba(0,0,0,.04));color:var(--text)}
+.theme-opt .to-swatch{width:13px;height:13px;border-radius:50%;flex:0 0 auto;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.22)}
+.theme-opt .to-name{white-space:nowrap}
+/* 勾只在选中项出现，未选中项不占位（之前五个空勾留下 5 个"黑点"的观感） */
+.theme-opt .to-tick{width:0;height:13px;flex:0 0 auto;opacity:0;overflow:hidden;
+  color:var(--text);transition:width .15s,opacity .15s}
+.theme-opt .to-tick svg{width:13px;height:13px;display:block}
+.theme-opt.on{color:var(--text);font-weight:600}
+.theme-opt.on .to-tick{width:13px;opacity:1}
+
+/* 取色器：小圆片显示当前底色（棋盘格衬底，浅色也看得见） */
+.picker{position:relative;width:30px;height:30px;border-radius:50%;cursor:pointer;flex:0 0 auto;
+  display:grid;place-items:center}
+.picker input[type=color]{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+.picker-face{width:30px;height:30px;border-radius:50%;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.16);
+  background:
+    repeating-conic-gradient(rgba(0,0,0,.07) 0% 25%, transparent 0% 50%) 50% / 8px 8px,
+    var(--pick-color,#fff)}
+.picker:hover .picker-face{box-shadow:inset 0 0 0 1px rgba(0,0,0,.28),0 0 0 3px var(--row-hover,rgba(0,0,0,.06))}
+
+/* 十六进制输入：与面板其它输入框同高同宽 */
+.field-input{width:96px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+  padding:6px 9px;border-radius:8px;border:1px solid var(--hairline);
+  background:var(--input-bg,rgba(127,127,127,.06));color:var(--text);
+  text-transform:uppercase;font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.field-input:focus{outline:none;border-color:var(--text);box-shadow:0 0 0 3px var(--row-hover,rgba(0,0,0,.06))}
+.field-input::placeholder{color:var(--text3)}
+
+/* 文字按钮：轻量、无底色，只在 hover 时给一点反馈 */
+.link-btn{border:none;background:none;cursor:pointer;font-size:12.5px;color:var(--text2);
+  padding:4px 2px;border-radius:6px;text-decoration:underline;text-underline-offset:3px;
+  text-decoration-color:var(--hairline-strong,rgba(0,0,0,.18))}
+.link-btn:hover{color:var(--text);text-decoration-color:currentColor}
+.link-btn:disabled{color:var(--text3);cursor:default;opacity:.55;text-decoration:none}
+/* 自定义主题行：只有选中「自定义」时才可编辑 */
+#customBgRow:not(.is-active) .field-input{color:var(--text3)}
+#customBgRow:not(.is-active) .swatch-btn{opacity:.85}
+#customBgRow.is-active .setup-label{color:var(--text);font-weight:600}
+
+/* ── 背景色按钮 + 迷你调色板（替代丑陋的原生取色器） ── */
+.swatch-btn{width:30px;height:30px;padding:0;border:none;background:none;cursor:pointer;
+  border-radius:50%;flex:0 0 auto;position:relative}
+.swatch-fill{display:block;width:30px;height:30px;border-radius:50%;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.16),0 1px 2px rgba(0,0,0,.06);
+  background:
+    repeating-conic-gradient(rgba(0,0,0,.07) 0% 25%,transparent 0% 50%) 50% / 8px 8px,
+    var(--pick-color,#fff)}
+.swatch-btn:hover .swatch-fill{box-shadow:inset 0 0 0 1px rgba(0,0,0,.3),0 0 0 3px var(--row-hover,rgba(0,0,0,.06))}
+.swatch-btn:focus-visible .swatch-fill{box-shadow:inset 0 0 0 1px rgba(0,0,0,.3),0 0 0 3px var(--accent-soft)}
+.sr-color{display:none}
+
+.mini-picker{margin:2px 0 6px 110px;padding:16px 16px 12px;border-radius:12px;
+  border:1px solid var(--hairline);background:var(--menu-top,var(--surface-top));
+  box-shadow:0 1px 2px rgba(16,24,40,.06),0 18px 40px -20px rgba(16,24,40,.35);
+  max-width:392px}
+
+/* 预设主题下背景固定：整行置灰不可改，只有点「自定义」才解锁 */
+#customBgRow .setup-control.locked{opacity:.55}
+#customBgRow .setup-control.locked .field-input{cursor:not-allowed}
+#customBgRow .setup-control.locked .swatch-btn{cursor:not-allowed}
+.mini-picker[hidden]{display:none}
+.mp-head{display:flex;align-items:center;margin-bottom:12px}
+.mp-title{font-size:12.5px;color:var(--text2);flex:1}
+.mp-x{width:22px;height:22px;border:none;background:none;cursor:pointer;color:var(--text3);
+  border-radius:6px;display:grid;place-items:center}
+.mp-x svg{width:12px;height:12px}
+.mp-x:hover{background:var(--row-hover,rgba(0,0,0,.05));color:var(--text)}
+
+/* 提示文案比色值长，输入框自动放宽一点 */
+#customBgRow.is-active .field-input:placeholder-shown{width:150px}
+/* 预设色块已按用户要求移除（只留两条滑杆），保留样式以便随时恢复 */
+.mp-presets[hidden]{display:none}
+
+/* 预设色块：8 列定宽网格，块与块之间留够缝，选中用双环不用勾（26px 太小放勾会糊） */
+.mp-presets{display:grid;grid-template-columns:repeat(8,26px);gap:10px;
+  justify-content:start;margin-bottom:14px}
+.mp-dot{width:26px;height:26px;border-radius:50%;padding:0;cursor:pointer;
+  background:var(--dot);border:1px solid rgba(0,0,0,.12);
+  transition:transform .13s,box-shadow .13s}
+.mp-dot:hover{transform:scale(1.1)}
+.mp-dot.on{box-shadow:0 0 0 2px var(--menu-top,#fff),0 0 0 3px var(--text)}
+
+.mp-ramp{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.mp-ramp-label{font-size:11.5px;color:var(--text3);width:28px;flex:0 0 auto}
+/* 滑杆：轨道本身不要边框（之前 border 在圆角端会露出一段黑边），
+   改由内阴影画 1px 描边，两端随圆角收圆 */
+.mp-ramp input[type=range]{-webkit-appearance:none;appearance:none;height:10px;border:none;
+  border-radius:999px;flex:1;cursor:pointer;margin:0;padding:0;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.10),inset 0 1px 2px rgba(0,0,0,.10);
+  outline:none}
+.mp-ramp input[type=range]:focus-visible{box-shadow:inset 0 0 0 1px rgba(0,0,0,.24),0 0 0 3px var(--accent-soft)}
+.mp-ramp input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;
+  border-radius:50%;background:#fff;border:none;
+  box-shadow:0 0 0 1px rgba(0,0,0,.26),0 1px 3px rgba(0,0,0,.28);cursor:grab}
+.mp-ramp input[type=range]::-webkit-slider-thumb:active{cursor:grabbing}
+#mpLight{background:linear-gradient(90deg,var(--mp-from,#000),var(--mp-to,#fff))}
+#mpHue{background:linear-gradient(90deg,#ff5d5d,#ffd75d,#8fe36a,#5de3d0,#5d9dff,#b06aff,#ff5da8,#ff5d5d)}
+.mp-foot{display:flex;align-items:flex-end;gap:10px;margin-top:6px;
+  padding-top:10px;border-top:1px solid var(--hairline)}
+.mp-more{border:none;background:none;cursor:pointer;font-size:12px;color:var(--text2);
+  padding:4px 0;text-decoration:underline;text-underline-offset:3px;
+  text-decoration-color:var(--hairline-strong,rgba(0,0,0,.2))}
+.mp-more:hover{color:var(--text);text-decoration-color:currentColor}
+.mp-hex{margin-left:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:12px;color:var(--text3);letter-spacing:.03em}
+
+/* ── 纹理：连体胶囊段选，只有当前项有底 ── */
+.chip-seg{display:flex;gap:2px;padding:3px;border-radius:999px;
+  border:1px solid var(--hairline);background:var(--surface-flat);flex-wrap:wrap}
+.chip-seg button{border:none;background:none;cursor:pointer;font-size:12.5px;
+  color:var(--text3);padding:5px 11px;border-radius:999px;transition:background .16s,color .16s}
+.chip-seg button:hover{color:var(--text)}
+.chip-seg button.on{background:var(--bg);color:var(--text);font-weight:600;
+  box-shadow:0 1px 3px rgba(0,0,0,.12)}
 
 /* ── 极简白（浅色 · 纯白纸面 / 单色黑 / 无渐变无彩）── */
 html[data-theme=mono-light]{
@@ -1197,10 +1310,15 @@ html[data-accent=cyan]{--accent:#22c8e6;--accent-hover:#4ddaff;--accent-soft:rgb
 .switch input:focus-visible+.knob{outline:2px solid var(--accent);outline-offset:2px}
 
 .row-menu-wrap{position:relative;display:inline-block}
-.row-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:300;min-width:132px;
-  background:var(--menu-top);border:1px solid var(--hairline);border-radius:12px;
+/* 行菜单是 body 级 fixed 浮层（JS openRowMenu 定位）：脱离表格
+   overflow 裁剪，坐标不受祖先 backdrop-filter 影响。
+   92% 不透明底 + 背景模糊，保证压在其它行按钮上时文字清晰可读 */
+.row-menu{position:fixed;left:0;top:0;z-index:300;min-width:140px;
+  background:var(--row-menu-bg,var(--menu-top));border:1px solid var(--hairline);border-radius:12px;
   box-shadow:var(--shadow-lg);padding:5px;display:none;text-align:left;
   opacity:0;transform:translateY(-4px) scale(.96);transform-origin:top right;
+  backdrop-filter:blur(14px) saturate(180%);
+  -webkit-backdrop-filter:blur(14px) saturate(180%);
   transition:opacity .16s cubic-bezier(.4,0,.2,1),transform .16s cubic-bezier(.4,0,.2,1),
              display .16s allow-discrete}
 .row-menu.open{display:block;opacity:1;transform:none}
@@ -1305,10 +1423,76 @@ html[data-pattern=veil] body::before{display:block;
 html[data-theme=dark] body,html[data-theme=mono-dark] body{--pat-ink:rgba(255,255,255,.10)}
 
 /* ── 第四批：外观卡调色盘 / 按钮行右对齐 ── */
-input[type=color]{-webkit-appearance:none;appearance:none}
+input[type=color]{-webkit-appearance:none;appearance:none;width:100%;height:100%;border:none;
+  padding:0;background:none;cursor:pointer}
 input[type=color]::-webkit-color-swatch-wrapper{padding:0}
-input[type=color]::-webkit-color-swatch{border:1px solid var(--line,rgba(0,0,0,.14));border-radius:8px}
+input[type=color]::-webkit-color-swatch{border:none;border-radius:10px}
 .btn-row{justify-content:flex-end}
+
+/* 自定义底色对卡片的适配：极简主题卡片底色写死 #fff/#101010，
+   自定义后卡片会像贴纸；这里让卡片底色跟随底色模式并半透明，浮在底色上 */
+html[data-bgmode] .card,html[data-bgmode] .tabs-bar,html[data-bgmode] .modal{
+  --surface-top:rgba(255,255,255,.55);
+  --surface-bottom:rgba(255,255,255,.34);
+}
+html[data-bgmode=dark] .card,html[data-bgmode=dark] .tabs-bar,html[data-bgmode=dark] .modal{
+  --surface-top:rgba(28,32,40,.62);
+  --surface-bottom:rgba(18,21,27,.46);
+}
+/* 极简主题把 .card 背景写成纯色，这里用描边+底色确认「卡片可见但不抢底色」 */
+html[data-theme=mono-light][data-bgmode] .card,
+html[data-theme=mono-dark][data-bgmode] .card,
+html[data-theme=mono-light][data-bgmode] .tabs-bar,
+html[data-theme=mono-dark][data-bgmode] .tabs-bar{
+  border-color:var(--hairline);
+}
+
+/* ── 背景颜色自定义：真正生效 + 明暗自适应 ──
+   极简主题把 body 底色写死成 #fafafa（特异性高于 body 的 --bg），
+   所以「自定义背景色」必须靠 data-bgmode 抬高特异性，否则点了没反应。 */
+html[data-bgmode] body{background-color:var(--bg);background-image:none}
+html[data-bgmode]{
+  --surface-top:rgba(255,255,255,.55);
+  --surface-flat:rgba(255,255,255,.48);
+  --surface-bottom:rgba(255,255,255,.30);
+  --sticky-th:rgba(255,255,255,.80);
+  --menu-top:rgba(255,255,255,.96);
+  --text:#1d1d1f;
+  --text2:rgba(29,29,31,.70);
+  --text3:rgba(29,29,31,.48);
+  --hairline:rgba(0,0,0,.10);
+  --hairline-soft:rgba(0,0,0,.06);
+  --row-hover:rgba(0,0,0,.05);
+}
+html[data-bgmode=dark]{
+  color-scheme:dark;
+  --surface-top:rgba(28,32,40,.62);
+  --surface-flat:rgba(24,28,36,.55);
+  --surface-bottom:rgba(18,21,27,.45);
+  --sticky-th:rgba(22,26,33,.85);
+  --menu-top:rgba(30,34,42,.97);
+  --text:#f1f3f8;
+  --text2:rgba(241,243,248,.72);
+  --text3:rgba(241,243,248,.48);
+  --hairline:rgba(255,255,255,.12);
+  --hairline-soft:rgba(255,255,255,.07);
+  --row-hover:rgba(255,255,255,.08);
+}
+html[data-bgmode=dark] .card{border-color:rgba(255,255,255,.10)}
+html[data-bgmode=dark] input,html[data-bgmode=dark] select,html[data-bgmode=dark] textarea{
+  border-color:rgba(255,255,255,.17)}
+
+/* ── 自定义主题（data-theme=custom）──
+   JS 已按自定义底色算好 --accent / --accent-fg 等变量；这里只保证
+   极简系列写死的卡片/输入框观感不打架，并让主按钮用算出来的前景色。 */
+html[data-theme=custom] .btn{color:var(--accent-fg,#fff)}
+html[data-theme=custom] .btn.gray{background:var(--surface-flat);color:var(--text);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 1px 2px rgba(0,0,0,.10)}
+html[data-theme=custom] .chip-seg button.on,
+html[data-theme=custom] .theme-opt:hover{background:var(--surface-flat)}
+html[data-theme=custom] .field-input{border-color:var(--hairline)}
+html[data-theme=custom] .link-btn{color:var(--text2)}
+html[data-theme=custom] .link-btn:hover{color:var(--text)}
 
 /* ── 第五批：三步引导卡 ── */
 .guide-steps{display:flex;gap:14px;flex-wrap:wrap}
@@ -1350,7 +1534,17 @@ html[data-theme=mono-light] .m-dot,html[data-theme=mono-dark] .m-dot{filter:gray
 
 /* ── 验收反馈五连修：loading 孤字 / 行菜单层级 / 背景调色盘圆点 ── */
 body.loading .stat .num small{color:transparent}
-.row-menu{z-index:60}
-.bg-dot{width:26px;height:26px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:transform .15s}
-.bg-dot:hover{transform:scale(1.12)}
-.bg-dot.on{border-color:var(--text);box-shadow:0 0 0 2px var(--bg)}
+.row-menu{z-index:900;--row-menu-bg:rgba(255,255,255,.92)}
+html[data-theme=dark] .row-menu,html[data-theme=mono-dark] .row-menu{--row-menu-bg:rgba(30,34,42,.92)}
+/* 极简白：纯白纸面上不要灰底，直接纯白 + 细线 */
+html[data-theme=mono-light] .row-menu{--row-menu-bg:#fff}
+/* mono 主题的 .btn 覆盖优先级高于 .row-menu button，必须显式还原菜单项观感，
+   否则普通项变成黑底白字、danger 丢掉红色 */
+html[data-theme=mono-light] .row-menu>button,html[data-theme=mono-dark] .row-menu>button{
+  background:none;color:var(--text);box-shadow:none;padding:8px 11px;border-radius:8px}
+html[data-theme=mono-light] .row-menu>button:hover,html[data-theme=mono-dark] .row-menu>button:hover{
+  background:var(--row-hover);box-shadow:none;transform:none;filter:none}
+html[data-theme=mono-light] .row-menu>button.danger{color:#d70015}
+html[data-theme=mono-dark] .row-menu>button.danger{color:#ff6961}
+/* 行菜单打开时，来源 ⋯ 按钮加描边 */
+.btn.menu-anchor{box-shadow:0 0 0 2px var(--accent),inset 0 1px 0 rgba(255,255,255,.1)}

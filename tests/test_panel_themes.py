@@ -8,6 +8,7 @@
 四处必须完全对齐——任何一处漏改都会表现为「设置里点了没反应」或
 「深色组件闪白」。
 """
+
 from __future__ import annotations
 
 import re
@@ -15,8 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "webai2api" / "web"
 PANEL = "index.html"
-CORE_VARS = ("--bg", "--text", "--accent", "--surface-top",
-             "--input-bg", "--shadow")
+CORE_VARS = ("--bg", "--text", "--accent", "--surface-top", "--input-bg", "--shadow")
 
 EXPECTED = {"light", "dark", "mono-light", "mono-dark"}
 DARK_FAMILY = {"dark", "mono-dark"}
@@ -72,20 +72,22 @@ def test_dark_component_rules_cover_dark_family():
         sels = [s.strip() for s in group.strip().split(",")]
         if not any(s.startswith("html[data-theme=dark]") for s in sels):
             continue
-        if sels == ["html[data-theme=dark]"]:   # 变量定义块，允许单独存在
+        if sels == ["html[data-theme=dark]"]:  # 变量定义块，允许单独存在
             continue
         dark_rules.append(group.strip())
         for theme in sorted(DARK_FAMILY - {"dark"}):
-            assert f"html[data-theme={theme}]" in group, \
+            assert f"html[data-theme={theme}]" in group, (
                 f"深色组件规则未覆盖 {theme}: {group[:70]}"
+            )
         # 家族后代的组件部分必须逐项一致（防「只给最后一项带后代」）
         for s in sels:
             m = re.match(r"html\[data-theme=([a-z-]+)\](.*)", s)
             if m and m.group(1) == "dark":
                 desc = m.group(2)
                 for theme in sorted(DARK_FAMILY - {"dark"}):
-                    assert f"html[data-theme={theme}]{desc}" in group, \
+                    assert f"html[data-theme={theme}]{desc}" in group, (
                         f"家族后代不一致: {group[:70]}"
+                    )
     assert len(dark_rules) >= 15, f"深色组件规则只有 {len(dark_rules)} 条"
 
 
@@ -94,18 +96,38 @@ def test_boot_whitelist_and_picker_ui():
     m = re.search(r"var KNOWN = \[([^\]]+)\];", html)
     assert m, "启动白名单缺失"
     known = set(re.findall(r"'([a-z-]+)'", m.group(1)))
-    assert known == EXPECTED, f"白名单 {known} != {EXPECTED}"
+    # 启动白名单 = 四个预设主题 + custom（第五种主题，用户自选底色）
+    assert known == EXPECTED | {"custom"}, f"白名单 {known} != {EXPECTED | {'custom'}}"
     assert 'id="themeChips"' in html, "缺主题选择器容器"
     assert "renderThemeChips" in html, "缺选择器渲染函数"
     assert "isDarkTheme(currentTheme())" in html, "玻璃特效未用主题家族判定"
+
+
+def test_default_theme_is_mono_light():
+    """2026-10-28 用户拍板：默认主题改为极简白（玻璃风液态浅/深仍保留可选）。"""
+    html = _panel()
+    # 首绘兜底（localStorage 无值/非法）
+    assert "if (KNOWN.indexOf(t) < 0) t = 'mono-light';" in html
+    assert (
+        "catch(e){ document.documentElement.setAttribute('data-theme','mono-light'); }"
+        in html
+    )
+    # 运行时兜底
+    assert "return THEMES.some(x=>x.id===t)?t:'mono-light';" in html
+    assert "if(!THEMES.some(x=>x.id===t)) t='mono-light';" in html
+    # 玻璃风主题必须仍在表内（不能因为改默认把它们删了）
+    ids = [t["id"] for t in _themes_table(html)]
+    assert ids[:2] == ["mono-light", "mono-dark"], f"极简系应排在最前: {ids}"
+    assert "light" in ids and "dark" in ids, "液态（玻璃风）主题应保留"
 
 
 def test_no_standalone_light_dark_toggle():
     """新规格：独立深浅切换按钮已删除，深浅语义由「液态深/液态浅」表达。"""
     html = _panel()
     assert "toggleTheme" not in html, "toggleTheme 应已删除（切换按钮嵌入主题列表）"
-    assert "login-theme" not in html and 'id="themeBtn"' not in html, \
+    assert "login-theme" not in html and 'id="themeBtn"' not in html, (
         "登录页与顶栏的月亮按钮应已删除"
+    )
 
 
 def test_mono_themes_restyle_buttons_but_keep_semantic_variants():
@@ -114,12 +136,18 @@ def test_mono_themes_restyle_buttons_but_keep_semantic_variants():
     css = (ROOT / "app.css").read_text(encoding="utf-8")
     for theme in ("mono-light", "mono-dark"):
         assert f"html[data-theme={theme}] .btn{{" in css
-        assert f"html[data-theme={theme}] .btn.gray{{" in css,             f"{theme} 缺 .btn.gray 语义恢复"
-        assert f"html[data-theme={theme}] .btn.danger{{" in css,             f"{theme} 缺 .btn.danger 语义恢复"
+        assert f"html[data-theme={theme}] .btn.gray{{" in css, (
+            f"{theme} 缺 .btn.gray 语义恢复"
+        )
+        assert f"html[data-theme={theme}] .btn.danger{{" in css, (
+            f"{theme} 缺 .btn.danger 语义恢复"
+        )
     # 极简 = 无彩色背景渐变
     for theme in ("mono-light", "mono-dark"):
         blocks = re.findall(rf"html\[data-theme={theme}\] body\{{(.*?)\}}", css, re.S)
-        assert any("background-image:none" in b for b in blocks),             f"{theme} 背景必须是纯色（极简无渐变）"
+        assert any("background-image:none" in b for b in blocks), (
+            f"{theme} 背景必须是纯色（极简无渐变）"
+        )
 
 
 def test_panel_window_persists_localstorage():
@@ -130,15 +158,21 @@ def test_panel_window_persists_localstorage():
     换的主题重开软件就回到默认（同时每次都要重新输管理密码）。
     """
     run_py = (ROOT.parent.parent / "run.py").read_text(encoding="utf-8")
-    assert "private_mode=False" in run_py,             "面板窗口必须显式关闭 pywebview 隐私模式"
-    assert "panel_profile" in run_py,             "面板存储必须指向数据目录的 panel_profile"
+    assert "private_mode=False" in run_py, "面板窗口必须显式关闭 pywebview 隐私模式"
+    assert "panel_profile" in run_py, "面板存储必须指向数据目录的 panel_profile"
 
 
 def test_panel_critical_markers():
     pro = _panel()
-    for marker in ("cleanupBrowserResidue", "/browser/cleanup",
-                   "wapi_theme", "browserLogin", "openAccModal",
-                   "renderKeys", "THEMES"):
+    for marker in (
+        "cleanupBrowserResidue",
+        "/browser/cleanup",
+        "wapi_theme",
+        "browserLogin",
+        "openAccModal",
+        "renderKeys",
+        "THEMES",
+    ):
         assert marker in pro, f"开发端面板缺关键标记: {marker}"
 
 
@@ -148,16 +182,19 @@ def test_primary_button_follows_theme_accent():
     css = (ROOT / "app.css").read_text(encoding="utf-8")
     assert "background:var(--accent-grad)" in css, ".btn 必须使用 --accent-grad"
     root_block = re.search(r":root\{(.*?)\}", css, re.S)
-    assert root_block and "--accent-grad:" in root_block.group(1), ":root 缺 --accent-grad"
+    assert root_block and "--accent-grad:" in root_block.group(1), (
+        ":root 缺 --accent-grad"
+    )
 
 
 def test_dark_family_inputs_have_visible_border():
     """深色家族输入框必须有可见描边（无边框时与卡片融成低对比团块）。"""
     css = (ROOT / "app.css").read_text(encoding="utf-8")
     for theme in ("dark", "mono-dark"):
-        assert (f"html[data-theme={theme}] input" in css
-                and "border-color:rgba(255,255,255,.17)" in css), \
-            f"{theme} 输入框描边缺失"
+        assert (
+            f"html[data-theme={theme}] input" in css
+            and "border-color:rgba(255,255,255,.17)" in css
+        ), f"{theme} 输入框描边缺失"
 
 
 def test_pattern_system_exists_and_off_by_default():
@@ -165,7 +202,10 @@ def test_pattern_system_exists_and_off_by_default():
     css = (ROOT / "app.css").read_text(encoding="utf-8")
     for pat in ("dots", "grid", "lines", "cross", "waves", "weave", "veil"):
         assert f"html[data-pattern={pat}] body::before" in css, f"纹理 {pat} 缺失"
-    assert "body::before{content:\"\";position:fixed;inset:0;pointer-events:none;z-index:0;display:none}" in css
+    assert (
+        'body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;display:none}'
+        in css
+    )
 
 
 def test_accent_override_presets_exist():
@@ -182,5 +222,6 @@ def test_custom_background_color_support():
     html = _panel()
     assert "applyCustomBg" in html and "wapi_custom_bg" in html, "缺自定义背景支持"
     assert 'id="bgPick"' in html, "缺调色盘 input[type=color]"
-    assert "--bg', cb" in html.replace('"', "'") or "setProperty('--bg'" in html, \
+    assert "--bg', cb" in html.replace('"', "'") or "setProperty('--bg'" in html, (
         "启动时应把持久化的自定义底色应用到 --bg"
+    )

@@ -74,7 +74,6 @@ hiddenimports = [
     "pythonnet",
     "socks",          # PySocks：socks5 代理（运行期动态 import）
     "sockshandler",
-    "webai2api.edition",   # app.py / paths.py 运行期动态 import
 ] + wt_hidden + wv_hidden + _tray_hidden + _cc_hidden
 
 a = Analysis(

@@ -216,7 +216,7 @@ v0.1.26 起，专业版与客户版出自**同一份代码、同一个分支**�
 | 版本 | 默认端口 | 面板 | 安装/部署位置 | 产物 |
 |---|---|---|---|---|
 | **Pro**（spec：`webai2api.spec`） | `127.0.0.1:8800` | `index.html`（全部功能 + 签发卡） | `%LOCALAPPDATA%\Programs\webai2api`（pyinstaller onedir） | `dist/webai2api/webai2api.exe` |
-| **Lite**（spec：`webai2api-lite.spec`） | `127.0.0.1:8802` | `lite_panel.html`（授权卡激活制） | `{localappdata}\Programs\webai2api-lite`（Inno Setup 安装） | `dist-lite/webai2api/webai2api.exe` → `dist-installer/webai2api-lite-setup-X.Y.Z.exe` |
+| **Lite**（spec：`webai2api-lite.spec`，2026-10-28 起面板统一 `index.html`，lite 面板已退役） | `127.0.0.1:8802` | `index.html` | `{localappdata}\Programs\webai2api-lite`（Inno Setup 安装） | `dist-lite/webai2api-lite/webai2api-lite.exe` |
 
 ### 版本 bump 点
 

@@ -311,3 +311,74 @@
 > - **2026-10-28 第六批完成**（提交 eefcffe，已推 main）：store 新增 acc_stats 表（account_id×day×metric 主键）+ bump_stat/get_stat；AccountClient 接 store——mark_ok 持久化日配额（修复重启配额重置漏洞，daily_used 读持久值）、persist_and_display_risk 差量持久化六项风险指标（重启后展示持久累计值，命中率重算）；两个 pool 传入 store；/risk 端点走新链路；Key 编辑删四字段（前端弹窗/列表/详情/告警全清，后端 update_key 显式忽略，DB 列留而不用）；按 Key 用量表删今日本月额度列。新增 test_account_stats.py 四测试。**注：本批 Python 侧改动需 exe 重建后才在 8800 运行态生效。**
 > - **2026-10-28 第七/八批完成**（提交 082063d，已推 main）：总览驾驶舱方案A——顶部平台健康摘要 chips（DeepSeek n 可用 · 异常计数，点击跳账号页）、今日/昨日对比并入统计卡 foot、删用量页重复的「今日概览」卡（导出 CSV 挪到最近请求卡头）；账号页平台维度 chips（平台 × 可用/总数，点击筛选）。frontend v0.1.46。测试 397 passed。
 > - **待用户配合的两件事**：① 第五批 WorkBuddy 专属一键写入，需要一份能跑通的 WorkBuddy 配置样例；② 第六批后端持久化要生效需重打包部署 exe（静待下次发版，前端不受影响）。
+
+> - **2026-10-28 深夜：设计打磨五条 + 三轮全库审查 + v0.1.40 发版上线**（提交 94e912e / 53a73eb / 20cf7a6 / 333a89d）：
+>   - 打磨五条：代码片段块主题化（--code-bg/--code-fg，去硬编码 #1d1d1f）、chip 三语义（跳转带›/筛选选中态/状态 tag）、极简主题图表去饱和、sticky 表头背景兜底、玻璃风减负（--glass-blur 34→22px、tabs-bar 24→14px、glassOpts blur 9→6）。
+>   - 三轮审查共修 20 处：第一轮 refreshData 捕获 401；第二轮（双 Explore 代理并行扫）后端 P1 deepseek 池 AccountClient 改继承 base（store= TypeError 被吞 → 全平台 503 的致命回归）、日配额读路径改内存缓存不落 pick() 热路径、/risk 差量入库加账号锁、池重建释放旧客户端 _browser、update_account 白名单补 health/checked_at、acc_stats 随用量清理修剪、add_key 退役字段、设置允许清空、touch_key 失败释放预占；前端 switchTab 限定主导航（P1）、自定义范围应用才生效且取消恢复、每日下拉展开守卫、esc 补单引号、editAcc 传 id、api() 非 JSON 可读报错、分页越界裁剪、Key 详情带区间、uiConfirm 重入结算；第三轮验证代理抓出 2 个二轮回归（取消自定义高亮写死 all、key_detail 后端缺 start/end）+ 1 个安全项（设置清空收窄防清空管理员密码）全部修正。
+>   - **v0.1.40 已发布**：tag 推送 → CI 构建 Release 成功（1m42s）→ Release 说明已补（github.com/duruoxian/webai2api/releases/tag/v0.1.40）；本地 PyInstaller 重建（须用 `python -m PyInstaller`，.venv 的 pyinstaller.exe shim 在 Git Bash 下静默 exit 1）并按流程部署 8800：/health version=0.1.40、6 账号可用、面板 v=0.1.40；第六批持久化后端自此在运行态真实生效。
+>   - 冒烟测试 4/4 平台通过（deepseek 首跑工具链回填失败为上游波动，重跑即过）。
+>   - **待用户**：WorkBuddy 样例（补专属一键写入）；远程验收面板观感。
+> - **2026-10-28 v0.1.41 发版**（提交 fb8bde9）：用户验收确认「移除/删除」语义不清——移除=清理 opencode 配置条目（改名为「断开接入」），删除=删 Key 本体，接入页按钮同步改名；连带 v0.1.40 后首波验收五连修（WorkBuddy 专属填表卡、loading 孤字、行菜单层级、Key 下拉只显名称、背景 12 色调色盘）已在此前提交 69ff15a。CI 构建成功，Release 说明已补，本地 8800 已部署运行 v0.1.41（6 账号可用）。
+
+## 九、v0.1.42 工作区改动（2026-10-28，未提交）
+
+### 9.1 行菜单（⋯）裁剪 bug 修复 〔用户截图报障〕
+- 症状：Key/账号行点 ⋯，下拉只露出一条窄缝，菜单项被邻近行的「查看 / 编辑」按钮压住。
+- 根因：`.row-menu` 是行内 `position:absolute`，被 `.tbl-scroll` 的 `overflow:auto` 裁剪，且层级低于相邻行按钮。
+- 修法：改为 **body 级 fixed 浮层**（`openRowMenu()`）：挂到 body → 先量尺寸（`display:none` 量出 0，必须先显示再测）→ 按 ⋯ 按钮位置定位并做视口内翻转/夹取 → 打开态给来源按钮加 `.menu-anchor` 描边。关闭时归位回原 DOM，滚动/resize/Escape/点外部均收起。
+- 连带：`toggleAccMenu` 改为 `_guardClick` 标记（不再靠 stopPropagation）；Key 表补上「轮询重渲染后恢复已打开菜单」（账号表原本有、Key 表缺失）；mono 主题显式还原菜单项配色（否则黑底白字）。
+- 回归测试：`tests/test_row_menu.py`。
+
+### 9.2 lite 面板代码层退役 〔第八批遗留项〕
+- `app.py`：`/admin` 恒伺服 `index.html`，删掉 `is_lite` 分派。
+- `webai2api-lite.spec`：不再打包 `lite_panel.html`；产物目录/EXE 名改为 `webai2api-lite`（避免与专业版 `dist/webai2api` 同名互相覆盖）；保留 `edition.txt` 与 `webai2api.edition`（数据目录分流仍需）。
+- `webai2api.spec`：去掉不再需要的 `webai2api.edition` hiddenimport。
+- `build-release.yml`：新增 `APPNAME` 并按版本取产物目录；`README.md` 双版本表同步。
+- 回归测试：`tests/test_single_panel.py`。
+- 待办：`lite_panel.html` 文件本体与 Inno 安装脚本（`installer/webai2api-lite.iss`）尚未删改。
+
+### 9.3 cancelled 用量口径修正 〔用户截图：13.7s 记录 5.82 万 token〕
+- 现象：面板大量 `cancelled`（客户端断开），且耗时 4~14s 却记 2~6 万 token。
+- 结论：`cancelled` 只来自 gateway 的 `except asyncio.CancelledError`（即客户端主动断开，OpenCode 超时/中断），不是上游失败；数字虚高来自「上游没给 usage→本地估算」的兜底路径。
+- 修正：`_usage_from_openai` → `_usage_tokens_from_openai`，缺 `completion_tokens` 时用 `completion_tokens_details.reasoning_tokens` 兜底；流式攒输出上限 20000 → 200000 条（思考文本也是计费输出）；`_estimate_completion` 补注释说明 reasoning 必须计入。
+- 回归测试：`tests/test_usage_estimate.py`。
+- 说明：本项是 Python 侧改动，**需重建 exe 才在运行态生效**；面板侧已热替换部署。
+
+### 9.4 默认主题改为极简白 〔2026-10-28 用户拍板〕
+- 默认主题（`wapi_theme` 缺失/非法时的兜底）由 `light` 改为 `mono-light`，共 4 处：首绘 IIFE 的 `KNOWN` 兜底、IIFE 的 catch 兜底、`currentTheme()`、`applyTheme()`。
+- 主题列表顺序改为「极简白 / 极简黑 / 液态浅色 / 液态深色」（默认项排第一），**玻璃风两个主题保留不动**。
+- 只影响新装/清空存储后的默认值，不覆盖用户已保存的主题选择。
+- 测试：`test_panel_themes.py::test_default_theme_is_mono_light`。
+
+### 9.5 背景颜色自定义修复 + 色板重做 〔2026-10-28 用户报障「调不了、颜色盘很差劲」〕
+- **根因（功能失效）**：极简主题把 `body{background-color:#fafafa}` 写死，特异性高于 `body{background-color:var(--bg)}`，改 `--bg` 变量对底色**完全无效**——点了色块页面纹丝不动（该 bug 从第四批引入，玻璃风主题下才「看起来能用」）。
+- **修法**：自定义时给 `<html>` 打 `data-bgmode=light|dark`（按底色亮度 0.42 阈值判定），CSS 用 `html[data-bgmode] body{background-color:var(--bg)}` 抬高特异性覆盖写死值；暗底额外翻转 `--text/--text2/--text3/--hairline/--surface-*` 等语义变量，保证卡片与文字可读。
+- **UI 重做**：
+  - 取色入口从「原生 36×30 窄条」改为 **44px 彩色圆环 + 号按钮**（原生 input 透明覆盖，点哪都能唤出取色器）
+  - 新增**当前色预览块** + **十六进制输入框**（校验 `#RRGGBB`，回车生效，非法值不写入）
+  - 色板由 26px 圆点改为 34px 圆角色块（`.bg-swatches` 固定列宽网格，不再被按钮样式污染），选中态带勾 + 双环描边，深色块自动浅描边
+  - 预设更新为 12 色（纯白/浅灰蓝/米白/淡青/暖沙/淡紫/淡粉/天蓝/墨黑/深海/暖黑/石墨）
+- **首绘一致性**：启动 IIFE 恢复自定义底色时同步算好 `data-bgmode`；`renderBgPick` 在 DOMContentLoaded 与每次 `applyTheme` 后重跑，避免「没自定义时输入框显示旧色」。
+- **已本地部署**：热替换到 8800 运行态的 `_internal/webai2api/web/{index.html,app.css}`（备份 `.bak-v0.1.41`），实测点色块 `body` 底色即时变化、恢复默认回到 `#fafafa`、无控制台报错。
+- 回归测试：`tests/test_custom_bg.py`（6 条）。
+
+### 9.6 本地重建 exe 并部署 v0.1.42 〔2026-10-28，用户批准「全做，不提交 GitHub」〕
+- 打包：`python -m PyInstaller webai2api.spec --noconfirm --distpath dist --workpath build`（**必须用 `python -m PyInstaller`**，`.venv\Scripts\pyinstaller.exe` 在本机 PowerShell 下会静默失败）。
+- 部署：停掉旧进程（PID 1480 主进程 + 19852 relay 子进程）→ 覆盖 `%LOCALAPPDATA%\Programs\webai2api\webai2api.exe` 与 `_internal\` → 重新拉起 → `/health` 返回 `version=0.1.42`、6 账号可用。
+- **踩坑**：旧进程运行中直接 `Copy-Item` 会因文件被占用静默跳过 exe（只更新了 `_internal` 里的前端文件，导致「面板是新的、后端还是 0.1.41」）。必须先 Stop-Process 再覆盖。
+- 冒烟：面板登录 → `/admin/api/state` 200（6 账号 4 Key）→ 建临时 Key → `/v1/chat/completions` `deepseek-chat` 200 返回「好」（5.8s）→ 删除临时 Key → 清理该条 usage 记录。数据未受污染（usage 仍是 1077 条）。
+- 前端 8800 实测：默认主题 `mono-light`、行菜单浮层正常、背景色板点选即时生效。
+
+### 9.7 外观区整体重做 〔2026-10-28 用户二次报障「太丑陋、风格不一致、按钮不协调」〕
+- **主题选择器**：胶囊按钮 → **卡片**（.theme-cards）：每张卡带主题真实配色缩略（渐变预览 + 两条示意条）、名称，选中态描边 + 右上勾选徽标，四张等宽排布。
+- **强调色**：散落圆点 → **连体色带**（.accent-track 胶囊托盘内一排圆盘，选中项描边），右侧实时显示当前色名（默认/天蓝/星紫…）。
+- **背景面板**：整块收进内凹面板（.surface），上下两段用分隔线切开：
+  - 上段=自定义（取色器显示**当前底色 + 右上小加号**、十六进制输入带「十六进制」标签、恢复默认为 **quiet 幽灵按钮**且无自定义时自动置灰）
+  - 下段=纹理，改为**连体胶囊段选**（.chip-seg，只有当前项有底），与面板其他段选风格统一
+- **色板**：4 列 × 3 行固定网格（.swatch-grid），34px 圆角块，选中双环 + 勾（深色块用白勾、浅色块用深勾）。
+- 修掉期间引入的两处样式残留（旧 .bg-swatches/.bg-dot/.bg-custom 与 .theme-chip 规则、一条未闭合注释），并修 JS 变量重复声明（`pv`）导致的整页脚本挂掉。
+- 测试：`test_custom_bg.py` 增补 `test_appearance_panel_is_structured`；419 passed。前端已热替换部署 8800。
+
+### 9.8 尚未完成
+- WorkBuddy 专属一键写入：仍等用户提供可跑通的配置样例。
+- v0.1.42 尚未 commit / 打 tag / 发 Release（按用户规矩等明确指令）。

@@ -4,9 +4,9 @@
 打包命令：
     .venv\\Scripts\\pyinstaller webai2api-lite.spec --noconfirm --distpath dist-lite --workpath build-lite
 
-产物：dist-lite/webai2api/webai2api.exe
+产物：dist-lite/webai2api-lite/webai2api-lite.exe
 与专业版的区别（同一代码库，运行期按 edition.txt 分派行为）：
-- 打入 edition.txt（内容 lite）+ 双面板（index.html 专业版 / lite_panel.html 客户版）
+- 打入 edition.txt（内容 lite）；面板统一 index.html（2026-10-28 起 lite_panel 已退役）
 - 应用名 webai2api-lite，图标同专业版
 """
 from PyInstaller.utils.hooks import collect_all, collect_data_files
@@ -23,7 +23,6 @@ with open(_edition_file, "w", encoding="utf-8") as f:
 
 datas = [
     ("webai2api/web/index.html", "webai2api/web"),
-    ("webai2api/web/lite_panel.html", "webai2api/web"),
     ("webai2api/web/app.css", "webai2api/web"),
     ("webai2api/web/hyalite.js", "webai2api/web"),
     (_edition_file, "."),
@@ -73,7 +72,7 @@ wt_bins = wt_bins + wv_bins
 
 hiddenimports = [
     "webai2api",
-    "webai2api.edition",
+    "webai2api.edition",   # paths.py 运行期动态 import（lite 数据目录分流）
     "uvicorn.logging",
     "uvicorn.loops.auto",
     "uvicorn.protocols.http.auto",
@@ -105,7 +104,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="webai2api",
+    name="webai2api-lite",
     icon=APP_ICON if os.path.exists(APP_ICON) else None,
     debug=False,
     bootloader_ignore_signals=False,
@@ -120,5 +119,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="webai2api",
+    name="webai2api-lite",
 )

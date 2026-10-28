@@ -150,7 +150,11 @@ def _estimate_prompt(payload: dict) -> int:
 
 
 def _estimate_completion(payload: dict, text: str = "") -> int:
-    """上游没返回 usage 时，按实际输出估算 completion；没有输出再退回 max_tokens 的一半。"""
+    """上游没返回 usage 时，按实际输出估算 completion；没有输出再退回 max_tokens 的一半。
+
+    注意：reasoner 的 reasoning_content 也是真实计费输出，必须计入，
+    否则取消/断流记录会严重低估。
+    """
     if text:
         return _estimate_tokens(text)
     try:
@@ -159,10 +163,18 @@ def _estimate_completion(payload: dict, text: str = "") -> int:
         return 0
 
 
-def _usage_from_openai(resp: dict) -> tuple[int, int, int]:
+def _usage_tokens_from_openai(resp: dict) -> tuple[int, int, int]:
+    """从上游 usage 取数；缺 completion 时用 DeepSeek 的
+    completion_tokens_details.reasoning_tokens 兜底（思考 + 正文都是计费输出）。"""
     u = resp.get("usage") or {}
     p = int(u.get("prompt_tokens") or 0)
     c = int(u.get("completion_tokens") or 0)
+    if not c:
+        det = u.get("completion_tokens_details") or {}
+        try:
+            c = int(det.get("reasoning_tokens") or 0)
+        except Exception:
+            c = 0
     t = int(u.get("total_tokens") or (p + c))
     return p, c, t
 
@@ -602,7 +614,7 @@ def create_gateway_router(
                     _friendly_error(last_exc) if last_exc else (502, "上游服务异常")
                 )
                 return _error(code, msg, "upstream_error")
-            p, c, t = _usage_from_openai(resp)
+            p, c, t = _usage_tokens_from_openai(resp)
             if not p:
                 p = _estimate_prompt(payload)
             if not c:
@@ -706,8 +718,9 @@ def create_gateway_router(
                             pass
                     elif line.startswith("data:"):
                         # 攒输出文本，供上游不给 usage 时估算 completion
+                        # （正文与 reasoning_content 都要攒：思考同样是计费输出）
                         body = line[5:].strip()
-                        if body and body != "[DONE]" and len(out_parts) < 20000:
+                        if body and body != "[DONE]" and len(out_parts) < 200000:
                             try:
                                 obj = json.loads(body)
                                 for ch in obj.get("choices") or []:

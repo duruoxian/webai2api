@@ -5,14 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.41">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.43">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
   try{
     var t = localStorage.getItem('wapi_theme');
-    var KNOWN = ['light','dark','mono-light','mono-dark'];
-    if (KNOWN.indexOf(t) < 0) t = 'light';
+    var KNOWN = ['light','dark','mono-light','mono-dark','custom'];
+    if (KNOWN.indexOf(t) < 0) t = 'mono-light';
+    // 铁律：只有「自定义」主题才允许自定义底色生效。
+    // 预设主题下历史遗留的 wapi_custom_bg 一律忽略并清掉——
+    // 之前出现过「主题=极简白、背景却是深色」的矛盾，根源就在这里。
+    var cb = localStorage.getItem('wapi_custom_bg');
+    if (t !== 'custom' && cb) {
+      try { localStorage.removeItem('wapi_custom_bg'); } catch (e) {}
+      cb = null;
+    }
     document.documentElement.setAttribute('data-theme', t);
     var a = localStorage.getItem('wapi_accent');
     if (['blue','violet','pink','red','green','orange','cyan'].indexOf(a) >= 0)
@@ -20,12 +28,30 @@
     var p = localStorage.getItem('wapi_pattern');
     if (['lines','grid','dots','cross','waves','weave','veil'].indexOf(p) >= 0)
       document.documentElement.setAttribute('data-pattern', p);
-    var cb = localStorage.getItem('wapi_custom_bg');
-    if (cb) document.documentElement.style.setProperty('--bg', cb);
-  }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
+    if (cb && t === 'custom') {
+      document.documentElement.style.setProperty('--bg', cb);
+      // 亮底/暗底决定卡片与文字明暗（与 JS 侧 applyCustomBg 同算法）
+      var h = String(cb).replace('#','');
+      if (h.length === 3) h = h.charAt(0)+h.charAt(0)+h.charAt(1)+h.charAt(1)+h.charAt(2)+h.charAt(2);
+      if (/^[0-9a-fA-F]{6}$/.test(h)) {
+        var c = [0,2,4].map(function(i){ return parseInt(h.substr(i,2),16)/255; })
+          .map(function(v){ return v<=0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055,2.4); });
+        var lum = 0.2126*c[0] + 0.7152*c[1] + 0.0722*c[2];
+        document.documentElement.setAttribute('data-bgmode', lum > 0.42 ? 'light' : 'dark');
+      }
+    }
+    // 主题切换后没有自定义底色时，输入框/预览色要跟着主题走
+    document.addEventListener('DOMContentLoaded', function(){
+      if (window.renderBgPick) renderBgPick();
+      var f = window.applyTheme;
+      if (typeof f === 'function') {
+        window.applyTheme = function(t){ var r = f.apply(this, arguments); if (window.renderBgPick) renderBgPick(); return r; };
+      }
+    });
+  }catch(e){ document.documentElement.setAttribute('data-theme','mono-light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.41"></script>
+<script src="/admin/static/hyalite.js?v=0.1.43"></script>
 </head>
 <body>
 
@@ -500,20 +526,55 @@
       <div class="card">
         <div class="card-head"><h2>外观</h2></div>
         <div class="set-group">
-          <div class="set-group-title">主题</div>
-          <div class="theme-row" id="themeChips"></div>
-          <div class="set-group-title" style="margin-top:16px">强调色</div>
-          <div class="accent-row" id="accentChips" style="margin-top:8px"></div>
-          <div class="hint" style="display:block;margin-top:8px">默认 = 跟随主题；选择后所有主题统一使用该强调色</div>
-          <div class="set-group-title" style="margin-top:16px">背景颜色</div>
-          <div class="accent-row" style="margin-top:8px">
-            <input type="color" id="bgPick" value="#eceff5" onchange="applyCustomBg(this.value)" title="自定义任意背景颜色" style="width:36px;height:30px;border:none;background:none;cursor:pointer;padding:0">
-            <span class="accent-row" id="bgDots" style="gap:7px"></span>
-            <button type="button" class="btn gray sm" onclick="resetCustomBg()">恢复主题默认</button>
+          <div class="setup-row">
+            <span class="setup-label">主题</span>
+            <div class="theme-list" id="themeChips" role="radiogroup" aria-label="主题"></div>
           </div>
-          <div class="hint" style="display:block;margin-top:8px">调色盘只改页面底色，卡片与文字仍跟随主题，保证可读；纹理叠加在底色之上</div>
-          <div class="set-group-title" style="margin-top:16px">背景纹理</div>
-          <div class="theme-row" id="patternChips" style="margin-top:8px"></div>
+
+          <div class="setup-row" id="customBgRow">
+            <span class="setup-label">自定义背景</span>
+            <div class="setup-control">
+              <button type="button" class="swatch-btn" id="bgSwatch" onpointerdown="toggleMiniPicker(event)" aria-label="选择背景颜色" aria-expanded="false">
+                <span class="swatch-fill" id="pickerFace"></span>
+              </button>
+              <input class="field-input" id="bgHex" maxlength="7" placeholder="#FAFAFA" spellcheck="false"
+                     aria-label="背景颜色十六进制值"
+                     onchange="applyCustomHex(this.value)"
+                     onkeydown="if(event.key==='Enter'){applyCustomHex(this.value);this.blur();}">
+              <button type="button" class="link-btn" onclick="resetCustomBg()" id="bgResetBtn">恢复主题色</button>
+              <!-- 隐藏的原生取色器：仅用于「更多颜色」兜底 / 吸管 -->
+              <input type="color" id="bgPick" value="#fafafa" class="sr-color"
+                     oninput="applyCustomBg(this.value)" onchange="renderBgPick()" aria-hidden="true" tabindex="-1">
+            </div>
+          </div>
+
+          <!-- 调色板：独立整行展开（不参与上面的两列网格，避免被塞成窄条） -->
+          <div class="mini-picker" id="miniPicker" hidden>
+            <div class="mp-head">
+              <span class="mp-title">选一个背景色</span>
+              <button type="button" class="mp-x" onclick="closeMiniPicker()" aria-label="关闭">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              </button>
+            </div>
+            <div class="mp-presets" id="mpPresets" role="radiogroup" aria-label="预设背景色" hidden></div>
+            <div class="mp-ramp">
+              <span class="mp-ramp-label">明度</span>
+              <input type="range" id="mpLight" min="4" max="96" value="96" aria-label="明度">
+            </div>
+            <div class="mp-ramp">
+              <span class="mp-ramp-label">色相</span>
+              <input type="range" id="mpHue" min="0" max="360" value="0" aria-label="色相">
+            </div>
+            <div class="mp-foot">
+              <button type="button" class="mp-more" onclick="openNativePicker()">更多颜色…</button>
+              <span class="mp-hex" id="mpHex"></span>
+            </div>
+          </div>
+
+          <div class="setup-row">
+            <span class="setup-label">背景纹理</span>
+            <div class="chip-seg" id="patternChips" role="radiogroup" aria-label="背景纹理"></div>
+          </div>
         </div>
       </div>
 
@@ -1532,7 +1593,7 @@ function renderAccounts(s){
         <button class="btn sm" onclick="browserLogin('${a.id}')">浏览器登录</button>
         <span class="row-menu-wrap">
           <button class="btn gray sm" onclick="toggleAccMenu(this,event)">⋯</button>
-          <div class="row-menu">
+          <div class="row-menu" data-menu-id="acc:${a.id}">
             <button onclick="checkAcc('${a.id}')">检查凭证</button>
             <button onclick="editAcc('${a.id}')">编辑账号</button>
             <button class="danger" onclick="delAcc('${a.id}')">删除账号</button>
@@ -1541,17 +1602,14 @@ function renderAccounts(s){
   if(!__rows)__rows=empty(ACC_PROV_FILTER?'该平台暂无账号':'还没有账号，点右上角添加',5);
   const same = tb.dataset.sig === __sig;
   tb.dataset.sig = __sig;
-  // 5s 轮询重渲染会销毁打开的 ⋯ 菜单：重建后按行回填打开态
-  const openAcc = (tb.querySelector('.row-menu.open')?.closest('tr')?.dataset.acc) || '';
+  // 轮询重渲染会销毁打开的 ⋯ 菜单：重建后按行回填打开态
+  const openAcc = (tb.querySelector('.row-menu.open')?.dataset.menuId) || '';
   tb.innerHTML = __rows;
   tb.classList.toggle('no-anim', same);
   if(openAcc){
-    const m = tb.querySelector(`tr[data-acc="${openAcc}"] .row-menu`);
+    const m = tb.querySelector(`.row-menu[data-menu-id="${openAcc}"]`);
     const b = m && m.parentElement.querySelector('.row-menu-wrap > button');
-    if(m && b){
-      placeMenuByRow(b);
-      m.classList.add('open');
-    }
+    if(b) openRowMenu(b,true);
   }
 }
 async function browserLogin(id){
@@ -1582,7 +1640,7 @@ function renderKeys(s){
         <button class="btn gray sm" onclick="openKeyEdit('${k.id}')">编辑</button>
         <span class="row-menu-wrap">
           <button class="btn gray sm" onclick="toggleAccMenu(this,event)">⋯</button>
-          <div class="row-menu">
+          <div class="row-menu" data-menu-id="key:${k.id}">
             <button onclick="toggleKey('${k.id}',${k.enabled?0:1})">${k.enabled?'停用':'启用'}</button>
             <button onclick="ocConnect('${k.id}')">接入</button>
             <button onclick="ocDisconnect('${k.id}')">断开接入</button>
@@ -1591,9 +1649,15 @@ function renderKeys(s){
         </span></td></tr>`;});
   const ksame = tb.dataset.sig === __ksig;
   tb.dataset.sig = __ksig;
+  const openKey = (tb.querySelector('.row-menu.open')?.dataset.menuId) || '';
   tb.innerHTML = __krows;
   tb.classList.toggle('no-anim', ksame);
   if(!s.keys.length)tb.innerHTML=empty('还没有 Key，点右上角生成',5);
+  // 轮询重渲染同样会销毁已打开的 Key 行菜单：按 data-menu-id 回填
+  if(openKey && tb.querySelector(`.row-menu[data-menu-id="${openKey}"]`)){
+    const b = tb.querySelector(`.row-menu[data-menu-id="${openKey}"]`).parentElement.querySelector('.row-menu-wrap > button');
+    if(b) openRowMenu(b,true);
+  }
   if(typeof rebuildOcSel==='function') rebuildOcSel();
 }
 function renderUsage(s){
@@ -2289,17 +2353,7 @@ function _wapi(){ try{ return window.pywebview && window.pywebview.api; }catch(e
 function winMinimize(){ const a=_wapi(); if(a&&a.minimize) a.minimize(); }
 function winMaximize(){ const a=_wapi(); if(a&&a.toggle_max) a.toggle_max(); }
 
-/* ── 强调色（调色板换色）与背景纹理 ── */
-const ACCENTS=[
-  {id:"",name:"默认（跟随主题）",sw:""},
-  {id:"blue",name:"天蓝",sw:"#0a7cff"},
-  {id:"violet",name:"星紫",sw:"#7c68ff"},
-  {id:"pink",name:"樱粉",sw:"#f062a4"},
-  {id:"red",name:"绛红",sw:"#ff5d5d"},
-  {id:"green",name:"松绿",sw:"#2fce7e"},
-  {id:"orange",name:"暖橙",sw:"#ff9f43"},
-  {id:"cyan",name:"青碧",sw:"#22c8e6"},
-];
+/* ── 背景纹理（强调色已撤销：按钮颜色统一跟随主题） ── */
 const PATTERNS=[
   {id:"",name:"无纹理"},
   {id:"lines",name:"线条"},
@@ -2310,41 +2364,283 @@ const PATTERNS=[
   {id:"weave",name:"编织"},
   {id:"veil",name:"雾面"},
 ];
-function currentAccent(){try{return localStorage.getItem('wapi_accent')||''}catch(e){return ''}}
-function applyAccent(id){
-  if(id)document.documentElement.setAttribute('data-accent',id);
-  else document.documentElement.removeAttribute('data-accent');
-  try{localStorage.setItem('wapi_accent',id)}catch(e){}
-  renderAccentChips();
+/* 强调色功能下线：清掉历史存值，避免 data-accent 残留把按钮染成旧颜色 */
+try{
+  if(localStorage.getItem('wapi_accent')){
+    localStorage.removeItem('wapi_accent');
+    document.documentElement.removeAttribute('data-accent');
+  }
+}catch(e){}
+function _hexToRgb(h){
+  h=String(h||'').trim().replace('#','');
+  if(h.length===3) h=h.split('').map(c=>c+c).join('');
+  if(!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];
 }
-function renderAccentChips(){
-  const host=document.getElementById('accentChips');
-  if(!host) return;
-  const cur=currentAccent();
-  host.innerHTML=ACCENTS.map(x=>
-    `<button class="accent-dot${x.id===cur?' on':''}${x.id?'':' def'}" onclick="applyAccent('${x.id}')" title="${x.name}"${x.sw?` style="background:${x.sw}"`:''}></button>`).join('');
+function _luminance(rgb){
+  const f=v=>{v/=255; return v<=0.03928? v/12.92 : Math.pow((v+0.055)/1.055,2.4);};
+  return 0.2126*f(rgb[0])+0.7152*f(rgb[1])+0.0722*f(rgb[2]);
 }
-/* ── 自定义背景颜色（调色盘）：只覆盖主题基底背景 --bg，卡片/文字仍用主题配色 ── */
+/* ── 自定义主题色：底色 + 按钮色一并推导 ──
+   按钮/强调色由「自定义底色」自动算出主色相、并按底色明暗调好饱和度与亮度，
+   保证与底色同色系、对比度够，不会出现「黄底蓝按钮」这种违和。
+   注意：极简主题的 body 写死了 background-color:#fafafa（优先级高于 --bg），
+   所以这里同时给 <html> 打 data-theme=custom + data-bgmode，由 CSS 接管底色来源。 */
+function _rgbToHsl([r,g,b]){
+  r/=255; g/=255; b/=255;
+  const mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+  const l=(mx+mn)/2;
+  if(mx===mn) return [0,0,l*100];
+  const d=mx-mn;
+  const s=l>0.5 ? d/(2-mx-mn) : d/(mx+mn);
+  let h;
+  if(mx===r) h=((g-b)/d+(g<b?6:0));
+  else if(mx===g) h=(b-r)/d+2;
+  else h=(r-g)/d+4;
+  return [h*60, s*100, l*100];
+}
+function _hslToHex(h,s,l){
+  s/=100; l/=100;
+  const k=n=>(n+h/30)%12;
+  const a=s*Math.min(l,1-l);
+  const f=n=>{
+    const c=l-a*Math.max(-1,Math.min(k(n)-3,Math.min(9-k(n),1)));
+    return Math.round(c*255).toString(16).padStart(2,'0');
+  };
+  return '#'+f(0)+f(8)+f(4);
+}
+function _relativeLum(hex){
+  const rgb=_hexToRgb(hex);
+  const f=v=>{v/=255; return v<=0.03928? v/12.92 : Math.pow((v+0.055)/1.055,2.4);};
+  return 0.2126*f(rgb[0])+0.7152*f(rgb[1])+0.0722*f(rgb[2]);
+}
+function _contrast(a,b){
+  const l1=_relativeLum(a), l2=_relativeLum(b);
+  const hi=Math.max(l1,l2), lo=Math.min(l1,l2);
+  return (hi+0.05)/(lo+0.05);
+}
+/* 由底色推导按钮色：保持底色自己的色相；中性底色直接给黑白，
+   彩色底色按明暗收紧饱和 + 校验对比度，保证与底色同系不违和 */
+function _accentFromBg(hex){
+  const base=_hexToRgb(hex);
+  const [h,s]=_rgbToHsl(base);
+  const darkBg = _luminance(base)<=0.42;
+  // 近中性底色（灰/黑/白）→ 按钮走黑白，换色时只有深浅变化
+  if(s < 10){
+    return darkBg ? '#f2f2f2' : '#1d1d1f';
+  }
+  const sat = Math.max(30, Math.min(70, s + (darkBg ? 10 : 6)));
+  let light = darkBg ? 66 : 40;
+  let out = _hslToHex(h, sat, light);
+  let guard = 0;
+  while(_contrast(out, hex) < 2.2 && guard++ < 14){
+    light = darkBg ? light + 2.5 : light - 2.5;
+    if(light < 10 || light > 90) break;
+    out = _hslToHex(h, sat, light);
+  }
+  return out;
+}
+function _accentRgb(hex){
+  const rgb=_hexToRgb(hex);
+  return rgb ? `${rgb[0]},${rgb[1]},${rgb[2]}` : '0,0,0';
+}
+function _applyCustomTheme(bg){
+  const root=document.documentElement;
+  const dark = _luminance(_hexToRgb(bg))<=0.42;
+  const acc = _accentFromBg(bg);
+  root.setAttribute('data-theme','custom');
+  root.setAttribute('data-bgmode', dark?'dark':'light');
+  root.style.setProperty('--bg', bg);
+  root.style.setProperty('--accent', acc);
+  root.style.setProperty('--accent-hover', dark?_hslToHex(_rgbToHsl(_hexToRgb(acc))[0], _rgbToHsl(_hexToRgb(acc))[1], Math.min(88,_rgbToHsl(_hexToRgb(acc))[2]+7))
+                                                    :_hslToHex(_rgbToHsl(_hexToRgb(acc))[0], _rgbToHsl(_hexToRgb(acc))[1], Math.max(12,_rgbToHsl(_hexToRgb(acc))[2]-7)));
+  root.style.setProperty('--accent-rgb', _accentRgb(acc));
+  root.style.setProperty('--accent-soft', `rgba(${_accentRgb(acc)},${dark?0.22:0.12})`);
+  root.style.setProperty('--accent-grad',
+    dark ? `linear-gradient(180deg,${_hslToHex(_rgbToHsl(_hexToRgb(acc))[0],_rgbToHsl(_hexToRgb(acc))[1],Math.min(90,_rgbToHsl(_hexToRgb(acc))[2]+6))},${acc})`
+         : `linear-gradient(180deg,${acc},${_hslToHex(_rgbToHsl(_hexToRgb(acc))[0],_rgbToHsl(_hexToRgb(acc))[1],Math.max(10,_rgbToHsl(_hexToRgb(acc))[2]-6))})`);
+  root.style.setProperty('--accent-glow', `rgba(${_accentRgb(acc)},.55)`);
+  // 按钮上的文字：按按钮本身明暗决定黑/白
+  root.style.setProperty('--accent-fg', _luminance(_hexToRgb(acc))>0.55 ? '#101010' : '#ffffff');
+}
+function _clearCustomTheme(){
+  const root=document.documentElement;
+  ['--bg','--accent','--accent-hover','--accent-rgb','--accent-soft',
+   '--accent-grad','--accent-glow','--accent-fg'].forEach(v=>root.style.removeProperty(v));
+  root.removeAttribute('data-bgmode');
+  root.removeAttribute('data-theme');
+}
+function currentCustomBg(){ try{ return localStorage.getItem('wapi_custom_bg')||''; }catch(e){ return ''; } }
 function applyCustomBg(c){
-  if(c) document.documentElement.style.setProperty('--bg',c);
-  else document.documentElement.style.removeProperty('--bg');
-  try{ if(c) localStorage.setItem('wapi_custom_bg',c); else localStorage.removeItem('wapi_custom_bg'); }catch(e){}
+  const hex=c?('#'+String(c).replace('#','').toLowerCase()):'';
+  const rgb=hex?_hexToRgb(hex):null;
+  if(rgb){
+    _applyCustomTheme(hex);          // 底色 + 按钮色一并推导
+    try{ localStorage.setItem('wapi_custom_bg',hex); }catch(e){}
+  }else{
+    // 取消自定义：回到之前选中的四款主题之一
+    const back=(()=>{ try{ return localStorage.getItem('wapi_theme')||'mono-light'; }catch(e){ return 'mono-light'; } })();
+    applyTheme(back);
+    try{ localStorage.removeItem('wapi_custom_bg'); }catch(e){}
+  }
   renderBgPick();
 }
-function resetCustomBg(){ applyCustomBg(''); }
-const BG_PRESETS=[
-  ['#eceff5','浅灰蓝'],['#f6f2ea','米白'],['#e7f0ea','淡青'],['#f3e8dc','暖沙'],
-  ['#efeafa','淡紫'],['#f8ecec','淡粉'],['#e1ecf7','天蓝'],['#e3f2ec','薄荷'],
-  ['#101317','墨黑'],['#101826','深海'],['#1c1a17','暖黑'],['#121216','石墨'],
-];
-function renderBgPick(){
-  let cur=''; try{ cur=localStorage.getItem('wapi_custom_bg')||''; }catch(e){}
-  const el=document.getElementById('bgPick');
-  if(el && !cur) el.value='#eceff5';
-  const host=document.getElementById('bgDots');
-  if(host) host.innerHTML=BG_PRESETS.map(([v,n])=>
-    `<button type="button" class="bg-dot${cur===v?' on':''}" style="background:${v}" onclick="applyCustomBg('${v}')" title="${n}"></button>`).join('');
+function applyCustomHex(v){
+  const rgb=_hexToRgb(v);
+  if(!rgb){ renderBgPick(); return; }   // 非法输入：还原显示，不写入
+  applyCustomBg('#'+String(v).replace('#','').toLowerCase());
 }
+/* 自定义底色如何适配卡片与文字：
+   - data-bgmode=light/dark 负责「文字/输入框/分隔线」等语义
+   - 卡片/工具栏跟随底色明暗半透明化，浮在底色上而不是贴一块纯色 */
+function resetCustomBg(){ applyCustomBg(''); }
+function themeBaseBg(){
+  // 主题自身基底色：用于「未自定义」时取色器/预览的展示值
+  try{
+    const probe=document.createElement('div');
+    probe.style.cssText='position:absolute;left:-9999px;top:0;width:0;height:0;background-color:var(--bg)';
+    document.body.appendChild(probe);
+    const v=getComputedStyle(probe).backgroundColor; probe.remove();
+    const m=v.match(/\d+/g);
+    if(m&&m.length>=3) return '#'+[0,1,2].map(i=>Number(m[i]).toString(16).padStart(2,'0')).join('');
+  }catch(e){}
+  return '#fafafa';
+}
+function renderBgPick(){
+  const cur=currentCustomBg();
+  const customTheme=currentTheme()==='custom';
+  // 显示值永远等于「页面现在的真实底色」，绝不允许和主题对不上：
+  // 预设主题 → 该主题底色；自定义 → 已选的色（未选则空着等用户调）
+  const shown = customTheme ? (cur || themeBaseBg()) : themeBaseBg();
+  const el=document.getElementById('bgPick');
+  if(el) el.value=shown;
+  const hexEl=document.getElementById('bgHex');
+  if(hexEl){
+    if(document.activeElement!==hexEl){
+      hexEl.value = (customTheme && cur) ? cur.toUpperCase() : shown.toUpperCase();
+    }
+    hexEl.placeholder = customTheme && !cur ? '拖动滑块' : '';
+    hexEl.readOnly = false;   // 随时可改：一改就自动进入自定义主题
+  }
+  const pv=document.getElementById('pickerFace');
+  if(pv) pv.style.setProperty('--pick-color',shown);
+  const rs=document.getElementById('bgResetBtn');
+  if(rs) rs.disabled = !cur;
+  const row=document.getElementById('customBgRow');
+  if(row) row.classList.toggle('is-active', customTheme);
+  const ctrl=document.querySelector('#customBgRow .setup-control');
+  if(ctrl) ctrl.classList.remove('locked');
+  const nat=document.getElementById('bgPick');
+  if(nat) nat.disabled = false;
+  renderMiniPicker(shown);
+}
+
+/* ── 迷你调色板：应用内自绘，不再弹系统那个又大又丑的原生取色器 ──
+   预设色块 + 明度/色相两条渐变滑杆 + 「更多颜色…」兜底原生吸管 */
+const MP_PRESETS=[
+  ['#ffffff','纯白'],['#f5f5f7','浅灰'],['#eceff5','雾蓝'],['#f6f2ea','米白'],
+  ['#f3e8dc','暖沙'],['#e7f0ea','淡青'],['#efeafa','淡紫'],['#f8ecec','淡粉'],
+  ['#e1ecf7','天蓝'],['#e9e5da','燕麦'],['#dfe6df','苔绿'],['#e8e4ef','藕紫'],
+  ['#3a3f47','青灰'],['#101826','深海'],['#1c1a17','暖黑'],['#050505','纯黑'],
+];
+let _mpHsl=[0,0,96];
+function _mpSync(h,s,l){
+  _mpHsl=[h,s,l];
+  const hex=_hslToHex(h,s,l).toUpperCase();
+  const light=document.getElementById('mpLight');
+  if(light){
+    // 滑杆本体画成当前色相/饱和下的明度渐变，拖动所见即所得
+    light.style.setProperty('--mp-from',_hslToHex(h,s,8));
+    light.style.setProperty('--mp-to',_hslToHex(h,s,96));
+    light.value=Math.round(l);
+  }
+  const hueEl=document.getElementById('mpHue');
+  if(hueEl) hueEl.value=Math.round(h);
+  const hexEl=document.getElementById('mpHex');
+  if(hexEl) hexEl.textContent=hex;
+  document.querySelectorAll('#mpPresets .mp-dot').forEach(d=>{
+    d.classList.toggle('on', d.dataset.hex.toUpperCase()===hex);
+  });
+}
+function renderMiniPicker(shown){
+  const rgb=_hexToRgb(shown||'#ffffff');
+  if(rgb) _mpHsl=_rgbToHsl(rgb);
+  const host=document.getElementById('mpPresets');
+  if(host && !host.children.length){
+    host.innerHTML=MP_PRESETS.map(([v,n])=>
+      `<button type="button" class="mp-dot" data-hex="${v}" title="${n} ${v}" aria-label="${n}"
+        style="--dot:${v}" onclick="pickMiniColor('${v}')"></button>`).join('');
+  }
+  _mpSync(_mpHsl[0],_mpHsl[1],_mpHsl[2]);
+}
+/* 只动滑块就是「切到自定义主题」：第一次拖动时若还在预设主题，
+   先切到自定义模式，之后底色的变化完全由滑块驱动 */
+function _ensureCustomTheme(){
+  if(document.documentElement.getAttribute('data-theme') !== 'custom'){
+    // 必须先切主题再写颜色：applyTheme('custom') 会清掉内联色，
+    // 顺序反了会把刚写入的底色一起清掉（表现为「拖了滑块没反应」）
+    applyTheme('custom');
+  }
+}
+function pickMiniColor(hex){
+  const rgb=_hexToRgb(hex);
+  if(rgb) _mpHsl=_rgbToHsl(rgb);
+  applyCustomBg('#'+String(hex).replace('#','').toLowerCase());
+}
+function toggleMiniPicker(ev){
+  // 用 pointerdown + 同步 preventDefault：不让这次事件继续走到 document 的
+  // 「点外面就收起」监听，否则会「开→立刻关」→ 表现为「点一下闪一下就没了」
+  if(ev){ ev.preventDefault(); ev.stopPropagation(); }
+  // 任何时候都能开调色板：只要开始拖滑块就自动切到「自定义」主题，
+  // 不再出现「主题说极简白、背景却是深色」这种自相矛盾的状态
+  const box=document.getElementById('miniPicker');
+  const btn=document.getElementById('bgSwatch');
+  if(!box) return;
+  const willOpen=box.hidden;
+  box.hidden=!willOpen;
+  if(btn) btn.setAttribute('aria-expanded', String(willOpen));
+  if(willOpen) renderMiniPicker(currentCustomBg()||themeBaseBg());
+}
+function closeMiniPicker(){
+  const box=document.getElementById('miniPicker');
+  if(box) box.hidden=true;
+  const btn=document.getElementById('bgSwatch');
+  if(btn) btn.setAttribute('aria-expanded','false');
+}
+function openNativePicker(){
+  const el=document.getElementById('bgPick');
+  if(!el) return;
+  // display:none 的 input 不能 showPicker，临时挂出来再弹
+  el.classList.remove('sr-color');
+  if(el.showPicker){
+    try{ el.showPicker(); el.classList.add('sr-color'); return; }
+    catch(e){}
+  }
+  el.click();
+  el.classList.add('sr-color');
+}
+function _mpBind(){
+  const light=document.getElementById('mpLight');
+  const hue=document.getElementById('mpHue');
+  if(light) light.addEventListener('input',()=>{
+    _ensureCustomTheme();
+    pickMiniColor(_hslToHex(+document.getElementById('mpHue').value, _mpHsl[1], +light.value));
+  });
+  if(hue) hue.addEventListener('input',()=>{
+    _ensureCustomTheme();
+    pickMiniColor(_hslToHex(+hue.value, _mpHsl[1], +document.getElementById('mpLight').value));
+  });
+  document.addEventListener('click',e=>{
+    const box=document.getElementById('miniPicker');
+    if(!box || box.hidden) return;
+    // 面板内部（预设/滑杆/更多颜色）点击都不收起；点色块本身交给 toggle
+    if(box.contains(e.target) || e.target.closest('#bgSwatch')) return;
+    closeMiniPicker();
+  });
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeMiniPicker(); });
+}
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_mpBind);
+else _mpBind();
 function currentPattern(){try{return localStorage.getItem('wapi_pattern')||''}catch(e){return ''}}
 function applyPattern(id){
   if(id)document.documentElement.setAttribute('data-pattern',id);
@@ -2357,62 +2653,126 @@ function renderPatternChips(){
   if(!host) return;
   const cur=currentPattern();
   host.innerHTML=PATTERNS.map(x=>
-    `<button class="theme-chip${x.id===cur?' on':''}" onclick="applyPattern('${x.id}')">${x.name}</button>`).join('');
+    `<button type="button" class="${x.id===cur?'on':''}" onclick="applyPattern('${x.id}')" aria-pressed="${x.id===cur}">${x.name}</button>`).join('');
 }
-document.addEventListener('DOMContentLoaded',()=>{renderThemeChips();renderAccentChips();renderPatternChips();renderBgPick();});
+document.addEventListener('DOMContentLoaded',()=>{renderThemeChips();renderPatternChips();renderBgPick();});
 function placeMenuByRow(btn){
-  // 按行在滚动容器中的位置选择展开方向（绝对定位随行滚动，天然不被
-  // overflow 裁剪）：下半区向上展开，上半区向下展开。不要用 fixed——
-  // .card 的 backdrop-filter 会成为 fixed 的包含块，坐标整体偏移。
+  // 下拉改为 body 级 fixed 浮层（见 openRowMenu）：不再受表格滚动容器
+  // 的 overflow 裁剪，也不受行高限制。
   const menu = btn.parentElement.querySelector('.row-menu');
-  const sc = btn.closest('.tbl-scroll');
-  const br = btn.getBoundingClientRect();
-  let openUp = false;
-  if (sc) {
-    const sr = sc.getBoundingClientRect();
-    openUp = (br.top - sr.top) > sr.height / 2;
-  }
-  menu.style.top = openUp ? 'auto' : 'calc(100% + 6px)';
-  menu.style.bottom = openUp ? 'calc(100% + 6px)' : 'auto';
+  menu.style.top = '0px';
+  menu.style.bottom = 'auto';
   return menu;
 }
-function toggleAccMenu(btn,ev){
-  ev.stopPropagation();
-  const menu = placeMenuByRow(btn);
-  const wasOpen=menu.classList.contains('open');
-  document.querySelectorAll('.row-menu.open').forEach(m=>m.classList.remove('open'));
-  if(!wasOpen)menu.classList.add('open');
+function openRowMenu(btn,force){
+  // 单例浮层：把 .row-menu 挂到 body 并按 ⋯ 按钮位置 fixed 定位。
+  // 留在原地会被 .tbl-scroll 的 overflow:auto 裁剪成一条窄缝（之前踩过的坑），
+  // 且会被邻近行按钮压住，故整块菜单移出表格。
+  const menu = btn.parentElement.querySelector('.row-menu');
+  if(!menu) return null;
+  const wasOpen = menu.classList.contains('open');
+  closeRowMenus();
+  if(wasOpen && !force) return null;
+  // 先测尺寸再挂载：.row-menu 是 display:none，直接挂上去量出来是 0，
+  // 定位会算成左上角。这里临时挂到 body（视觉隐藏）量一次。
+  menu.style.visibility = 'hidden';
+  menu.style.display = 'block';
+  document.body.appendChild(menu);
+  const mr = menu.getBoundingClientRect();
+  menu.style.visibility = '';
+  menu.style.display = '';
+  const br = btn.getBoundingClientRect();
+  const gap = 6, pad = 8;
+  const h = mr.height || 0, w = mr.width || 140;
+  let top = br.bottom + gap;
+  if(top + h > window.innerHeight - pad){
+    const up = br.top - gap - h;
+    top = up >= pad ? up : Math.max(pad, window.innerHeight - pad - h);
+  }
+  let left = br.right - w;
+  left = Math.min(Math.max(pad, left), window.innerWidth - pad - w);
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+  menu.classList.add('open');
+  // 记住来源按钮，便于关闭时归位
+  menu._anchor = btn;
+  btn.classList.add('menu-anchor');
+  return menu;
 }
+function closeRowMenus(){
+  document.querySelectorAll('.row-menu.open').forEach(m=>{
+    m.classList.remove('open');
+    const a = m._anchor;
+    if(a){
+      a.classList.remove('menu-anchor');
+      const wrap = a.parentElement;
+      if(wrap && wrap.classList.contains('row-menu-wrap')) wrap.appendChild(m);
+      m._anchor = null;
+    }
+  });
+  document.querySelectorAll('.menu-anchor').forEach(b=>b.classList.remove('menu-anchor'));
+}
+function toggleAccMenu(btn,ev){
+  // document 上的 click 监听负责「点别处收起」。这里不能再 stopPropagation：
+  // 冒泡被掐断后，点按钮并不会触发收起，但打开态靠 _guardClick 标记保护本次事件。
+  openRowMenu(btn);
+  _guardClick = true;
+  if(ev) ev.preventDefault();
+}
+let _guardClick = false;
 document.addEventListener('keydown',e=>{
-  if(e.key==='Escape')
-    document.querySelectorAll('.row-menu.open').forEach(m=>m.classList.remove('open'));
+  if(e.key==='Escape') closeRowMenus();
 });
 document.addEventListener('click',()=>{
-  document.querySelectorAll('.row-menu.open').forEach(m=>m.classList.remove('open'));
+  if(_guardClick){ _guardClick = false; return; }
+  closeRowMenus();
 });
+// 菜单挂在 body 上，页面滚动/改窗口大小后与按钮脱位 → 直接收起
+window.addEventListener('scroll',()=>closeRowMenus(),true);
+window.addEventListener('resize',()=>closeRowMenus());
 function winClose(){ const a=_wapi(); if(a&&a.close) a.close(); else window.close(); }
 
 
-/* ── 主题系统：液态浅/深 + 极简白/黑（深浅语义由主题自表达，无独立切换按钮）── */
+/* ── 主题系统：五种 —— 四个预设 + 自定义（自定义=自己选底色的主题）
+   主题切换时按钮色始终由主题本身决定（极简=黑白、液态=蓝、自定义=按底色推导同色系）── */
 const THEMES=[
-  {id:'light',   name:'液态浅色', sw:'#e7edf7', dark:false},
-  {id:'dark',    name:'液态深色', sw:'#0d1015', dark:true},
   {id:'mono-light',name:'极简白', sw:'#ffffff', dark:false},
   {id:'mono-dark', name:'极简黑', sw:'#050505', dark:true},
+  {id:'light',      name:'液态浅色', sw:'#e7edf7', dark:false},
+  {id:'dark',       name:'液态深色', sw:'#0d1015', dark:true},
 ];
+const CUSTOM_THEME={id:'custom',name:'自定义'};
 function isDarkTheme(t){
+  if(t==='custom') return _luminance(_hexToRgb(currentCustomBg()||themeBaseBg()))<=0.42;
   const th=THEMES.find(x=>x.id===t); return th?th.dark:false;
 }
 function currentTheme(){
   const t=document.documentElement.getAttribute('data-theme');
-  return THEMES.some(x=>x.id===t)?t:'light';
+  if(t==='custom') return 'custom';
+  return THEMES.some(x=>x.id===t)?t:'mono-light';
 }
 function applyTheme(t){
-  if(!THEMES.some(x=>x.id===t)) t='light';
-  document.documentElement.setAttribute('data-theme',t);
+  const root=document.documentElement;
+  if(t==='custom'){
+    // 选「自定义」不预设任何颜色：进入自定义模式，等用户拖滑块/填色值才接管背景
+    _clearCustomTheme();
+    root.setAttribute('data-theme','custom');
+    try{ localStorage.setItem('wapi_theme','custom'); }catch(e){}
+    renderThemeChips();
+    renderBgPick();
+    tuneGlass(isDarkTheme('custom'));
+    document.body.classList.add('theme-fade');
+    clearTimeout(applyTheme._t);
+    applyTheme._t=setTimeout(()=>document.body.classList.remove('theme-fade'),460);
+    return;
+  }
+  if(!THEMES.some(x=>x.id===t)) t='mono-light';
+  _clearCustomTheme();                    // 摘掉自定义内联色与 data-bgmode
+  root.setAttribute('data-theme',t);
   try{ localStorage.setItem('wapi_theme',t); }catch(e){}
   tuneGlass(isDarkTheme(t));
   renderThemeChips();
+  renderBgPick();
   document.body.classList.add('theme-fade');
   clearTimeout(applyTheme._t);
   applyTheme._t=setTimeout(()=>document.body.classList.remove('theme-fade'),460);
@@ -2421,9 +2781,29 @@ function renderThemeChips(){
   const host=document.getElementById('themeChips');
   if(!host) return;
   const cur=currentTheme();
-  host.innerHTML=THEMES.map(x=>
-    `<button class="theme-chip${x.id===cur?' on':''}" onclick="applyTheme('${x.id}')" title="${x.name}">`
-    +`<span class="sw" style="background:${x.sw}"></span>${x.name}</button>`).join('');
+  const custom=currentCustomBg();
+  // 自定义项：没设过色时显示棋盘格（表示"还没选"），设过色就显示该色
+  host.innerHTML=THEMES.map(x=>{
+    const on=x.id===cur;
+    return `<button type="button" class="theme-opt${on?' on':''}" onclick="applyTheme('${x.id}')" aria-pressed="${on}">`
+      +`<span class="to-swatch" style="background:${x.sw}"></span><span class="to-name">${x.name}</span>`
+      +`<span class="to-tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>`
+      +`</button>`;
+  }).join('') + (()=>{
+    const on=cur==='custom';
+    const fill = custom
+      ? `background:${custom}`
+      : 'background:repeating-conic-gradient(rgba(0,0,0,.12) 0% 25%,transparent 0% 50%) 50%/5px 5px,#fff';
+    return `<button type="button" class="theme-opt${on?' on':''}" onclick="applyTheme('custom')" aria-pressed="${on}">`
+      +`<span class="to-swatch${custom?'':' empty'}" style="${fill}"></span><span class="to-name">自定义</span>`
+      +`<span class="to-tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>`
+      +`</button>`;
+  })();
+  // 自定义底色输入框只在「自定义」主题下可编辑
+  const row=document.getElementById('customBgRow');
+  if(row) row.classList.toggle('is-active', cur==='custom');
+  const ctrl=document.querySelector('#customBgRow .setup-control');
+  if(ctrl) ctrl.classList.toggle('locked', cur!=='custom');
 }
 /* ── 液玻璃（hyalite）：悬浮表面的边缘折射 ── */
 function glassOpts(dark){

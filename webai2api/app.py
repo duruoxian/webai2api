@@ -165,16 +165,10 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
             "accounts_available": len(acs),
         }
 
-    # 面板静态页（同一代码库双面板：客户版 lite_panel.html，专业版 index.html）
+    # 面板静态页（2026-10-28 用户拍板：lite 面板冻结退役，只有开发端 index.html）
     @app.get("/admin")
     async def admin_index():
         panel = "index.html"
-        try:
-            from .edition import is_lite
-            if is_lite() and (WEB_DIR / "lite_panel.html").exists():
-                panel = "lite_panel.html"
-        except Exception:
-            pass
         idx = WEB_DIR / panel
         if not idx.exists():
             return JSONResponse(status_code=404, content={"error": "面板文件缺失"})

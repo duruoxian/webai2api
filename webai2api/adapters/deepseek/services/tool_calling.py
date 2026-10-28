@@ -92,16 +92,17 @@ def configure_tool_parsing(
     _TOOL_PARSE_CONFIG["strict_names"] = bool(strict_names)
     _TOOL_PARSE_CONFIG["json_fallback"] = bool(json_fallback)
 
+
 # ═══════════════════════════════════════════════════════════════
 # 哨兵常量
 # ═══════════════════════════════════════════════════════════════
 
-TOOL_OPEN_SINGULAR  = "<|tool_call|>"
-TOOL_OPEN_PLURAL    = "<|tool_calls|>"
+TOOL_OPEN_SINGULAR = "<|tool_call|>"
+TOOL_OPEN_PLURAL = "<|tool_calls|>"
 TOOL_CLOSE_SINGULAR = "<|/tool_call|>"
-TOOL_CLOSE_PLURAL   = "<|/tool_calls|>"
+TOOL_CLOSE_PLURAL = "<|/tool_calls|>"
 
-_OPEN_VARIANTS  = (TOOL_OPEN_PLURAL, TOOL_OPEN_SINGULAR)
+_OPEN_VARIANTS = (TOOL_OPEN_PLURAL, TOOL_OPEN_SINGULAR)
 _CLOSE_VARIANTS = (TOOL_CLOSE_PLURAL, TOOL_CLOSE_SINGULAR)
 
 # ═══════════════════════════════════════════════════════════════
@@ -109,37 +110,37 @@ _CLOSE_VARIANTS = (TOOL_CLOSE_PLURAL, TOOL_CLOSE_SINGULAR)
 # ═══════════════════════════════════════════════════════════════
 
 # 竖线：全角 U+FF5C 或半角 U+007C，允许混合、允许 1~2 个
-_BAR = "[|\uff5c]"  
+_BAR = "[|\uff5c]"
 
 # DSML 标记：竖线 + DSML + 竖线，中间允许空格，大小写不敏感
-_DSML_MARKER = rf'{_BAR}+\s*DSML\s*{_BAR}+'
+_DSML_MARKER = rf"{_BAR}+\s*DSML\s*{_BAR}+"
 
 # 标签属性：双引号 / 单引号 / 裸值 均可，值里可含 >（在引号内）
 _ATTRS = r'(?:"[^"]*"|\'[^\']*\'|[^>"\'])*'
 
 # 标签：< / </ + 标记 + 标签名 + 属性 + >
 _CALLS_OPEN_RE = re.compile(
-    rf'<\s*{_DSML_MARKER}\s*calls\b({_ATTRS})>',
+    rf"<\s*{_DSML_MARKER}\s*calls\b({_ATTRS})>",
     re.IGNORECASE,
 )
 _CALLS_CLOSE_RE = re.compile(
-    rf'</\s*{_DSML_MARKER}\s*calls\s*>',
+    rf"</\s*{_DSML_MARKER}\s*calls\s*>",
     re.IGNORECASE,
 )
 _INVOKE_OPEN_RE = re.compile(
-    rf'<\s*{_DSML_MARKER}\s*invoke\b({_ATTRS})>',
+    rf"<\s*{_DSML_MARKER}\s*invoke\b({_ATTRS})>",
     re.IGNORECASE,
 )
 _INVOKE_CLOSE_RE = re.compile(
-    rf'</\s*{_DSML_MARKER}\s*invoke\s*>',
+    rf"</\s*{_DSML_MARKER}\s*invoke\s*>",
     re.IGNORECASE,
 )
 _PARAM_OPEN_RE = re.compile(
-    rf'<\s*{_DSML_MARKER}\s*parameter\b({_ATTRS})>',
+    rf"<\s*{_DSML_MARKER}\s*parameter\b({_ATTRS})>",
     re.IGNORECASE,
 )
 _PARAM_CLOSE_RE = re.compile(
-    rf'</\s*{_DSML_MARKER}\s*parameter\s*>',
+    rf"</\s*{_DSML_MARKER}\s*parameter\s*>",
     re.IGNORECASE,
 )
 
@@ -150,13 +151,13 @@ _ATTR_PAIR_RE = re.compile(
 
 # 任意 DSML 起始标签（SCAN 状态检测用）
 _ANY_DSML_OPEN_RE = re.compile(
-    rf'<\s*{_DSML_MARKER}\s*(?:calls|invoke)\b',
+    rf"<\s*{_DSML_MARKER}\s*(?:calls|invoke)\b",
     re.IGNORECASE,
 )
 
 # 孤立关闭标签（SCAN 状态剔除用）
 _NOISE_RE = re.compile(
-    rf'</\s*{_DSML_MARKER}\s*(?:calls|invoke|parameter)\s*>',
+    rf"</\s*{_DSML_MARKER}\s*(?:calls|invoke|parameter)\s*>",
     re.IGNORECASE,
 )
 
@@ -167,12 +168,16 @@ _DSML = "\uff5c\uff5cDSML\uff5c\uff5c"
 # 长度常量
 # ═══════════════════════════════════════════════════════════════
 
-_MAX_OPEN_LEN  = max(len(v) for v in _OPEN_VARIANTS)
+_MAX_OPEN_LEN = max(len(v) for v in _OPEN_VARIANTS)
 _MAX_CLOSE_LEN = max(len(v) for v in _CLOSE_VARIANTS)
 
 _ANCHORS = (
-    '{"name"', '{"tool_calls"', '{"function"',
-    '{ "name"', '{ "tool_calls"', '{ "function"',
+    '{"name"',
+    '{"tool_calls"',
+    '{"function"',
+    '{ "name"',
+    '{ "tool_calls"',
+    '{ "function"',
 )
 _MAX_ANCHOR_LEN = max(len(a) for a in _ANCHORS)
 
@@ -184,6 +189,7 @@ _SAFE_KEEP = max(_MAX_OPEN_LEN, _MAX_ANCHOR_LEN, _MAX_DSML_TAG_LEN)
 # ═══════════════════════════════════════════════════════════════
 # 数据结构
 # ═══════════════════════════════════════════════════════════════
+
 
 @dataclass(slots=True)
 class ParsedToolCall:
@@ -216,6 +222,7 @@ class StreamAction:
 # 属性解析
 # ═══════════════════════════════════════════════════════════════
 
+
 def _parse_attrs(s: str) -> dict[str, str]:
     """容忍 name="x" / name='x' / name=x 三种写法。"""
     result: dict[str, str] = {}
@@ -247,6 +254,7 @@ def _decode_dsml_value(raw: str, is_string: bool):
 # ═══════════════════════════════════════════════════════════════
 # 提示词构建（保持全角竖线，与 DeepSeek 原生先验一致）
 # ═══════════════════════════════════════════════════════════════
+
 
 def _tool_name(tool: dict) -> str:
     fn = tool.get("function") if isinstance(tool.get("function"), dict) else tool
@@ -292,12 +300,16 @@ def _build_tool_prompt_impl(tools, tool_choice="auto"):
         "",
         "Rules:",
         f"  - No text, no markdown, no code fences outside the <{D} calls> block.",
-        f"  - ONE <{D} calls> block per response; wrap EACH tool call in its own <{D} invoke name=\"...\">.",
-        f"  - Every argument uses <{D} parameter name=\"...\" string=\"true|false\">value</{D} parameter>.",
-        "  - Use string=\"true\" for text values; string=\"false\" (or omit) for numbers/objects/arrays.",
+        f'  - ONE <{D} calls> block per response; wrap EACH tool call in its own <{D} invoke name="...">.',
+        f'  - Every argument uses <{D} parameter name="..." string="true|false">value</{D} parameter>.',
+        '  - Use string="true" for text values; string="false" (or omit) for numbers/objects/arrays.',
         "  - Do NOT emit <|tool_calls|> or <|tool_call|> sentinel tokens.",
         f"  - Do NOT emit a trailing <{D} calls> block with no invokes.",
-        "  - Use EXACT tool names: " + ", ".join(_tool_name(t) for t in tools if isinstance(t, dict)),
+        f"  - A tool call MISSING any required argument is INVALID and will be DISCARDED.",
+        f"    Write every required parameter BEFORE closing the invoke; never emit an empty",
+        f"    invoke and try to fill it in later — you get one shot per response.",
+        "  - Use EXACT tool names: "
+        + ", ".join(_tool_name(t) for t in tools if isinstance(t, dict)),
         "",
         "## Tools",
         "",
@@ -313,7 +325,9 @@ def _build_tool_prompt_impl(tools, tool_choice="auto"):
         desc = str(fn.get("description", "")).strip()
         params = fn.get("parameters") or {}
         props = params.get("properties") if isinstance(params, dict) else None
-        required = set(params.get("required", [])) if isinstance(params, dict) else set()
+        required = (
+            set(params.get("required", [])) if isinstance(params, dict) else set()
+        )
 
         lines.append(f"### {name}")
         if desc:
@@ -377,6 +391,7 @@ def build_tool_prompt(tools, tool_choice="auto"):
 # 工具名匹配
 # ═══════════════════════════════════════════════════════════════
 
+
 def _norm_name(name: str) -> str:
     return name.strip().lower().replace("-", "_")
 
@@ -412,12 +427,14 @@ def _normalize_call(data: Any, tools: Optional[list[dict]]) -> Optional[ParsedTo
                 # 透给 agent，agent 再报"未知工具"，链路更难排查。
                 logger.warning(
                     "tool name %r 不在声明的工具列表 %r 中，已丢弃（严格模式）",
-                    name, sorted(known),
+                    name,
+                    sorted(known),
                 )
                 return None
             logger.debug(
                 "tool name %r not in known set %r — accepted anyway (lenient match)",
-                name, sorted(known),
+                name,
+                sorted(known),
             )
 
     args = data.get("arguments")
@@ -427,11 +444,66 @@ def _normalize_call(data: Any, tools: Optional[list[dict]]) -> Optional[ParsedTo
             args = fn.get("arguments")
     args_str = _coerce_arguments(args)
 
+    # ★ 必填参数校验：模型常先吐 invoke 骨架、参数还没写完就被截断，
+    # 结果是一个 arguments={} 的空调用。这种调用交给 agent 只会换来
+    # 「Invalid arguments for tool: Missing key」再重来一轮，不如当场丢弃，
+    # 让上层把这轮当普通文本处理（模型下一轮会重新组织完整调用）。
+    if tools is not None:
+        missing = _missing_required(name, args_str, tools)
+        if missing:
+            logger.warning(
+                "工具 %r 缺必填参数 %s，丢弃这次工具调用（args=%s）",
+                name,
+                missing,
+                args_str[:200],
+            )
+            return None
+
     return ParsedToolCall(
         id=str(data.get("id") or f"call_{uuid.uuid4().hex[:24]}"),
         name=name,
         arguments=args_str,
     )
+
+
+def _missing_required(name: str, args_str: str, tools: list[dict]) -> list[str]:
+    """返回缺失的必填参数名（空列表表示参数齐全）。
+
+    宽容原则：找不到该工具定义、或定义里没写 required，一律放行，
+    避免把本来能跑通的调用误杀。
+    """
+    tool = None
+    for t in tools:
+        if isinstance(t, dict) and _tool_name(t) == name:
+            tool = t
+            break
+    if tool is None:
+        return []
+    fn = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    params = fn.get("parameters") or {}
+    if not isinstance(params, dict):
+        return []
+    required = [r for r in (params.get("required") or []) if isinstance(r, str)]
+    if not required:
+        return []
+    try:
+        parsed = json.loads(args_str or "{}")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, dict):
+        return list(required)
+    missing = []
+    for key in required:
+        if key not in parsed:
+            missing.append(key)
+            continue
+        val = parsed[key]
+        # 空字符串/空列表/空字典对必填项同样无效（模型写了标签没写值）
+        if isinstance(val, str) and not val.strip():
+            missing.append(key)
+        elif isinstance(val, (list, dict)) and not val:
+            missing.append(key)
+    return missing
 
 
 def _coerce_arguments(args: Any) -> str:
@@ -460,7 +532,10 @@ def _coerce_arguments(args: Any) -> str:
 # DSML body 解析（★ 核心：缺闭合标签也能救 ★）
 # ═══════════════════════════════════════════════════════════════
 
-def _parse_dsml_body(body: str, tools: Optional[list[dict]] = None) -> list[ParsedToolCall]:
+
+def _parse_dsml_body(
+    body: str, tools: Optional[list[dict]] = None
+) -> list[ParsedToolCall]:
     """
     解析 DSML 块内部的若干 invoke。容忍：
 
@@ -484,16 +559,16 @@ def _parse_dsml_body(body: str, tools: Optional[list[dict]] = None) -> list[Pars
         # 定位 invoke 结束
         close_m = _INVOKE_CLOSE_RE.search(body, m.end())
         if close_m:
-            invoke_inner = body[m.end():close_m.start()]
+            invoke_inner = body[m.end() : close_m.start()]
             pos = close_m.end()
         else:
             # 缺 </invoke>：下一个 <invoke 隐式切分
             next_inv = _INVOKE_OPEN_RE.search(body, m.end())
             if next_inv:
-                invoke_inner = body[m.end():next_inv.start()]
+                invoke_inner = body[m.end() : next_inv.start()]
                 pos = next_inv.start()
             else:
-                invoke_inner = body[m.end():]
+                invoke_inner = body[m.end() :]
                 pos = len(body)
 
         arguments: dict = {}
@@ -505,15 +580,20 @@ def _parse_dsml_body(body: str, tools: Optional[list[dict]] = None) -> list[Pars
 
             p_attrs = _parse_attrs(pm.group(1))
             p_name = p_attrs.get("name", "")
-            p_is_string = str(p_attrs.get("string", "")).lower() in ("true", "1", "yes", "")
+            p_is_string = str(p_attrs.get("string", "")).lower() in (
+                "true",
+                "1",
+                "yes",
+                "",
+            )
 
             p_close = _PARAM_CLOSE_RE.search(invoke_inner, pm.end())
             if p_close:
-                raw_value = invoke_inner[pm.end():p_close.start()]
+                raw_value = invoke_inner[pm.end() : p_close.start()]
                 ppos = p_close.end()
             else:
                 # 缺 </parameter>：吃到 invoke 末尾
-                raw_value = invoke_inner[pm.end():]
+                raw_value = invoke_inner[pm.end() :]
                 ppos = len(invoke_inner)
 
             if p_name:
@@ -530,6 +610,7 @@ def _parse_dsml_body(body: str, tools: Optional[list[dict]] = None) -> list[Pars
 # 非流式解析
 # ═══════════════════════════════════════════════════════════════
 
+
 def _try_dsml(text: str, tools: Optional[list[dict]]) -> ToolParseResult:
     """定位并解析 DSML 块（三种形态兼容）。"""
     if not text:
@@ -540,23 +621,23 @@ def _try_dsml(text: str, tools: Optional[list[dict]]) -> ToolParseResult:
     if m_open:
         m_close = _CALLS_CLOSE_RE.search(text, m_open.end())
         if m_close:
-            body = text[m_open.end():m_close.start()]
+            body = text[m_open.end() : m_close.start()]
             calls = _parse_dsml_body(body, tools)
             if calls:
-                clean = (text[:m_open.start()] + text[m_close.end():]).strip()
+                clean = (text[: m_open.start()] + text[m_close.end() :]).strip()
                 return ToolParseResult(calls=calls, clean_text=clean)
 
         # 有 calls 开头但无 calls 闭合 → 用最后一个 invoke 收尾
-        body = text[m_open.end():]
+        body = text[m_open.end() :]
         calls = _parse_dsml_body(body, tools)
         if calls:
             last_close = None
             for m in _INVOKE_CLOSE_RE.finditer(text, m_open.end()):
                 last_close = m
             if last_close:
-                clean = (text[:m_open.start()] + text[last_close.end():]).strip()
+                clean = (text[: m_open.start()] + text[last_close.end() :]).strip()
             else:
-                clean = text[:m_open.start()].strip()
+                clean = text[: m_open.start()].strip()
             return ToolParseResult(calls=calls, clean_text=clean)
 
     # ── 形态 ②：缺头但有 calls 闭合 ──────────────────────
@@ -564,25 +645,25 @@ def _try_dsml(text: str, tools: Optional[list[dict]]) -> ToolParseResult:
     if m_close:
         m_inv = _INVOKE_OPEN_RE.search(text, 0, m_close.start())
         if m_inv:
-            body = text[m_inv.start():m_close.start()]
+            body = text[m_inv.start() : m_close.start()]
             calls = _parse_dsml_body(body, tools)
             if calls:
-                clean = (text[:m_inv.start()] + text[m_close.end():]).strip()
+                clean = (text[: m_inv.start()] + text[m_close.end() :]).strip()
                 return ToolParseResult(calls=calls, clean_text=clean)
 
     # ── 形态 ③：只有 invoke ──────────────────────────────
     m_inv = _INVOKE_OPEN_RE.search(text)
     if m_inv:
-        body = text[m_inv.start():]
+        body = text[m_inv.start() :]
         calls = _parse_dsml_body(body, tools)
         if calls:
             last_close = None
             for m in _INVOKE_CLOSE_RE.finditer(text, m_inv.start()):
                 last_close = m
             if last_close:
-                clean = (text[:m_inv.start()] + text[last_close.end():]).strip()
+                clean = (text[: m_inv.start()] + text[last_close.end() :]).strip()
             else:
-                clean = text[:m_inv.start()].strip()
+                clean = text[: m_inv.start()].strip()
             return ToolParseResult(calls=calls, clean_text=clean)
 
     return ToolParseResult()
@@ -603,15 +684,17 @@ def _try_sentinel(text: str, tools: Optional[list[dict]]) -> ToolParseResult:
                 break
         if close_idx == -1:
             continue
-        body = text[open_idx + len(open_v): close_idx]
+        body = text[open_idx + len(open_v) : close_idx]
         calls = parse_sentinel_body(body, tools)
         if calls:
-            clean = (text[:open_idx] + text[close_idx + len(close_v):]).strip()
+            clean = (text[:open_idx] + text[close_idx + len(close_v) :]).strip()
             return ToolParseResult(calls=calls, clean_text=clean)
     return ToolParseResult()
 
 
-def parse_sentinel_body(body: str, tools: Optional[list[dict]] = None) -> list[ParsedToolCall]:
+def parse_sentinel_body(
+    body: str, tools: Optional[list[dict]] = None
+) -> list[ParsedToolCall]:
     calls: list[ParsedToolCall] = []
     for line in body.splitlines():
         line = line.strip()
@@ -633,7 +716,7 @@ def _try_code_blocks(text: str, tools: Optional[list[dict]]) -> ToolParseResult:
         block = m.group(1).strip()
         calls = _parse_json_calls(block, tools)
         if calls:
-            clean = (text[:m.start()] + text[m.end():]).strip()
+            clean = (text[: m.start()] + text[m.end() :]).strip()
             return ToolParseResult(calls=calls, clean_text=clean)
     return ToolParseResult()
 
@@ -642,8 +725,14 @@ def _try_embedded_json(text: str, tools: Optional[list[dict]]) -> ToolParseResul
     if not text:
         return ToolParseResult()
 
-    anchors = ('{"name"', '{"tool_calls"', '{"function"',
-               '{ "name"', '{ "tool_calls"', '{ "function"')
+    anchors = (
+        '{"name"',
+        '{"tool_calls"',
+        '{"function"',
+        '{ "name"',
+        '{ "tool_calls"',
+        '{ "function"',
+    )
 
     for anchor in anchors:
         idx = text.find(anchor)
@@ -700,7 +789,9 @@ def _parse_json_calls(raw: str, tools: Optional[list[dict]]) -> list[ParsedToolC
 
     if isinstance(data, dict):
         if isinstance(data.get("tool_calls"), list):
-            return [c for c in (_normalize_call(x, tools) for x in data["tool_calls"]) if c]
+            return [
+                c for c in (_normalize_call(x, tools) for x in data["tool_calls"]) if c
+            ]
         single = _normalize_call(data, tools)
         if single:
             return [single]
@@ -758,6 +849,7 @@ def parse_tool_calls(
 # ═══════════════════════════════════════════════════════════════
 # 流式检测器（★ 本次修复主体 ★）
 # ═══════════════════════════════════════════════════════════════
+
 
 class StreamingToolDetector:
     """
@@ -834,7 +926,7 @@ class StreamingToolDetector:
             body = self._buf
             m_open = _CALLS_OPEN_RE.match(body)
             if m_open:
-                body = body[m_open.end():]
+                body = body[m_open.end() :]
 
             calls = _parse_dsml_body(body, self._tools)
             if calls:
@@ -853,7 +945,7 @@ class StreamingToolDetector:
             text = self._buf
             for v in _OPEN_VARIANTS:
                 if text.startswith(v):
-                    text = text[len(v):]
+                    text = text[len(v) :]
                     break
             # 与 DSML 一致：残余优先尝试解析，解析不出就静默丢弃，
             # 绝不把未闭合的哨兵标记原文吐进 content。
@@ -910,7 +1002,7 @@ class StreamingToolDetector:
             # 孤立关闭标签：剥掉不吐
             m = _NOISE_RE.match(self._buf)
             if m:
-                self._buf = self._buf[m.end():]
+                self._buf = self._buf[m.end() :]
                 return True
             return False
         if kind == "sentinel_open":
@@ -990,7 +1082,7 @@ class StreamingToolDetector:
             for a in _ANCHORS:
                 max_k = min(len(a), n)
                 for k in range(1, max_k + 1):
-                    suffix = buf[n - k:]
+                    suffix = buf[n - k :]
                     if a.startswith(suffix):
                         best_json = min(best_json, n - k)
             if best_json < n:
@@ -1025,12 +1117,12 @@ class StreamingToolDetector:
             return False
 
         body = self._buf[:end_pos]
-        rest = self._buf[end_pos + end_len:]
+        rest = self._buf[end_pos + end_len :]
 
         # 若 body 以 <… calls> 开头，去掉外层 calls 开标签
         m_open = _CALLS_OPEN_RE.match(body)
         if m_open:
-            body = body[m_open.end():]
+            body = body[m_open.end() :]
 
         calls = _parse_dsml_body(body, self._tools)
         if calls:
@@ -1059,8 +1151,8 @@ class StreamingToolDetector:
             self._state = "SCAN"
             return True
 
-        body = self._buf[len(open_v):close_idx]
-        rest = self._buf[close_idx + len(close_v):]
+        body = self._buf[len(open_v) : close_idx]
+        rest = self._buf[close_idx + len(close_v) :]
 
         calls = parse_sentinel_body(body, self._tools)
         if calls:
