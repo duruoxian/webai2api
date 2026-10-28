@@ -240,7 +240,7 @@
               <div class="sel-menu" id="menu-ocKeySel"></div>
             </div>
             <button class="btn sm" onclick="ocConnectCurrent()">一键写入配置</button>
-            <button class="btn gray sm" onclick="ocDisconnectCurrent()">移除</button>
+            <button class="btn gray sm" onclick="ocDisconnectCurrent()">断开接入</button>
           </div>
           <pre id="ocSnippet" class="code-pre"></pre>
           <button class="btn sm" onclick="copyText(document.getElementById('ocSnippet').textContent)" style="margin-top:10px">复制配置片段</button>
@@ -1585,7 +1585,7 @@ function renderKeys(s){
           <div class="row-menu">
             <button onclick="toggleKey('${k.id}',${k.enabled?0:1})">${k.enabled?'停用':'启用'}</button>
             <button onclick="ocConnect('${k.id}')">接入</button>
-            <button onclick="ocDisconnect('${k.id}')">移除</button>
+            <button onclick="ocDisconnect('${k.id}')">断开接入</button>
             <button class="danger" onclick="delKey('${k.id}')">删除</button>
           </div>
         </span></td></tr>`;});
