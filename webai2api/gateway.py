@@ -580,8 +580,12 @@ def create_gateway_router(
                         exc,
                     )
                     kind = _apply_failure(registry, ac, exc)
-                    # 内容审核 / 凭证失效：换号也没用，直接返回
-                    if want_acc or kind in ("content", "auth"):
+                    # 内容审核：换号也没用，直接返回。
+                    # auth 不能 break（2026-10-29 冒烟实测抓到）：多账号池里
+                    # 各号凭证独立，A 号 token 过期不代表 B 号也死了——
+                    # 撞上死号要排除它换下一个，本次请求才能救回来；
+                    # note_auth_failure 的连续两次自动停用仍然生效。
+                    if want_acc or kind in ("content",):
                         break
                     tried.add(ac.account["id"])
                     nxt = registry.pick(
@@ -935,7 +939,10 @@ async def _stream_with_retry(
                 exc,
             )
             kind = _apply_failure(registry, ac, exc)
-            if want_acc or kind in ("content", "auth"):
+            # auth 不能 break（2026-10-29 冒烟实测抓到）：多账号池里各号
+            # 凭证独立，A 号 token 过期不代表 B 号也死了——排除死号换下一个，
+            # 本次流式请求才能救回来；连续两次鉴权失败的自动停用仍生效。
+            if want_acc or kind in ("content",):
                 break
             tried.add(ac.account["id"])
             nxt = registry.pick(model, exclude=tried, allowed=allowed)
