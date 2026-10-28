@@ -40,3 +40,4 @@ edition.txt
 
 # 夜间晨报（内部信息，不公开）
 MORNING_REPORT*.md
+build_check/
