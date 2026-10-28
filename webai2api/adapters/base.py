@@ -264,7 +264,21 @@ class GenericClientPool:
                 items = [c for c in items if c.account["id"] in allowed]
             if not items:
                 return None
+            # 两级选号：库里 health 标记为 error/expired 的账号不参与轮询，
+            # 只作兜底（好号全冷却时才轮到它们）。凭证过期的号只吃 600s
+            # 内存冷却，冷却一过又会被选中——连续两次 auth 失败才自动停用，
+            # 窗口期内请求反复撞死号（2026-10-29 冒烟实测）。
+            # 重新登录或面板健康检查通过会把 health 置回 ok，恢复可选。
+            good = [
+                c
+                for c in items
+                if (c.account.get("health") or "ok") not in ("error", "expired")
+            ]
+            if good:
+                items = good
             if prefer:
+                # 粘性指向坏号时不再优先：换健康号重建会话（自动），
+                # 成功后粘性自然更新
                 for c in items:
                     if c.account["id"] == prefer:
                         return c

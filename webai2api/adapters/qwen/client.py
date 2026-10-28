@@ -402,10 +402,15 @@ class QwenWebClient:
     def _open_stream(self, url: str, body: dict, headers: dict, timeout: int):
         conn = self._conn(url, timeout)
         _, path = self._split(url)
-        conn.request(
-            "POST", path, body=json.dumps(body).encode("utf-8"), headers=headers
-        )
-        resp = conn.getresponse()
+        try:
+            conn.request(
+                "POST", path, body=json.dumps(body).encode("utf-8"), headers=headers
+            )
+            resp = conn.getresponse()
+        except Exception:
+            # 请求中途抛错（重置/超时）必须关连接，否则 socket 泄漏
+            conn.close()
+            raise
         if resp.status >= 400:
             if resp.status == 429:
                 self._bump("rate_limit")
@@ -466,6 +471,10 @@ class QwenWebClient:
                 self._token_checked_at = now
                 return self._access_token
             except Exception as exc:  # noqa: BLE001
+                try:
+                    conn.close()  # 续期中途抛错也必须关连接
+                except Exception:
+                    pass
                 self.logger.warning("Qwen 续期异常: %s", exc)
                 self._token_checked_at = now
                 return self._access_token

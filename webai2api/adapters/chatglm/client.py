@@ -577,10 +577,15 @@ class ChatGlmWebClient:
     def _open_stream(self, url: str, body: dict, headers: dict, timeout: int):
         conn = self._conn(url, timeout)
         _, path = self._split(url)
-        conn.request(
-            "POST", path, body=json.dumps(body).encode("utf-8"), headers=headers
-        )
-        resp = conn.getresponse()
+        try:
+            conn.request(
+                "POST", path, body=json.dumps(body).encode("utf-8"), headers=headers
+            )
+            resp = conn.getresponse()
+        except Exception:
+            # 请求中途抛错（重置/超时）必须关连接，否则 socket 泄漏
+            conn.close()
+            raise
         if resp.status >= 400:
             if resp.status == 429:
                 self._bump("rate_limit")

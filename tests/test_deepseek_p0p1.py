@@ -408,3 +408,34 @@ def test_build_required_nudge_format():
     assert f"<{D} calls>" in nudge
     named = build_required_nudge("shell")
     assert "`shell`" in named
+
+
+# ── 对抗性演练：断流 → 续写复读 → 接缝剪除（端到端）──────────────
+
+
+def test_stream_continuation_seam_repeat_trimmed():
+    """断流续写复读断点前最后一句：接缝剪除后客户端只见一次，
+    新内容完整保留，finish 回到 stop。"""
+    round1 = [
+        {"_event_type": "ready", "response_message_id": 2001},
+        {
+            "p": "response/fragments",
+            "o": "APPEND",
+            "v": [{"id": "f1", "type": "RESPONSE", "content": ""}],
+        },
+        {"v": "第一段答案。最后一句。"},
+        # —— 掐流 ——
+    ]
+    round2 = [
+        {"_event_type": "ready", "response_message_id": 2002},
+        {"v": "最后一句。"},  # 逐字复读断点前最后一句
+        {"v": "然后是新内容。"},
+        {"data": {"p": "response/status", "v": "FINISHED"}},
+    ]
+    c = _stub_client([round1, round2])
+    content, calls, finish = _stream_parts(
+        _parse_stream(list(c.stream_chat_completion(_payload())))
+    )
+    assert content.count("最后一句。") == 1, f"复读应被剪除，实际: {content!r}"
+    assert content == "第一段答案。最后一句。然后是新内容。"
+    assert finish == "stop"

@@ -254,6 +254,15 @@ class ClientPool:
                 items = [c for c in items if c.account["id"] in allowed]
             if not items:
                 return None
+            # 两级选号：health=error/expired 的账号不参与轮询、只作兜底
+            # （与 base 池同款，见 base.py 注释）
+            good = [
+                c
+                for c in items
+                if (c.account.get("health") or "ok") not in ("error", "expired")
+            ]
+            if good:
+                items = good
             if prefer:
                 for c in items:
                     if c.account["id"] == prefer:

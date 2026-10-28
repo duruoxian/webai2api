@@ -1,0 +1,2233 @@
+
+/* 主题：在首次绘制前定下来，避免闪白 */
+(function(){
+  try{
+    var t = localStorage.getItem('wapi_theme');
+    var KNOWN = ['light','dark','mono-light','mono-dark','custom'];
+    if (KNOWN.indexOf(t) < 0) t = 'mono-light';
+    // 铁律：只有「自定义」主题才允许自定义底色生效。
+    // 预设主题下历史遗留的 wapi_custom_bg 一律忽略并清掉——
+    // 之前出现过「主题=极简白、背景却是深色」的矛盾，根源就在这里。
+    var cb = localStorage.getItem('wapi_custom_bg');
+    if (t !== 'custom' && cb) {
+      try { localStorage.removeItem('wapi_custom_bg'); } catch (e) {}
+      cb = null;
+    }
+    document.documentElement.setAttribute('data-theme', t);
+    var a = localStorage.getItem('wapi_accent');
+    if (['blue','violet','pink','red','green','orange','cyan'].indexOf(a) >= 0)
+      document.documentElement.setAttribute('data-accent', a);
+    var p = localStorage.getItem('wapi_pattern');
+    if (['lines','grid','dots','cross','waves','weave','veil'].indexOf(p) >= 0)
+      document.documentElement.setAttribute('data-pattern', p);
+    if (cb && t === 'custom') {
+      document.documentElement.style.setProperty('--bg', cb);
+      // 亮底/暗底决定卡片与文字明暗（与 JS 侧 applyCustomBg 同算法）
+      var h = String(cb).replace('#','');
+      if (h.length === 3) h = h.charAt(0)+h.charAt(0)+h.charAt(1)+h.charAt(1)+h.charAt(2)+h.charAt(2);
+      if (/^[0-9a-fA-F]{6}$/.test(h)) {
+        var c = [0,2,4].map(function(i){ return parseInt(h.substr(i,2),16)/255; })
+          .map(function(v){ return v<=0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055,2.4); });
+        var lum = 0.2126*c[0] + 0.7152*c[1] + 0.0722*c[2];
+        document.documentElement.setAttribute('data-bgmode', lum > 0.42 ? 'light' : 'dark');
+      }
+    }
+    // 主题切换后没有自定义底色时，输入框/预览色要跟着主题走
+    document.addEventListener('DOMContentLoaded', function(){
+      if (window.renderBgPick) renderBgPick();
+      var f = window.applyTheme;
+      if (typeof f === 'function') {
+        window.applyTheme = function(t){ var r = f.apply(this, arguments); if (window.renderBgPick) renderBgPick(); return r; };
+      }
+    });
+  }catch(e){ document.documentElement.setAttribute('data-theme','mono-light'); }
+})();
+
+;
+
+let TOKEN = localStorage.getItem('wapi_token') || '';
+
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),1800); }
+function copyText(text){
+  const done=()=>toast('已复制');
+  if(navigator.clipboard&&window.isSecureContext){
+    navigator.clipboard.writeText(text).then(done,()=>fallback());
+  } else fallback();
+  function fallback(){
+    const ta=document.createElement('textarea');
+    ta.value=text; ta.style.cssText='position:fixed;opacity:0';
+    document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); done(); }catch(e){ toast('复制失败'); }
+    ta.remove();
+  }
+}
+async function api(path,method='GET',body=null){
+  const opt={method,headers:{'X-Admin-Token':TOKEN}};
+  if(body){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body);}
+  const r=await fetch('/admin/api'+path,opt);
+  if(r.status===401){showLogin();throw new Error('未登录');}
+  let j;
+  try{ j=await r.json(); }
+  catch(e){ throw new Error('服务异常（HTTP '+r.status+'）'); }
+  return j;
+}
+function showLogin(){document.body.classList.add('no-scroll');document.getElementById('loginView').style.display='flex';
+  document.getElementById('mainView').style.display='none';}
+function showMain(){document.body.classList.remove('no-scroll');document.getElementById('loginView').style.display='none';
+  document.getElementById('mainView').style.display='block';}
+async function doLogin(){
+  const pw=document.getElementById('loginPw').value;
+  const r=await fetch('/admin/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+  const j=await r.json();
+  if(j.ok){TOKEN=j.token;localStorage.setItem('wapi_token',TOKEN);showMain();refresh();
+    if(j.default_password) setTimeout(()=>toast('当前仍是默认密码 admin，建议到「设置」里修改'),1500);
+    else toast('已登录');}
+  else toast(j.error||'登录失败');
+}
+async function logout(){try{await api('/logout','POST')}catch(e){}TOKEN='';localStorage.removeItem('wapi_token');showLogin();}
+
+/* ── 胶囊段选滑动指示层：选中胶囊平滑滑到目标按钮 ── */
+function segSlide(seg){
+  if(!seg||!seg.offsetParent) return;   // 隐藏 tab 里的 seg 量不到尺寸，切换时再测
+  const btn=seg.querySelector('button.active');
+  let ind=seg.querySelector('.seg-ind');
+  if(!btn){ if(ind) ind.style.opacity='0'; return; }
+  if(!ind){
+    ind=document.createElement('span');
+    ind.className='seg-ind';
+    seg.insertBefore(ind,seg.firstChild);
+    seg.classList.add('has-ind');
+  }
+  ind.style.opacity='1';
+  ind.style.width=btn.offsetWidth+'px';
+  ind.style.transform='translateX('+btn.offsetLeft+'px)';
+}
+document.addEventListener('click',e=>{
+  const seg=e.target.closest('.seg');
+  if(seg) requestAnimationFrame(()=>segSlide(seg));
+});
+window.addEventListener('resize',()=>document.querySelectorAll('.seg').forEach(segSlide));
+if(document.fonts&&document.fonts.ready) document.fonts.ready.then(()=>document.querySelectorAll('.seg').forEach(segSlide));
+
+function switchTab(name){
+  segSet('tabs',name);
+  document.querySelectorAll('.seg button[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active',p.id==='tab-'+name));
+  requestAnimationFrame(()=>document.querySelectorAll('.seg').forEach(segSlide));
+  if(name==='accounts') loadRisk();
+  // 切页回到顶部，避免停在上一页的滚动位置
+  try{ window.scrollTo({top:0, behavior:'auto'}); }catch(e){ window.scrollTo(0,0); }
+}
+function egressTag(mode){
+  const m=mode||'system';
+  if(m==='direct') return '<span class="tag on">直连</span>';
+  if(m==='custom') return '<span class="tag on">自定义代理</span>';
+  return '<span class="tag off">跟随系统</span>';
+}
+async function loadRisk(){
+  const tb=document.querySelector('#riskTable tbody');
+  if(!tb) return;
+  const j=await api('/risk');
+  if(!j||!j.ok){ tb.innerHTML=''; return; }
+  tb.innerHTML='';
+  j.accounts.forEach(x=>{
+    const st=x.stats||{};
+    const rate=Math.round((st.cache_hit_rate||0)*100);
+    const daily=st.daily_limit?`${st.daily_count||0}/${st.daily_limit}`:(st.daily_count||0);
+    const rateCls=rate>=60?'on':(rate>0?'':'err');
+    tb.innerHTML+=`<tr>
+      <td><b>${esc(x.name)}</b><div class="muted" style="font-size:12px">${esc(x.provider)}</div></td>
+      <td class="num-t">${daily}</td>
+      <td class="num-t">${st.sessions_created||0}</td>
+      <td><span class="tag ${rateCls}">${rate}%</span></td>
+      <td class="num-t">${st.active_sessions||0}</td>
+      <td class="num-t">${st.upstream_requests||0}</td>
+      <td>${st.rate_limit_hits?`<span class="tag err">${st.rate_limit_hits}</span>`:'0'}</td>
+      <td>${egressTag(x.egress)}</td>
+    </tr>`;
+  });
+  if(!j.accounts.length) tb.innerHTML=empty('还没有账号',8);
+}
+function fmt(n){n=Number(n)||0;return n.toLocaleString('zh-CN');}
+
+/* Token 数字：带单位的紧凑写法，最高支持到万亿级。
+   返回 HTML：数值 + 小号单位，保证单位与数字同一字重体系、视觉统一。 */
+function fmtTokHTML(n){
+  n=Number(n)||0;
+  const units=[[1e12,'万亿'],[1e8,'亿'],[1e4,'万']];
+  for(const [base,unit] of units){
+    if(n>=base){
+      let v=n/base;
+      let s = v>=100 ? v.toFixed(0) : v>=10 ? v.toFixed(1) : v.toFixed(2);
+      s = s.replace(/\.0+$/,'').replace(/(\.\d)0$/,'$1');
+      return `${s}<small>${unit}</small>`;
+    }
+  }
+  return n.toLocaleString('zh-CN');
+}
+function fmtTok(n){
+  return fmtTokHTML(n).replace(/<[^>]+>/g,'');
+}
+const REDUCED = (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+function animateNumTo(el, html, num, prev){
+  if(!el) return;
+  if(REDUCED || prev===undefined || String(num)===String(prev)){ el.innerHTML=html; return; }
+  const pm=/(-?[\d,]+(?:\.\d+)?)/.exec(el.innerHTML);
+  const nm=/(-?[\d,]+(?:\.\d+)?)/.exec(html);
+  if(!pm||!nm||pm[1]===nm[1]){ el.innerHTML=html; return; }
+  const ps=el.innerHTML.slice(el.innerHTML.indexOf(pm[1])+pm[1].length);
+  const ns=html.slice(html.indexOf(nm[1])+nm[1].length);
+  if(ps!==ns){ el.innerHTML=html; return; }  // 单位变了（万↔亿）直接换，不做跨单位滚动
+  const from=parseFloat(pm[1].replace(/,/g,''));
+  const to=parseFloat(nm[1].replace(/,/g,''));
+  const dec=(nm[1].split('.')[1]||'').length;
+  const comma=nm[1].includes(',');
+  const t0=performance.now(),dur=650;
+  (function frame(t){
+    const k=Math.min(1,((t||performance.now())-t0)/dur);
+    const e=1-Math.pow(1-k,3);
+    let v=from+(to-from)*e;
+    v=dec?v.toFixed(dec):String(Math.round(v));
+    if(comma)v=Number(v).toLocaleString('en-US');
+    el.innerHTML=html.replace(nm[1],v);
+    if(k<1)requestAnimationFrame(frame);
+  })(performance.now());
+}
+function animateNum(id, html, num){
+  const el=document.getElementById(id); if(!el) return;
+  const prev=el.dataset.num;
+  el.dataset.num=String(num);
+  animateNumTo(el, html, num, prev);
+}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function fmtTime(ts){if(!ts)return '–';const d=new Date(ts*1000);
+  return d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
+
+/* ── 段选记忆：默认选第一项 + 记住上次选择（跨打开恢复） ── */
+const SEG_VALID={
+  rangeSeg:['today','7d','30d','month','all','custom'],
+  modelSortSeg:['token','req'],
+  barWinSeg:['7','14','30','90'],
+  setProvSeg:['deepseek','glm','kimi','qwen'],
+  tabs:['overview','accounts','keys','connect','usage','settings']
+};
+function segGet(id,def){
+  try{ const v=localStorage.getItem('ui.seg.'+id); return SEG_VALID[id]&&SEG_VALID[id].includes(v)?v:def; }
+  catch(e){ return def; }
+}
+function segSet(id,v){ try{ localStorage.setItem('ui.seg.'+id,String(v)); }catch(e){} }
+let RANGE=segGet('rangeSeg','today');
+let RANGE_START='', RANGE_END='';
+try{
+  const cr=JSON.parse(localStorage.getItem('ui.seg.customRange')||'null');
+  if(cr){ RANGE_START=cr.s||''; RANGE_END=cr.e||''; }
+}catch(e){}
+let LAST_STATE=null;
+
+/* ── 自绘日历 ── */
+let DP_TARGET='start', DP_VIEW=null;
+
+function dpInit(){
+  if(DP_VIEW) return;
+  const d=new Date();
+  DP_VIEW={y:d.getFullYear(),m:d.getMonth()};
+}
+function openDatePicker(target, anchor){
+  dpInit();
+  DP_TARGET=target;
+  const cur = target==='start'?RANGE_START:RANGE_END;
+  if(cur){
+    const [y,m]=cur.split('-').map(Number);
+    DP_VIEW={y, m:m-1};
+  }
+  dpRender();
+  const dp=document.getElementById('datePicker');
+  dp.classList.add('show');
+  const r=anchor.getBoundingClientRect();
+  const w=268, h=dp.offsetHeight||330;
+  let left=r.left, top=r.bottom+8;
+  if(left+w>window.innerWidth-12) left=window.innerWidth-w-12;
+  if(top+h>window.innerHeight-12) top=r.top-h-8;
+  dp.style.left=Math.max(12,left)+'px';
+  dp.style.top=Math.max(12,top)+'px';
+}
+function closeDatePicker(){
+  document.getElementById('datePicker').classList.remove('show');
+}
+function dpMove(delta){
+  let m=DP_VIEW.m+delta, y=DP_VIEW.y;
+  if(m<0){m=11;y--;} if(m>11){m=0;y++;}
+  DP_VIEW={y,m}; dpRender();
+}
+function dpRender(){
+  const {y,m}=DP_VIEW;
+  document.getElementById('dpTitle').textContent=`${y}年${m+1}月`;
+  const first=new Date(y,m,1);
+  const startPad=first.getDay();
+  const daysInMonth=new Date(y,m+1,0).getDate();
+  const prevDays=new Date(y,m,0).getDate();
+  const today=new Date(); const todayKey=ymdLocal(today);
+  const sel = DP_TARGET==='start'?RANGE_START:RANGE_END;
+  let cells=[];
+  for(let i=startPad-1;i>=0;i--) cells.push({d:prevDays-i,other:true,date:new Date(y,m-1,prevDays-i)});
+  for(let i=1;i<=daysInMonth;i++) cells.push({d:i,other:false,date:new Date(y,m,i)});
+  while(cells.length%7!==0 || cells.length<42){
+    const n=cells.length-startPad-daysInMonth+1;
+    cells.push({d:n,other:true,date:new Date(y,m+1,n)});
+    if(cells.length>=42) break;
+  }
+  const grid=document.getElementById('dpGrid');
+  grid.innerHTML=cells.map(c=>{
+    const key=ymdLocal(c.date);
+    const cls=['dp-day'];
+    if(c.other)cls.push('other');
+    if(key===todayKey)cls.push('today');
+    if(key===sel)cls.push('sel');
+    return `<button type="button" class="${cls.join(' ')}" onclick="dpPick('${key}')">${c.d}</button>`;
+  }).join('');
+}
+function dpPick(key){
+  if(DP_TARGET==='start'){
+    RANGE_START=key;
+    document.getElementById('rangeStartText').textContent=key;
+    document.getElementById('rangeStartBtn').classList.remove('empty');
+    if(RANGE_END && RANGE_END<key){ RANGE_END=''; document.getElementById('rangeEndText').textContent='选择日期';
+      document.getElementById('rangeEndBtn').classList.add('empty'); }
+  }else{
+    RANGE_END=key;
+    document.getElementById('rangeEndText').textContent=key;
+    document.getElementById('rangeEndBtn').classList.remove('empty');
+  }
+  closeDatePicker();
+}
+function dpClear(){
+  if(DP_TARGET==='start'){
+    RANGE_START='';
+    document.getElementById('rangeStartText').textContent='选择日期';
+    document.getElementById('rangeStartBtn').classList.add('empty');
+  }else{
+    RANGE_END='';
+    document.getElementById('rangeEndText').textContent='选择日期';
+    document.getElementById('rangeEndBtn').classList.add('empty');
+  }
+  closeDatePicker();
+}
+function dpToday(){ dpPick(ymdLocal(new Date())); }
+
+document.addEventListener('mousedown', e=>{
+  const dp=document.getElementById('datePicker');
+  if(!dp.classList.contains('show')) return;
+  if(dp.contains(e.target)) return;
+  if(e.target.closest('.date-btn')) return;
+  closeDatePicker();
+});
+
+let RANGE_BEFORE_CUSTOM=null;
+function setRange(r){
+  document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range===r));
+  const box=document.getElementById('customRange');
+  box.classList.toggle('show', r==='custom');
+  if(r==='custom'){
+    // 打开编辑器期间数据仍按当前范围轮询；点「应用」才切换并写入记忆
+    if(RANGE_BEFORE_CUSTOM===null) RANGE_BEFORE_CUSTOM=RANGE;
+    if(!RANGE_START){
+      const d=new Date(); d.setDate(d.getDate()-30);
+      RANGE_START=ymdLocal(d);
+      document.getElementById('rangeStartText').textContent=RANGE_START;
+      document.getElementById('rangeStartBtn').classList.remove('empty');
+    }
+    return;
+  }
+  RANGE_BEFORE_CUSTOM=null;
+  RANGE=r;
+  segSet('rangeSeg',r);
+  RANGE_START=''; RANGE_END='';
+  document.getElementById('rangeStartText').textContent='选择日期';
+  document.getElementById('rangeEndText').textContent='选择日期';
+  document.getElementById('rangeStartBtn').classList.add('empty');
+  document.getElementById('rangeEndBtn').classList.add('empty');
+  refreshData(true);
+}
+function cancelCustomRange(){
+  closeDatePicker();
+  document.getElementById('customRange').classList.remove('show');
+  RANGE=RANGE_BEFORE_CUSTOM!==null?RANGE_BEFORE_CUSTOM:'all';
+  RANGE_BEFORE_CUSTOM=null;
+  segSet('rangeSeg',RANGE);
+  document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range===RANGE));
+  refreshData(true);
+}
+function applyCustomRange(){
+  if(!RANGE_START){ toast('请选择开始日期'); return; }
+  if(RANGE_END && RANGE_END<RANGE_START){ toast('结束日期不能早于开始日期'); return; }
+  RANGE='custom';
+  RANGE_BEFORE_CUSTOM=null;
+  segSet('rangeSeg','custom');
+  try{ localStorage.setItem('ui.seg.customRange',JSON.stringify({s:RANGE_START,e:RANGE_END})); }catch(e){}
+  closeDatePicker();
+  document.getElementById('customRange').classList.remove('show');
+  document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range==='custom'));
+  refreshData(true);
+}
+
+function stateQs(){
+  let qs='';
+  if(RANGE!=='all'){
+    qs='?range='+encodeURIComponent(RANGE)
+      +'&start='+encodeURIComponent(RANGE_START)
+      +'&end='+encodeURIComponent(RANGE_END);
+  }
+  const sep = qs ? '&' : '?';
+  qs += `${sep}limit=${RECENT_LIMIT}&offset=${RECENT_OFFSET}`;
+  if(RECENT_KEY) qs+='&key_id='+encodeURIComponent(RECENT_KEY);
+  if(RECENT_ACC) qs+='&account_id='+encodeURIComponent(RECENT_ACC);
+  if(RECENT_STATUS) qs+='&status='+encodeURIComponent(RECENT_STATUS);
+  return qs;
+}
+/* 只刷数据（总览+用量）：段选切换与轮询走这条路径，不再整页重画 */
+async function refreshData(cue){
+  if(cue) document.body.classList.add('loading');
+  let s;
+  try{ s=await api('/state'+stateQs()); }
+  catch(e){ document.body.classList.remove('loading'); return; }  // 401等异常：api内已跳登录
+  document.body.classList.remove('loading');
+  if(!s||!s.ok)return;
+  LAST_STATE=s;
+  document.getElementById('navAcc').innerHTML =
+    `可用账号 <b>${s.accounts.filter(a=>a.enabled).length}</b>`;
+  document.getElementById('navKey').innerHTML =
+    `Key <b>${s.keys.length}</b>`;
+  renderOverview(s);renderUsage(s);
+}
+async function refresh(){
+  await refreshData(false);
+  const s=LAST_STATE;
+  if(!s||!s.ok) return;
+  renderAccounts(s);renderKeys(s);renderSettings(s);
+  bindLimitInputs();
+  loadSystem();
+  if(window.__setLimits) window.__setLimits(s.settings||{});
+  try{
+    const key=(s.keys||[]).find(k=>k.enabled);
+    if(key && window.__setSnippet){
+      const r=await fetch('/v1/models',{headers:{'Authorization':'Bearer '+key.key}});
+      const j=await r.json();
+      if(j&&j.data) window.__setSnippet(j.data.map(m=>m.id));
+    }
+  }catch(e){}
+}
+function empty(msg,cols){return `<tr><td colspan="${cols||9}" class="empty">${msg}</td></tr>`;}
+
+function RANGE_LABEL(){
+  if(RANGE==='today') return '今天';
+  if(RANGE==='7d') return '近 7 天';
+  if(RANGE==='30d') return '近 30 天';
+  if(RANGE==='month') return '本月';
+  if(RANGE==='custom'){
+    if(RANGE_END) return `${RANGE_START} ~ ${RANGE_END}`;
+    return `${RANGE_START} 至今`;
+  }
+  return '全部时间';
+}
+
+function keyNameHTML(id,name,kids){
+  const del=id&&kids&&!kids.has(id);
+  return `<b>${esc(name||'–')}</b>${del?' <span class="tag err">已删除</span>':''}`;
+}
+
+/* ── 通知条关闭记忆：信息类永久（localStorage），告警类仅本会话（sessionStorage） ── */
+let ALERT_INFO_GONE=[],ALERT_WARN_GONE=[];
+try{ALERT_INFO_GONE=JSON.parse(localStorage.getItem('wapi_alert_gone')||'[]')}catch(e){}
+try{ALERT_WARN_GONE=JSON.parse(sessionStorage.getItem('wapi_alert_gone')||'[]')}catch(e){}
+function alertGone(id,warn){ return (warn?ALERT_WARN_GONE:ALERT_INFO_GONE).includes(id); }
+function dismissAlert(id,warn){
+  (warn?ALERT_WARN_GONE:ALERT_INFO_GONE).push(id);
+  try{
+    if(warn) sessionStorage.setItem('wapi_alert_gone',JSON.stringify(ALERT_WARN_GONE));
+    else localStorage.setItem('wapi_alert_gone',JSON.stringify(ALERT_INFO_GONE));
+  }catch(e){}
+  if(LAST_STATE) renderOverview(LAST_STATE);
+}
+function renderOverview(s){
+  const alerts=[];
+  // Key 的每日/每月 Token 上限已随编辑弹窗四字段一并退役，不再产生额度告警
+  (s.accounts||[]).forEach(a=>{ if(a.health==='expired') alerts.push({id:'expired:'+a.id,t:`账号「${a.name}」凭证已失效，请重新登录`,w:1}); });
+  const net=s.network||{};
+  window.__clashProxy=net.clash_proxy||'';
+  if(net.tun) alerts.push({id:'tun',t:net.tun_note||`检测到 TUN 网卡「${net.tun}」：规则模式下国内站直连有效，全局模式下会走节点`,w:0});
+  const directCount=(s.accounts||[]).filter(a=>(a.egress||'system')==='direct').length;
+  if(net.tun&&directCount&&net.global_mode) alerts.push({id:'tun_direct',t:`有 ${directCount} 个账号设为「直连」：Clash 处于全局模式时它们也会走节点`,w:0});
+  const ab=document.getElementById('alertBar');
+  if(ab){
+    // 先过滤已关闭再截断，被关掉的不占名额
+    const vis=alerts.filter(x=>!alertGone(x.id,x.w)).slice(0,5);
+    if(vis.length){
+      ab.style.display='';
+      ab.innerHTML=vis.map(x=>
+        `<div class="alert-item">${esc(x.t)}<button class="alert-x" onclick="dismissAlert('${x.id}',${x.w?1:0})" title="${x.w?'本会话内不再显示':'不再显示'}" aria-label="关闭通知"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`).join('');
+    }
+    else ab.style.display='none';
+  }
+  const t=s.usage.total||{};
+  animateNum('ovTotal', fmtTokHTML(t.t), t.t);
+  animateNum('ovReqs', fmt(t.n), t.n);
+  const ok=Number(t.ok)||0;
+  const rate = t.n ? (ok/t.n*100) : 0;
+  // 平台健康摘要 chips（方案A：总览即驾驶舱），点击跳账号页
+  const pc=document.getElementById('platformChips');
+  if(pc){
+    const by={};
+    (s.accounts||[]).forEach(a=>{
+      if(!a.enabled) return;
+      const pr=a.provider||'other';
+      by[pr]=by[pr]||{ok:0,bad:0};
+      if(a.health==='expired'||a.health==='error') by[pr].bad++;
+      else if(a.health==='ok') by[pr].ok++;
+    });
+    const names={deepseek:'DeepSeek',chatglm:'GLM',kimi:'Kimi',qwen:'千问'};
+    const entries=Object.entries(by);
+    pc.style.display=entries.length?'':'none';
+    pc.innerHTML=entries.map(([pr,v])=>
+      `<button type="button" class="plat-chip jump${v.bad?' warn':''}" onclick="switchTab('accounts')" title="查看账号">${esc(names[pr]||pr)} ${v.ok} 可用${v.bad?` · ${v.bad} 异常`:''}</button>`).join('');
+  }
+  // 今日/昨日对比并入统计卡 foot（用量页重复卡已删）
+  const td0=(s.today&&s.today.today)||{n:0,t:0};
+  const yd0=(s.today&&s.today.yesterday)||{n:0,t:0};
+  document.getElementById('ovReqsFoot').textContent =
+    `${RANGE_LABEL()} · 成功率 ${t.n?rate.toFixed(1)+'%':'–'} · 今日 ${fmt(td0.n)}（昨日 ${fmt(yd0.n)}）`;
+  document.getElementById('ovTokFoot').textContent =
+    `输入 ${fmtTok(t.p)} · 输出 ${fmtTok(t.c)} · 今日 ${fmtTok(td0.t)}`;
+  animateNum('ov24', fmtTokHTML((s.usage.last24h||{}).t),
+             Number((s.usage.last24h||{}).t||0));
+  animateNum('ovAcc', String(s.accounts.filter(a=>a.enabled).length),
+             s.accounts.filter(a=>a.enabled).length);
+  const src=(s.usage.by_model||[]).map(m=>({label:m.model,n:m.n,p:m.p,c:m.c,t:m.t}));
+  const tb=document.querySelector('#modelTable tbody');tb.innerHTML='';
+  const rows=src.slice().sort((a,b)=>{
+    if(MODEL_SORT==='req') return (Number(b.n)||0)-(Number(a.n)||0);
+    return (Number(b.t)||0)-(Number(a.t)||0);
+  });
+  // 颜色按「用量排名」分配，和环形图一致
+  const byToken=src.slice().sort((a,b)=>(Number(b.t)||0)-(Number(a.t)||0));
+  const colorMap=new Map();
+  const MAX_SEG=8;
+  byToken.forEach((m,i)=>{
+    if(i<MAX_SEG) colorMap.set(m.label, DONUT_COLORS[i%DONUT_COLORS.length]);
+    else colorMap.set(m.label, '#d6d9de');
+  });
+  rows.forEach(m=>{
+    const c=colorMap.get(m.label)||'#c9cdd4';
+    tb.innerHTML+=`<tr><td><span class="m-dot" style="background:${c}"></span><b>${esc(m.label)}</b></td>
+      <td class="num-t">${fmt(m.n)}</td>
+      <td class="num-t">${fmtTok(m.p)}</td><td class="num-t">${fmtTok(m.c)}</td>
+      <td class="num-t"><b>${fmtTok(m.t)}</b></td></tr>`;});
+  if(!rows.length)tb.innerHTML='<tr><td colspan="5" class="empty">暂无数据</td></tr>';
+  renderDonut(byToken.map(x=>({model:x.label,t:x.t})));
+  renderHeatmap(s);
+  renderGuide(s);
+}
+function renderGuide(s){
+  const gc=document.getElementById('guideCard'); if(!gc) return;
+  const accs=s.accounts||[];
+  const steps=[
+    {n:1,t:'添加账号',d:'「账号」页右上角「添加账号」，只填名称即可',done:accs.length>0},
+    {n:2,t:'浏览器登录',d:'点该账号的「浏览器登录」，凭证自动抓取',done:accs.some(a=>a.has_token||a.has_cookie||a.health==='ok')},
+    {n:3,t:'生成 Key 并接入客户端',d:'「API Key」页生成，再到「接入」页复制配置',done:(s.keys||[]).some(k=>k.enabled)},
+  ];
+  gc.style.display=steps.every(x=>x.done)?'none':'';
+  const el=document.getElementById('guideSteps');
+  if(el) el.innerHTML=steps.map(x=>
+    `<div class="guide-step${x.done?' done':''}"><span class="gs-n">${x.done?'✓':x.n}</span><div><b>${esc(x.t)}</b><div class="muted" style="font-size:12px">${esc(x.d)}</div></div></div>`).join('');
+}
+
+let MODEL_SORT=segGet('modelSortSeg','token');
+function setModelSort(k){
+  MODEL_SORT=k;
+  segSet('modelSortSeg',k);
+  document.querySelectorAll('#modelSortSeg button').forEach(b=>b.classList.toggle('active',b.dataset.sort===k));
+  if(LAST_STATE) renderOverview(LAST_STATE);
+}
+
+const DONUT_COLORS=[
+  '#0a7cff','#34c759','#ff9f0a','#af52de','#ff375f','#5ac8fa',
+  '#ffd60a','#30d158','#64d2ff','#bf5af2','#ff6482','#98989d'
+];
+
+function renderDonut(models){
+  const svg=document.getElementById('donut'); if(!svg)return;
+  const tip=document.getElementById('donutTip');
+  const all=(models||[]).map(m=>({model:m.model,t:Number(m.t)||0})).filter(m=>m.t>0).sort((a,b)=>b.t-a.t);
+  const tot=all.reduce((a,b)=>a+b.t,0);
+  if(tip) tip.classList.remove('show');
+  if(!tot){
+    svg.innerHTML=`<circle cx="70" cy="70" r="54" fill="none" stroke="var(--heat0)" stroke-width="16"/>
+      <text x="70" y="68" text-anchor="middle" class="donut-num">0</text>
+      <text x="70" y="86" text-anchor="middle" class="donut-lbl">Token</text>`;
+    return;
+  }
+
+  // 模型过多时：只显示前 N 个，其余合并为「其他」，避免色块循环、图例爆炸
+  const MAX_SEG = 8;
+  let data = all.slice(0, MAX_SEG);
+  if(all.length > MAX_SEG){
+    const rest = all.slice(MAX_SEG).reduce((a,b)=>a+b.t,0);
+    data = data.concat([{model:`其他 ${all.length-MAX_SEG} 个模型`, t:rest, other:true}]);
+  }
+
+  const R=54,C=2*Math.PI*R; let off=0,segs='';
+  const sig = JSON.stringify(data.map(d=>[d.model,d.t]));
+  const changed = svg.dataset.sig !== sig && !REDUCED;
+  svg.dataset.sig = sig;
+  data.forEach((m,i)=>{
+    const len=(m.t/tot)*C;
+    const pct=(m.t/tot*100).toFixed(1);
+    const color = m.other ? '#d6d9de' : DONUT_COLORS[i%DONUT_COLORS.length];
+    // 数据变化时：各段从 0 弧长展开 + 逐段延迟 → 圆环按序“画”出来
+    const anim = changed
+      ? `style="stroke-dasharray:0 ${C};transition:stroke-dasharray .6s cubic-bezier(.4,0,.2,1) ${Math.round(i*70)}ms"`
+      : '';
+    segs+=`<circle class="donut-seg" r="${R}" cx="70" cy="70" fill="none"
+      stroke="${color}" stroke-width="16"
+      stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}"
+      ${anim}
+      transform="rotate(-90 70 70)"
+      data-name="${esc(m.model)}" data-val="${fmtTok(m.t)}" data-pct="${pct}"/>`;
+    off+=len;
+  });
+  svg.innerHTML=segs+`<text x="70" y="68" text-anchor="middle" class="donut-num">${fmtTok(tot)}</text>
+    <text x="70" y="86" text-anchor="middle" class="donut-lbl">总 Token</text>`;
+  if(changed){
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      svg.querySelectorAll('.donut-seg').forEach(c=>{
+        c.style.strokeDasharray = c.getAttribute('stroke-dasharray');
+      });
+    }));
+    animateNumTo(svg.querySelector('.donut-num'), fmtTok(tot), tot, svg.dataset.num);
+    svg.dataset.num = String(tot);
+  }
+
+  // 悬停提示：显示模型、用量、占比
+  if(!tip) return;
+  svg.querySelectorAll('.donut-seg').forEach(seg=>{
+    seg.addEventListener('mouseenter', ev=>{
+      tip.innerHTML=`<b>${seg.dataset.name}</b><br>用量 ${seg.dataset.val} Token<br>占比 ${seg.dataset.pct}%`;
+      tip.classList.add('show');
+      const box=svg.getBoundingClientRect();
+      const parent=svg.parentElement.getBoundingClientRect();
+      tip.style.left=(box.left-parent.left+box.width/2)+'px';
+      tip.style.top=(box.top-parent.top+18)+'px';
+    });
+    seg.addEventListener('mouseleave', ()=>tip.classList.remove('show'));
+  });
+}
+
+function ymdLocal(dt){
+  const y=dt.getFullYear(),m=String(dt.getMonth()+1).padStart(2,'0'),d=String(dt.getDate()).padStart(2,'0');
+  return y+'-'+m+'-'+d;
+}
+/* ── 每日 Token 柱状图（可按 Key 切换，带滑动条） ── */
+let BAR_DATA=[], BAR_WIN=Number(segGet('barWinSeg','7')), BAR_OFFSET=0, DAILY_KEY='', BAR_SCROLL_SIG='';
+let KEY_DAILY={}, KEY_NAMES={};
+
+function setBarWindow(days){
+  BAR_WIN=days;
+  segSet('barWinSeg',days);
+  document.querySelectorAll('#barWinSeg button').forEach(b=>b.classList.toggle('active',Number(b.dataset.win)===days));
+  BAR_OFFSET=0;
+  renderBars();
+}
+function onBarSlide(v){
+  BAR_OFFSET=Number(v)||0;
+  renderBars();
+}
+function renderBars(){
+  const el=document.getElementById('barchart'); if(!el)return;
+  const map={};
+  if(DAILY_KEY){
+    (KEY_DAILY[DAILY_KEY]||[]).forEach(x=>{map[x.d]=(map[x.d]||0)+(Number(x.t)||0);});
+  }else{
+    // 全部 Key：只统计当前仍存在的 Key，已删除的历史 Key 不计入
+    Object.keys(KEY_NAMES).forEach(id=>(KEY_DAILY[id]||[]).forEach(x=>{
+      map[x.d]=(map[x.d]||0)+(Number(x.t)||0);
+    }));
+  }
+  const today=new Date(); today.setHours(0,0,0,0);
+
+  const keys=Object.keys(map).sort();
+  let firstKey=today;
+  if(keys.length){
+    const f=new Date(keys[0]+'T00:00:00');
+    if(!isNaN(f)&&f<firstKey) firstKey=f;
+  }
+  const totalDays=Math.max(1, Math.floor((today-firstKey)/86400000)+1);
+  const win=BAR_WIN;
+  const maxOffset=Math.max(0, totalDays-win);
+  const slider=document.getElementById('barSlider');
+  if(slider){ slider.max=String(maxOffset); slider.value=String(Math.min(BAR_OFFSET,maxOffset)); BAR_OFFSET=Number(slider.value)||0; }
+
+  const end=new Date(today); end.setDate(end.getDate()-BAR_OFFSET);
+  const start=new Date(end); start.setDate(start.getDate()-(win-1));
+  const days=[];
+  for(let d=new Date(start); d<=end; d.setDate(d.getDate()+1)){
+    const k=ymdLocal(d);
+    days.push({key:k, v:map[k]||0});
+  }
+  const max=Math.max(1,...days.map(x=>x.v));
+  const who=DAILY_KEY?(KEY_NAMES[DAILY_KEY]||'已删除的 Key'):'全部 Key';
+  const step=Math.ceil(days.length/14);
+
+  el.innerHTML=days.map((x,i)=>{
+    const h=x.v?Math.max(2, Math.round(x.v/max*100)):0;
+    const label=(i%step===0||i===days.length-1)?x.key.slice(5).replace('-','/'):'';
+    return `<div class="bar-item" title="${esc(who+' · '+x.key+' · '+fmtTok(x.v)+' Token')}">
+      <div class="bar-val">${x.v?fmtTok(x.v):''}</div>
+      <div class="bar-fill${x.v?'':' zero'}" style="height:${h}%"></div>
+      <div class="bar-x">${label}</div>
+    </div>`;
+  }).join('');
+
+  const lab=document.getElementById('barRangeLabel');
+  if(lab){
+    const fmtD=d=>`${d.getMonth()+1}/${d.getDate()}`;
+    lab.textContent=`${fmtD(start)} — ${fmtD(end)}（共 ${days.length} 天）`;
+  }
+  // 天数多、横向溢出时，默认把最新的一天滚到可视区
+  const sig=win+':'+BAR_OFFSET;
+  if(sig!==BAR_SCROLL_SIG){
+    BAR_SCROLL_SIG=sig;
+    if(el.scrollWidth>el.clientWidth) el.scrollLeft=el.scrollWidth;
+  }
+}
+
+function onDailyKeyChange(){
+  const sel=document.getElementById('dailyKey');
+  DAILY_KEY=sel?sel.value:'';
+  BAR_OFFSET=0;
+  renderBars();
+}
+function syncDailyKey(s){
+  const sel=document.getElementById('dailyKey');
+  if(!sel) return;
+  const dhost=document.getElementById('sel-dailyKey');
+  if(dhost && dhost.classList.contains('open')) return;  // 菜单展开时不重建，避免打断
+  // 只列出仍然存在的 Key（已删除的 Key 不出现在下拉里，也不计入「全部 Key」）
+  const names={};
+  (s.keys||[]).forEach(k=>{names[k.id]=k.name;});
+  KEY_NAMES=names;
+  if(DAILY_KEY && !(DAILY_KEY in names)) DAILY_KEY='';
+  const want=['<option value="">全部 Key</option>']
+    .concat(Object.entries(names).map(([id,n])=>`<option value="${esc(id)}">${esc(n)}</option>`))
+    .join('');
+  const cur=[...sel.options].map(o=>o.value+'|'+o.textContent).join('\n');
+  const next=new DOMParser().parseFromString('<select>'+want+'</select>','text/html')
+    .querySelectorAll('option');
+  const wantStr=[...next].map(o=>o.value+'|'+o.textContent).join('\n');
+  if(cur!==wantStr){ sel.innerHTML=want; selBuild('dailyKey'); }
+  sel.value=DAILY_KEY;
+  selSync('dailyKey');
+}
+function renderHeatmap(s){
+  BAR_DATA=(s.usage&&s.usage.daily)||[];
+  KEY_DAILY={};
+  ((s.usage&&s.usage.daily_by_key)||[]).forEach(r=>{
+    const id=r.api_key_id||'';
+    if(!id) return;
+    (KEY_DAILY[id]=KEY_DAILY[id]||[]).push({d:r.d, t:Number(r.t)||0, n:Number(r.n)||0});
+  });
+  syncDailyKey(s);
+  renderBars();
+}
+
+
+let ACC_PROV_FILTER='';
+function setAccProvFilter(p){
+  ACC_PROV_FILTER=ACC_PROV_FILTER===p?'':p;
+  if(LAST_STATE) renderAccounts(LAST_STATE);
+}
+function renderAccounts(s){
+  const tb=document.querySelector('#accTable tbody');
+  const cd=s.cooldowns||{};
+  let __rows='';let __sig='';
+  // 平台维度 chips（P4）：可点筛选
+  const pcA=document.getElementById('accProvChips');
+  if(pcA){
+    const cnt={};
+    (s.accounts||[]).forEach(a=>{
+      const pr=a.provider||'other';
+      cnt[pr]=cnt[pr]||{total:0,ok:0};
+      cnt[pr].total++;
+      if(a.enabled&&a.health==='ok') cnt[pr].ok++;
+    });
+    const names={deepseek:'DeepSeek',chatglm:'GLM',kimi:'Kimi',qwen:'千问'};
+    const entries=Object.entries(cnt);
+    pcA.style.display=entries.length?'':'none';
+    pcA.innerHTML=entries.map(([pr,v])=>
+      `<button type="button" class="plat-chip${ACC_PROV_FILTER===pr?' on':''}" onclick="setAccProvFilter('${esc(pr)}')">${esc(names[pr]||pr)} ${v.ok}/${v.total}</button>`).join('');
+  }
+  // 排序：启用且正常在前，未检查/未使用居中，验证不通过与停用沉底
+  const usedIds=new Set(((s.usage&&s.usage.by_account)||[]).map(x=>x.account_id));
+  const rank=a=>{
+    if(!a.enabled) return 10;
+    if(a.health==='expired'||a.health==='error') return 9;
+    if(a.health!=='ok') return 2;
+    if(!usedIds.has(a.id)) return 3;
+    return 0;
+  };
+  [...s.accounts].filter(a=>!ACC_PROV_FILTER||a.provider===ACC_PROV_FILTER)
+    .sort((a,b)=>rank(a)-rank(b)||String(a.name).localeCompare(String(b.name))).forEach(a=>{
+    const credEmpty=!(a.has_token||a.has_device||a.has_settings||a.has_cookie);
+    const pr=a.profile||{};
+    const who=pr.email||pr.phone||pr.nickname||'';
+    let healthBadge='';
+    if(a.health==='ok') healthBadge='<span class="tag on">正常</span>';
+    else if(a.health==='expired') healthBadge='<span class="tag err">凭证失效</span>';
+    else if(a.health==='error') healthBadge='<span class="tag err">检查失败</span>';
+    else healthBadge='<span class="tag off">未检查</span>';
+    const left=Number(cd[a.id])||0;
+    const cdBadge=left>0?`<span class="tag off">冷却 ${left>=60?Math.ceil(left/60)+' 分':left+' 秒'}</span>`:'';
+    const lg = (s.login&&s.login[a.id])||{};
+    let loginBadge='';
+    if(lg.status==='opening') loginBadge='<span class="tag off">正在打开…</span>';
+    else if(lg.status==='waiting') loginBadge='<span class="tag off">等待登录…</span>';
+    else if(lg.status==='success') loginBadge='<span class="tag on">登录成功</span>';
+    else if(lg.status==='error') loginBadge='<span class="tag err">'+esc(lg.message||'失败')+'</span>';
+    __sig+=`${a.id}|${a.name}|${a.enabled}|${a.health}|${a.provider}|${a.has_token}${a.has_device}${a.has_settings}${a.has_cookie}|${a.egress};`;
+    __rows+=`<tr data-acc="${a.id}"><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
+      <td class="muted mono">${credEmpty?'<span class="tag off">未填写凭证</span> ':''}${loginBadge} ${healthBadge} ${egressTag(a.egress)}</td>
+      <td><label class="switch" title="${a.enabled?'点击停用':'点击启用'}"><input type="checkbox" ${a.enabled?'checked':''} aria-label="启用或停用账号" onchange="toggleAcc('${a.id}',${a.enabled?0:1})"><span class="knob"></span></label>${cdBadge}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn sm" onclick="browserLogin('${a.id}')">浏览器登录</button>
+        <span class="row-menu-wrap">
+          <button class="btn gray sm" onclick="toggleAccMenu(this,event)">⋯</button>
+          <div class="row-menu" data-menu-id="acc:${a.id}">
+            <button onclick="checkAcc('${a.id}')">检查凭证</button>
+            <button onclick="editAcc('${a.id}')">编辑账号</button>
+            <button class="danger" onclick="delAcc('${a.id}')">删除账号</button>
+          </div>
+        </span></td></tr>`;});
+  if(!__rows)__rows=empty(ACC_PROV_FILTER?'该平台暂无账号':'还没有账号，点右上角添加',5);
+  const same = tb.dataset.sig === __sig;
+  tb.dataset.sig = __sig;
+  // 轮询重渲染会销毁打开的 ⋯ 菜单：重建后按行回填打开态
+  const openAcc = (tb.querySelector('.row-menu.open')?.dataset.menuId) || '';
+  tb.innerHTML = __rows;
+  tb.classList.toggle('no-anim', same);
+  if(openAcc){
+    const m = tb.querySelector(`.row-menu[data-menu-id="${openAcc}"]`);
+    const b = m && m.parentElement.querySelector('.row-menu-wrap > button');
+    if(b) openRowMenu(b,true);
+  }
+}
+async function browserLogin(id){
+  const r = await api('/accounts/'+id+'/login','POST');
+  if(r&&r.ok){ toast('已打开浏览器，请在弹出的窗口里登录'); refresh(); }
+  else toast((r&&r.error)||'启动失败');
+}
+async function cleanupBrowserResidue(btn){
+  if(!(await uiConfirm('清除本机残留的浏览器登录痕迹？\n（一次性登录目录 + 旧版默认浏览器存储；不影响账号凭证）',{title:'清除痕迹',danger:true})))return;
+  const r=await api('/browser/cleanup','POST');
+  if(r&&r.ok){ toast('已清除'+(r.removed&&r.removed.length?('，移除 '+r.removed.length+' 项'):'，没有发现残留')); }
+  else toast((r&&r.error)||'清理失败');
+}
+function renderKeys(s){
+  const tb=document.querySelector('#keyTable tbody');
+  let __krows='';let __ksig='';
+  s.keys.forEach(k=>{
+    const accN=(k.accounts||[]).length, modN=(k.models||[]).length;
+    const scope=`<div class="muted" style="font-size:12px;margin-top:3px">${
+      accN?('账号 '+accN+' 个'):'全部账号'} · ${modN?('模型 '+modN+' 个'):'全部模型'}</div>`;
+    __ksig+=`${k.id}|${k.name}|${k.enabled}|${k.accounts.length}|${k.models.length};`;
+    __krows+=`<tr><td><a href="javascript:void(0)" onclick="openKeyDetail('${k.id}')" style="color:inherit;text-decoration:none"><b>${esc(k.name)}</b></a>${scope}</td>
+      <td class="muted">${fmtTime(k.created_at)}</td>
+      <td><span class="tag ${k.enabled?'on':'off'}">${k.enabled?'启用':'停用'}</span></td>
+      <td class="muted">${fmtTime(k.last_used_at)}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button class="btn sm" onclick="openKeyView('${k.id}')">查看</button>
+        <button class="btn gray sm" onclick="openKeyEdit('${k.id}')">编辑</button>
+        <span class="row-menu-wrap">
+          <button class="btn gray sm" onclick="toggleAccMenu(this,event)">⋯</button>
+          <div class="row-menu" data-menu-id="key:${k.id}">
+            <button onclick="toggleKey('${k.id}',${k.enabled?0:1})">${k.enabled?'停用':'启用'}</button>
+            <button onclick="ocConnect('${k.id}')">接入</button>
+            <button onclick="ocDisconnect('${k.id}')">断开接入</button>
+            <button class="danger" onclick="delKey('${k.id}')">删除</button>
+          </div>
+        </span></td></tr>`;});
+  const ksame = tb.dataset.sig === __ksig;
+  tb.dataset.sig = __ksig;
+  const openKey = (tb.querySelector('.row-menu.open')?.dataset.menuId) || '';
+  tb.innerHTML = __krows;
+  tb.classList.toggle('no-anim', ksame);
+  if(!s.keys.length)tb.innerHTML=empty('还没有 Key，点右上角生成',5);
+  // 轮询重渲染同样会销毁已打开的 Key 行菜单：按 data-menu-id 回填
+  if(openKey && tb.querySelector(`.row-menu[data-menu-id="${openKey}"]`)){
+    const b = tb.querySelector(`.row-menu[data-menu-id="${openKey}"]`).parentElement.querySelector('.row-menu-wrap > button');
+    if(b) openRowMenu(b,true);
+  }
+  if(typeof rebuildOcSel==='function') rebuildOcSel();
+}
+function renderUsage(s){
+  syncRecentFilters(s);
+  const ec=document.getElementById('errChips');
+  if(ec){
+    const errs=s.usage.errors||[];
+    ec.style.display=errs.length?'':'none';
+    ec.innerHTML=errs.map(e=>
+      `<button type="button" class="err-chip${RECENT_STATUS==='error'?' on':''}" onclick="toggleRecentStatus()" title="${esc(errHint(e.code))}（点击只看失败请求）"><span class="tag err">${esc(e.code)}</span><b>${fmt(e.n)}</b></button>`).join('');
+  }
+  const kids=new Set((s.keys||[]).map(k=>k.id));
+  const accIds=new Set((s.accounts||[]).map(a=>a.id));
+  const keyName=(id,name)=>keyNameHTML(id,name,kids);
+  const ku=s.key_usage||{};
+  let tb=document.querySelector('#keyUsageTable tbody');tb.innerHTML='';
+  // 已删除的 Key/账号不再出现在用量明细与最近请求里（统计卡总量仍含其历史用量）
+  const byKeyAlive=(s.usage.by_key||[]).filter(k=>kids.has(k.api_key_id));
+  byKeyAlive.forEach(k=>{
+    tb.innerHTML+=`<tr><td>${keyName(k.api_key_id,k.api_key_name)}</td>
+      <td class="num-t">${fmt(k.n)}</td><td class="num-t"><b>${fmtTok(k.t)}</b></td></tr>`;});
+  if(!byKeyAlive.length)tb.innerHTML='<tr><td colspan="6" class="empty">暂无数据</td></tr>';
+  tb=document.querySelector('#accUsageTable tbody');tb.innerHTML='';
+  const byAccAlive=(s.usage.by_account||[]).filter(a=>accIds.has(a.account_id));
+  byAccAlive.forEach(a=>{tb.innerHTML+=`<tr><td><b>${esc(a.account_name||'–')}</b></td>
+    <td class="muted">${esc(a.provider||'')}</td><td class="num-t">${fmt(a.n)}</td><td class="num-t"><b>${fmtTok(a.t)}</b></td></tr>`;});
+  if(!byAccAlive.length)tb.innerHTML=empty('暂无数据',4);
+  tb=document.querySelector('#recentTable tbody');tb.innerHTML='';
+  const recentAlive=(s.recent||[]).filter(r=>
+    !(r.api_key_id&&!kids.has(r.api_key_id)) && !(r.account_id&&!accIds.has(r.account_id))
+    &&!(RECENT_STATUS==='error'&&r.status==='ok'));
+  recentAlive.forEach(r=>{tb.innerHTML+=`<tr><td class="muted">${fmtTime(r.ts)}</td>
+    <td>${keyName(r.api_key_id,r.api_key_name)}</td><td>${esc(r.account_name||'–')}</td>
+    <td class="mono">${esc(r.model)}</td><td class="num-t">${fmtTok(r.prompt_tokens)}</td>
+    <td class="num-t">${fmtTok(r.completion_tokens)}</td><td class="num-t"><b>${fmtTok(r.total_tokens)}</b></td>
+    <td class="num-t">${r.latency_ms?((r.latency_ms/1000).toFixed(1)+'s'):'–'}</td>
+    <td>${r.status==='ok'?'<span class="tag on">成功</span>':`<span class="tag err" title="${esc(errHint(r.error_code||r.status))}">${esc(r.error_code||r.status)}</span>`}</td></tr>`;});
+  if(!recentAlive.length)tb.innerHTML=empty('暂无记录');
+  const info=document.getElementById('recentInfo');
+  if(info){
+    const total=Number(s.recent_total)||0;
+    const lim=Number(s.recent_limit)||50;
+    const off=Number(s.recent_offset)||0;
+    info.textContent = total
+      ? `${off+1}–${Math.min(off+lim,total)} / 共 ${total} 条`
+      : '';
+  }
+}
+let RECENT_LIMIT=50, RECENT_OFFSET=0;
+let RECENT_KEY='', RECENT_ACC='', RECENT_STATUS='';
+/* 错误码→可能原因悬停解释（基于本机 usage_log 实际出现过的 code 盘点，2026-10-28） */
+const ERR_HINTS=[
+  [/^cancelled$/i,'请求已取消：客户端中断或自动换号，不是故障'],
+  [/^auth$/i,'凭证失效或登录态过期：到「账号」页重新「浏览器登录」'],
+  [/GlmError/i,'智谱上游报错：多为网页版临时波动，稍后重试'],
+  [/QwenError/i,'千问上游报错：auth 表示需重新登录千问，其余多为临时波动'],
+  [/UpstreamAPIError|AttributeError|Error/i,'上游异常：多为网页版临时波动或代理问题，重试或换账号'],
+  [/^429/,'触发限流：账号已自动冷却，稍后自动恢复'],
+  [/^40[13]/,'被上游拒绝：凭证失效或触发风控，重新登录该账号'],
+  [/^5\d\d/,'上游服务错误：网页版临时波动或代理问题'],
+];
+function errHint(code){
+  const s=String(code||'');
+  for(const [re,h] of ERR_HINTS){ if(re.test(s)) return h; }
+  return '请求失败：详情见「设置 → 查看日志」';
+}
+function toggleRecentStatus(){
+  RECENT_STATUS=RECENT_STATUS==='error'?'':'error';
+  RECENT_OFFSET=0;
+  refresh();
+}
+function onRecentFilter(){
+  RECENT_KEY=document.getElementById('recentKey').value;
+  RECENT_ACC=document.getElementById('recentAcc').value;
+  RECENT_OFFSET=0;
+  refresh();
+}
+function syncRecentFilters(s){
+  const keySel=document.getElementById('recentKey');
+  if(!keySel) return;
+  const kids=new Set((s.keys||[]).map(k=>k.id));
+  const accIds=new Set((s.accounts||[]).map(a=>a.id));
+  const byKey=s.usage.by_key||[];
+  if(RECENT_KEY && !kids.has(RECENT_KEY)) RECENT_KEY='';
+  let opts='<option value="">全部 Key</option>';
+  // 只列仍存在的 Key（已删除的不再出现）
+  byKey.forEach(k=>{
+    if(!k.api_key_id||!kids.has(k.api_key_id)) return;
+    opts+=`<option value="${esc(k.api_key_id)}">${esc(k.api_key_name||'–')}</option>`;
+  });
+  const keyHost=document.getElementById('sel-recentKey');
+  if(!keyHost.classList.contains('open')){
+    const cur=[...keySel.options].map(x=>x.value+'|'+x.textContent).join('\n');
+    const want=[...new DOMParser().parseFromString('<select>'+opts+'</select>','text/html').querySelectorAll('option')]
+      .map(x=>x.value+'|'+x.textContent).join('\n');
+    if(cur!==want){keySel.innerHTML=opts;keySel.value=RECENT_KEY;selBuild('recentKey');}
+    else keySel.value=RECENT_KEY;
+  }
+
+  const accSel=document.getElementById('recentAcc');
+  const byAcc=s.usage.by_account||[];
+  if(RECENT_ACC && !accIds.has(RECENT_ACC)) RECENT_ACC='';
+  const nameCount={};
+  byAcc.forEach(a=>{const n=a.account_name||'–';nameCount[n]=(nameCount[n]||0)+1;});
+  let aopts='<option value="">全部账号</option>';
+  // 只列仍存在的账号（已删除的不再出现）
+  byAcc.forEach(a=>{
+    if(!a.account_id||!accIds.has(a.account_id)) return;
+    const n=a.account_name||'–';
+    const dup=nameCount[n]>1?' · '+a.account_id.slice(-4):'';
+    aopts+=`<option value="${esc(a.account_id)}">${esc(n)}${esc(dup)}</option>`;
+  });
+  const accHost=document.getElementById('sel-recentAcc');
+  if(!accHost.classList.contains('open')){
+    const cur=[...accSel.options].map(x=>x.value+'|'+x.textContent).join('\n');
+    const want=[...new DOMParser().parseFromString('<select>'+aopts+'</select>','text/html').querySelectorAll('option')]
+      .map(x=>x.value+'|'+x.textContent).join('\n');
+    if(cur!==want){accSel.innerHTML=aopts;accSel.value=RECENT_ACC;selBuild('recentAcc');}
+    else accSel.value=RECENT_ACC;
+  }
+}
+function recentPage(dir){
+  if(dir>0 && LAST_STATE){
+    const total=Number(LAST_STATE.recent_total||0);
+    if(total && RECENT_OFFSET+RECENT_LIMIT>=total) return;
+  }
+  RECENT_OFFSET=Math.max(0, RECENT_OFFSET + dir*RECENT_LIMIT);
+  refreshData(true);
+}
+function renderSettings(s){
+  const av=document.getElementById('aboutVer');
+  if(av) av.textContent=s.version?('v'+s.version):'—';
+  const gb=document.getElementById('guideBase');
+  if(gb) gb.textContent=location.origin+'/v1';
+  // 轮询回填时跳过用户正在编辑的控件，避免打字被重置
+  const ae=document.activeElement;
+  const sv=(el,v)=>{ if(!el||(ae&&ae===el)) return; el.value=v; };
+  const sb=(el,v)=>{ if(!el||(ae&&ae===el)) return; el.checked=v; };
+  const $=id=>document.getElementById(id);
+  sb($('setTray'),(s.settings.tray_enabled||'true')!=='false');
+  sv($('setWasm'),s.settings.deepseek_wasm_path||'');
+  sb($('setCache'),(s.settings.deepseek_session_cache||'true')!=='false');
+  sb($('setSearch'),(s.settings.deepseek_search||'false')==='true');
+  sv($('setAntiMin'),s.settings.deepseek_anti_min||'1.5');
+  sv($('setAntiMax'),s.settings.deepseek_anti_max||'3.0');
+  sv($('setRetain'),s.settings.usage_retain_days||'0');
+  sv($('setDsContext'),s.settings.deepseek_context_limit||'1000000');
+  sv($('setDsOutput'),s.settings.deepseek_output_limit||'384000');
+  sv($('setGlmContext'),s.settings.glm_context_limit||'1000000');
+  sv($('setGlmOutput'),s.settings.glm_output_limit||'128000');
+  sv($('setGlmAntiMin'),s.settings.glm_anti_min||'1.5');
+  sv($('setGlmAntiMax'),s.settings.glm_anti_max||'3.0');
+  sb($('setGlmSearch'),(s.settings.glm_search||'false')==='true');
+  sb($('setGlmCache'),(s.settings.glm_session_cache||'true')!=='false');
+  sv($('setKimiContext'),s.settings.kimi_context_limit||'262144');
+  sv($('setKimiOutput'),s.settings.kimi_output_limit||'32768');
+  sv($('setKimiAntiMin'),s.settings.kimi_anti_min||'1.5');
+  sv($('setKimiAntiMax'),s.settings.kimi_anti_max||'3.0');
+  sb($('setKimiSearch'),(s.settings.kimi_search||'false')==='true');
+  sb($('setKimiCache'),(s.settings.kimi_session_cache||'true')!=='false');
+  sv($('setQwenContext'),s.settings.qwen_context_limit||'262144');
+  sv($('setQwenOutput'),s.settings.qwen_output_limit||'65536');
+  sv($('setQwenAntiMin'),s.settings.qwen_anti_min||'1.5');
+  sv($('setQwenAntiMax'),s.settings.qwen_anti_max||'3.0');
+  sb($('setQwenSearch'),(s.settings.qwen_search||'false')==='true');
+  sb($('setQwenCache'),(s.settings.qwen_session_cache||'true')!=='false');
+}
+
+/* 恢复默认：只改表单，点保存才真正写入 */
+const DEEPSEEK_DEFAULTS={
+  session_cache:true, search:false,
+  anti_min:'1.5', anti_max:'3.0',
+  context:'1000000', output:'384000'
+};
+const GLM_DEFAULTS={
+  context:'1000000', output:'128000',
+  anti_min:'1.5', anti_max:'3.0',
+  search:false, cache:true
+};
+const KIMI_DEFAULTS={
+  context:'262144', output:'32768',
+  anti_min:'1.5', anti_max:'3.0',
+  search:false, cache:true
+};
+const QWEN_DEFAULTS={
+  context:'262144', output:'65536',
+  anti_min:'1.5', anti_max:'3.0',
+  search:false, cache:true
+};
+function resetDeepSeekSettings(){
+  document.getElementById('setCache').checked=DEEPSEEK_DEFAULTS.session_cache;
+  document.getElementById('setSearch').checked=DEEPSEEK_DEFAULTS.search;
+  document.getElementById('setAntiMin').value=DEEPSEEK_DEFAULTS.anti_min;
+  document.getElementById('setAntiMax').value=DEEPSEEK_DEFAULTS.anti_max;
+  document.getElementById('setDsContext').value=DEEPSEEK_DEFAULTS.context;
+  document.getElementById('setDsOutput').value=DEEPSEEK_DEFAULTS.output;
+  toast('已还原为默认值，点「保存」生效');
+}
+function resetGlmSettings(){
+  document.getElementById('setGlmContext').value=GLM_DEFAULTS.context;
+  document.getElementById('setGlmOutput').value=GLM_DEFAULTS.output;
+  document.getElementById('setGlmAntiMin').value=GLM_DEFAULTS.anti_min;
+  document.getElementById('setGlmAntiMax').value=GLM_DEFAULTS.anti_max;
+  document.getElementById('setGlmSearch').checked=GLM_DEFAULTS.search;
+  document.getElementById('setGlmCache').checked=GLM_DEFAULTS.cache;
+  toast('已还原为默认值，点「保存」生效');
+}
+function resetKimiSettings(){
+  document.getElementById('setKimiContext').value=KIMI_DEFAULTS.context;
+  document.getElementById('setKimiOutput').value=KIMI_DEFAULTS.output;
+  document.getElementById('setKimiAntiMin').value=KIMI_DEFAULTS.anti_min;
+  document.getElementById('setKimiAntiMax').value=KIMI_DEFAULTS.anti_max;
+  document.getElementById('setKimiSearch').checked=KIMI_DEFAULTS.search;
+  document.getElementById('setKimiCache').checked=KIMI_DEFAULTS.cache;
+  toast('已还原为默认值，点「保存」生效');
+}
+function resetQwenSettings(){
+  document.getElementById('setQwenContext').value=QWEN_DEFAULTS.context;
+  document.getElementById('setQwenOutput').value=QWEN_DEFAULTS.output;
+  document.getElementById('setQwenAntiMin').value=QWEN_DEFAULTS.anti_min;
+  document.getElementById('setQwenAntiMax').value=QWEN_DEFAULTS.anti_max;
+  document.getElementById('setQwenSearch').checked=QWEN_DEFAULTS.search;
+  document.getElementById('setQwenCache').checked=QWEN_DEFAULTS.cache;
+  toast('已还原为默认值，点「保存」生效');
+}
+
+async function saveGlmSettings(){
+  const body={
+    glm_anti_min:document.getElementById('setGlmAntiMin').value.trim(),
+    glm_anti_max:document.getElementById('setGlmAntiMax').value.trim(),
+    glm_context_limit:document.getElementById('setGlmContext').value.trim()||'1000000',
+    glm_output_limit:document.getElementById('setGlmOutput').value.trim()||'128000',
+    glm_search:document.getElementById('setGlmSearch').checked,
+    glm_session_cache:document.getElementById('setGlmCache').checked};
+  await api('/settings','POST',body);toast('已保存并应用');refresh();
+}
+
+async function saveKimiSettings(){
+  const body={
+    kimi_anti_min:document.getElementById('setKimiAntiMin').value.trim(),
+    kimi_anti_max:document.getElementById('setKimiAntiMax').value.trim(),
+    kimi_context_limit:document.getElementById('setKimiContext').value.trim()||'262144',
+    kimi_output_limit:document.getElementById('setKimiOutput').value.trim()||'32768',
+    kimi_search:document.getElementById('setKimiSearch').checked,
+    kimi_session_cache:document.getElementById('setKimiCache').checked};
+  await api('/settings','POST',body);toast('已保存并应用');refresh();
+}
+
+async function saveQwenSettings(){
+  const body={
+    qwen_anti_min:document.getElementById('setQwenAntiMin').value.trim(),
+    qwen_anti_max:document.getElementById('setQwenAntiMax').value.trim(),
+    qwen_context_limit:document.getElementById('setQwenContext').value.trim()||'262144',
+    qwen_output_limit:document.getElementById('setQwenOutput').value.trim()||'65536',
+    qwen_search:document.getElementById('setQwenSearch').checked,
+    qwen_session_cache:document.getElementById('setQwenCache').checked};
+  await api('/settings','POST',body);toast('已保存并应用');refresh();
+}
+
+async function testProxy(){
+  const el=document.getElementById('accProxy');
+  const out=document.getElementById('proxyTestResult');
+  const px=(el&&el.value||'').trim();
+  if(!px){ out.textContent='请先填写代理地址'; return; }
+  out.textContent='测试中…';
+  const j=await api('/proxy/test','POST',{proxy:px});
+  if(!j){ out.textContent='测试失败'; return; }
+  if(j.ok){
+    out.innerHTML=`<span class="tag on">可用</span> 出口 IP <b>${esc(j.exit_ip||'')}</b>（${j.elapsed_ms||0}ms）`+
+      (j.warning?` <span class="tag off">${esc(j.warning)}</span>`:'');
+  }else{
+    out.innerHTML=`<span class="tag err">不可用</span> ${esc(j.error||'')}`;
+  }
+}
+function openAccModal(acc){
+  document.getElementById('accModalTitle').textContent=acc?'编辑账号':'添加账号';
+  document.getElementById('accId').value=acc?acc.id:'';
+  document.getElementById('accName').value=acc?acc.name:'';
+  document.getElementById('accProvider').value=acc?acc.provider:'deepseek';
+  const provSel=document.getElementById('accProvider');
+  const provHost=document.getElementById('sel-accProvider');
+  provSel.disabled=!!acc;
+  provHost.classList.toggle('disabled',!!acc);
+  const provLabel=document.getElementById('accProviderLabel');
+  if(provLabel) provLabel.textContent=acc?'平台（创建后不可修改）':'平台';
+  selOpen('accProvider',false);
+  selSync('accProvider');
+  ['accToken','accDevice','accSettings','accCookie'].forEach(i=>document.getElementById(i).value='');
+  const pxEl=document.getElementById('accProxy');
+  if(pxEl) pxEl.value=acc?(acc.proxy||''):'';
+  const eg=acc?(acc.egress||'system'):'system';
+  document.getElementById('accEgress').value=eg;
+  selSync('accEgress');
+  onEgressChange();
+  const adv=document.getElementById('accAdv'); if(adv) adv.open=false;
+  onProviderChange();
+  openModal('accModal');
+  setTimeout(()=>document.getElementById('accName').focus(),30);
+}
+function editAcc(id){
+  const a=((LAST_STATE&&LAST_STATE.accounts)||[]).find(x=>x.id===id);
+  if(a) openAccModal(a);
+}
+function onEgressChange(){
+  const mode=document.getElementById('accEgress').value;
+  const wrap=document.getElementById('accProxyWrap');
+  if(wrap) wrap.style.display = mode==='custom' ? 'block' : 'none';
+  const cp=document.getElementById('clashPreset');
+  if(cp) cp.style.display = (mode==='custom' && window.__clashProxy) ? '' : 'none';
+  const hint=document.getElementById('accEgressHint');
+  if(hint){
+    if(mode==='direct') hint.textContent='直连：强制忽略系统代理。若 Clash 是 TUN+规则模式，国内站（DeepSeek/Kimi/千问）出口仍是家宽 IP；仅当 Clash 切「全局模式」时直连才会走节点。';
+    else if(mode==='custom') hint.textContent='自定义代理：登录、健康检查、聊天请求都走这个代理，出口保持一致。本机开着 Clash 时可点「交给 Clash 分流」按它的规则走。';
+    else hint.textContent='跟随系统代理：Clash 开系统代理时走代理，关闭时直连。';
+  }
+}
+function useClash(){
+  const px=window.__clashProxy||'http://127.0.0.1:7897';
+  const el=document.getElementById('accProxy');
+  if(el) el.value=px;
+  const out=document.getElementById('proxyTestResult');
+  if(out) out.textContent='已填入 '+px+'（点击「测试代理」验证出口）';
+}
+function onProviderChange(){
+  const p=document.getElementById('accProvider').value;
+  const t=document.getElementById('accCredHint');
+  const hints={
+    chatglm:'智谱清言：浏览器登录后会自动抓取 refresh_token（也可在下面手动粘贴）。',
+    kimi:'Kimi：浏览器登录后会自动抓取 accessToken（Authorization Bearer；也可手动粘贴）。',
+    qwen:'通义千问：浏览器登录后会自动抓取 access_token（OpenWebUI；也可手动粘贴）。'
+  };
+  if(t) t.textContent = hints[p] || 'DeepSeek：浏览器登录后会自动抓取，下面的凭证可以留空。';
+}
+/* ── 主题化确认弹窗：替代原生 confirm()，Promise 风格 ── */
+let _confirmResolve=null,_confirmYes=false;
+function uiConfirm(msg,opts){
+  opts=opts||{};
+  return new Promise(resolve=>{
+    if(_confirmResolve){ const prev=_confirmResolve; _confirmResolve=null; _confirmYes=false; prev(false); }
+    _confirmResolve=resolve;_confirmYes=false;
+    const t=document.getElementById('confirmTitle');
+    if(t) t.textContent=opts.title||'确认操作';
+    document.getElementById('confirmMsg').textContent=msg;
+    const yes=document.getElementById('confirmYes');
+    yes.textContent=opts.yes||'确定';
+    yes.classList.toggle('danger',!!opts.danger);
+    openModal('confirmModal');
+  });
+}
+function closeModal(id){
+  document.getElementById(id).classList.remove('show');
+  if(!document.querySelector('.modal-bg.show')){
+    document.body.classList.remove('modal-open');
+    document.documentElement.classList.remove('modal-open');
+  }
+  if(id==='confirmModal'&&_confirmResolve){
+    const r=_confirmResolve;_confirmResolve=null;r(_confirmYes);
+  }
+}
+function openModal(id){
+  document.body.classList.add('modal-open');
+  document.documentElement.classList.add('modal-open');
+  document.getElementById(id).classList.add('show');
+}
+
+/* ── 苹果风下拉：包装原生 select，保留原有取值/onchange 逻辑 ── */
+function selEl(id){ return document.getElementById('sel-'+id); }
+function selBuild(id){
+  const host=selEl(id); if(!host) return;
+  const native=document.getElementById(id);
+  const menu=document.getElementById('menu-'+id);
+  if(!native||!menu) return;
+  menu.innerHTML='';
+  Array.from(native.options).forEach((opt,i)=>{
+    const b=document.createElement('button');
+    b.type='button';
+    b.className='sel-opt';
+    b.setAttribute('aria-selected', String(i===native.selectedIndex));
+    b.innerHTML='<svg class="tick" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg><span></span>';
+    b.querySelector('span').textContent=opt.textContent;
+    b.onclick=()=>selPick(id,i);
+    menu.appendChild(b);
+  });
+  selSync(id);
+}
+function selSync(id){
+  const native=document.getElementById(id);
+  const lbl=document.getElementById('lbl-'+id);
+  const menu=document.getElementById('menu-'+id);
+  if(!native) return;
+  if(lbl) lbl.textContent=native.selectedIndex>=0?native.options[native.selectedIndex].textContent:'';
+  if(menu) Array.from(menu.children).forEach((b,i)=>b.setAttribute('aria-selected',String(i===native.selectedIndex)));
+}
+function selPick(id,i){
+  const native=document.getElementById(id);
+  if(!native) return;
+  native.selectedIndex=i;
+  selSync(id);
+  selOpen(id,false);
+  native.dispatchEvent(new Event('change',{bubbles:true}));
+}
+function selOpen(id,open){
+  const host=selEl(id); if(!host) return;
+  document.querySelectorAll('.sel.open').forEach(other=>{ if(other!==host) other.classList.remove('open'); });
+  host.classList.toggle('open',open);
+  if(open) selSync(id);
+}
+function selToggle(id){
+  const host=selEl(id); if(!host) return;
+  selOpen(id,!host.classList.contains('open'));
+}
+document.addEventListener('mousedown',e=>{
+  document.querySelectorAll('.sel.open').forEach(host=>{
+    if(!host.contains(e.target)) host.classList.remove('open');
+  });
+});
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  const open=document.querySelectorAll('.sel.open');
+  if(open.length){ open.forEach(host=>host.classList.remove('open')); return; }
+  document.querySelectorAll('.modal-bg.show').forEach(el=>{ if(el.id) closeModal(el.id); });
+});
+async function saveAccount(){
+  const id=document.getElementById('accId').value;
+  const body={name:document.getElementById('accName').value.trim()||'未命名账号',
+    provider:document.getElementById('accProvider').value,note:''};
+  const t=document.getElementById('accToken').value.trim();
+  const d=document.getElementById('accDevice').value.trim();
+  const st=document.getElementById('accSettings').value.trim();
+  const c=document.getElementById('accCookie').value.trim();
+  const px=document.getElementById('accProxy').value.trim();
+  const eg=document.getElementById('accEgress').value;
+  if(t)body.auth_token=t;if(d)body.device_id=d;if(st)body.settings_token=st;if(c)body.cookie=c;
+  body.egress=eg;
+  if(eg==='custom'&&px)body.proxy=px;
+  if(eg!=='custom')body.proxy='';
+  if(id)await api('/accounts/'+id,'PUT',body);else await api('/accounts','POST',body);
+  closeModal('accModal');refresh();toast('已保存');
+}
+async function toggleAcc(id,en){await api('/accounts/'+id,'PUT',{enabled:en});refresh();}
+async function checkAcc(id){
+  toast('正在检查账号…');
+  const j=await api('/accounts/'+id+'/check','POST',{});
+  if(j&&j.ok){toast('账号正常');refresh();}
+  else toast((j&&j.error)||'凭证已失效，请重新登录');
+}
+let CHECKING_ALL=false;
+async function checkAllAcc(){
+  if(CHECKING_ALL) return;
+  const accs=((LAST_STATE&&LAST_STATE.accounts)||[]);
+  if(!accs.length){ toast('还没有账号'); return; }
+  CHECKING_ALL=true;
+  const btn=document.getElementById('checkAllBtn');
+  const orig=btn?btn.textContent:'';
+  // 串行逐个检查：避免并发打上游触发风控
+  for(let i=0;i<accs.length;i++){
+    if(btn) btn.textContent=`检查中 ${i+1}/${accs.length}`;
+    try{ await api('/accounts/'+accs[i].id+'/check','POST',{}); }catch(e){}
+  }
+  CHECKING_ALL=false;
+  if(btn) btn.textContent=orig;
+  toast('全部账号凭证检查完成');
+  refresh();
+}
+async function delAcc(id){if(await uiConfirm('确定删除该账号？',{title:'删除账号',danger:true})){await api('/accounts/'+id,'DELETE');refresh();toast('已删除');}}
+function openKeyModal(){document.getElementById('keyName').value='';
+  document.getElementById('keyResult').style.display='none';
+  const btn=document.getElementById('keyGenBtn');btn.disabled=false;btn.textContent='生成';
+  openModal('keyModal');
+  setTimeout(()=>document.getElementById('keyName').focus(),30);}
+let KEY_CREATING=false;
+async function createKey(){
+  if(KEY_CREATING)return;
+  const name=document.getElementById('keyName').value.trim()||'未命名 Key';
+  const btn=document.getElementById('keyGenBtn');
+  KEY_CREATING=true;
+  if(btn){btn.disabled=true;btn.textContent='生成中…';}
+  let j;
+  try{j=await api('/keys','POST',{name});}
+  catch(e){j={ok:false,error:(e&&e.message)||'生成失败'};}
+  finally{KEY_CREATING=false;}
+  if(j&&j.ok){document.getElementById('keyResult').style.display='block';
+    document.getElementById('keyValue').textContent=j.key.key;refresh();
+    if(btn)btn.textContent='已生成';
+  }else{
+    if(btn){btn.disabled=false;btn.textContent='生成';}
+    toast((j&&j.error)||'生成失败');
+  }
+}
+async function toggleKey(id,en){await api('/keys/'+id,'PUT',{enabled:en});refresh();}
+let EDIT_KEY_ID='';
+let EDIT_KEY_MODELS=[];
+function openKeyView(id){
+  const s=LAST_STATE; if(!s) return;
+  const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
+  document.getElementById('keyViewMeta').textContent =
+    `${k.name} · 创建于 ${fmtTime(k.created_at)}${k.note?(' · '+k.note):''}`;
+  document.getElementById('keyViewValue').textContent = k.key;
+  openModal('keyViewModal');
+}
+function openKeyEdit(id){
+  const s=LAST_STATE; if(!s) return;
+  const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
+  EDIT_KEY_ID=id; EDIT_KEY_MODELS=(k.models||[]).slice();
+  document.getElementById('editKeyName').value=k.name||'';
+  document.getElementById('editKeyNote').value=k.note||'';
+  const accSel=new Set(k.accounts||[]);
+  document.getElementById('editKeyAcc').innerHTML=(s.accounts||[]).map(a=>
+    `<label class="pick-item" data-provider="${esc(a.provider)}"><input type="checkbox" value="${esc(a.id)}" ${accSel.has(a.id)?'checked':''} onchange="renderKeyModelPicker()"><span>${esc(a.name)}</span><em>${esc(a.provider)}</em></label>`
+  ).join('')||'<div class="muted" style="padding:8px">还没有账号</div>';
+  renderKeyModelPicker();
+  openModal('keyEditModal');
+}
+function renderKeyModelPicker(){
+  const s=LAST_STATE||{};
+  const box=document.getElementById('editKeyModel');
+  if(box.querySelector('input')){
+    EDIT_KEY_MODELS=[...box.querySelectorAll('input:checked')].map(x=>x.value);
+  }
+  const provs=new Set([...document.querySelectorAll('#editKeyAcc input:checked')]
+    .map(x=>x.closest('.pick-item').dataset.provider));
+  const provMap=s.model_providers||{};
+  const provOf=m=>provMap[m]||(()=>{const t=String(m||'').toLowerCase();
+    if(t.startsWith('glm'))return'chatglm'; if(t.startsWith('kimi')||t.startsWith('moonshot'))return'kimi';
+    if(t.startsWith('qwen'))return'qwen'; return'deepseek';})();
+  const visible=(s.models||[]).filter(m=>provs.size===0||provs.has(provOf(m)));
+  const sel=new Set(EDIT_KEY_MODELS);
+  box.innerHTML=visible.map(m=>
+    `<label class="pick-item"><input type="checkbox" value="${esc(m)}" ${sel.has(m)?'checked':''}><span>${esc(m)}</span></label>`
+  ).join('')||'<div class="muted" style="padding:8px">所选账号没有可用模型</div>';
+}
+async function saveKeyEdit(){
+  const name=document.getElementById('editKeyName').value.trim()||'未命名 Key';
+  const accounts=[...document.querySelectorAll('#editKeyAcc input:checked')].map(x=>x.value);
+  const models=[...document.querySelectorAll('#editKeyModel input:checked')].map(x=>x.value);
+  const note=document.getElementById('editKeyNote').value.trim();
+  // 归属人/到期/额度四字段已退役，不再提交
+  const j=await api('/keys/'+EDIT_KEY_ID,'PUT',{name,accounts,models,note});
+  if(j.ok){closeModal('keyEditModal');toast('已保存');refresh();}
+  else toast(j.error||'保存失败');
+}
+async function openKeyDetail(id){
+  const s=LAST_STATE; if(!s) return;
+  const k=(s.keys||[]).find(x=>x.id===id); if(!k) return;
+  document.getElementById('kdTitle').textContent='Key 详情 · '+k.name;
+  const qs=RANGE==='all'?'':('?range='+encodeURIComponent(RANGE)
+    +'&start='+encodeURIComponent(RANGE_START)+'&end='+encodeURIComponent(RANGE_END));
+  const j=await api('/keys/'+id+'/detail'+qs);
+  const t=(j&&j.total)||{n:0,t:0,ok:0};
+  document.getElementById('kdTotals').innerHTML=`
+    <div class="today-item"><span>请求数</span><b>${fmt(t.n)}</b></div>
+    <div class="today-item"><span>Token</span><b>${fmtTok(t.t)}</b></div>
+    <div class="today-item"><span>成功率</span><b>${t.n?((t.ok/t.n*100).toFixed(1)+'%'):'–'}</b></div>`;
+  const daily=(j&&j.daily)||[];
+  const models=(j&&j.by_model)||[];
+  document.getElementById('kdModels').innerHTML=models.length?models.map(m=>
+    `<div class="err-row"><span>${esc(m.model||'–')}</span><b>${fmt(m.n)} 次 · ${fmtTok(m.t)}</b></div>`).join(''):'<div class="muted">暂无数据</div>';
+  const more=document.getElementById('kdMore');
+  if(more) more.innerHTML=`<button class="btn gray sm" onclick="showKeyDaily('${id}')">在图表中查看每日消耗</button>`;
+  openModal('keyDetailModal');
+}
+function showKeyDaily(id){
+  closeModal('keyDetailModal');
+  switchTab('overview');
+  DAILY_KEY=id;
+  BAR_OFFSET=0;
+  if(LAST_STATE) syncDailyKey(LAST_STATE);
+  renderBars();
+}
+async function exportCsv(){
+  const qs=RANGE==='all'?'':('?range='+encodeURIComponent(RANGE)
+    +'&start='+encodeURIComponent(RANGE_START)+'&end='+encodeURIComponent(RANGE_END));
+  try{
+    const r=await fetch('/admin/api/usage/export'+qs,{headers:{'X-Admin-Token':TOKEN}});
+    if(!r.ok){toast('导出失败');return;}
+    const blob=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='webai2api-usage.csv';
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+    toast('已导出');
+  }catch(e){toast('导出失败');}
+}
+async function delKey(id){if(await uiConfirm('确定删除该 Key？',{title:'删除 Key',danger:true})){await api('/keys/'+id,'DELETE');refresh();toast('已删除');}}
+async function saveTray(){
+  const on=document.getElementById('setTray').checked;
+  await api('/settings','POST',{tray_enabled:on?'true':'false'});
+  toast(on?'已开启托盘（重启后生效）':'已关闭托盘（重启后生效）');
+}
+async function loadSystem(){
+  try{
+    const j=await api('/system');
+    if(!j||!j.ok) return;
+    const a=document.getElementById('setAutostart'); if(a) a.checked=!!j.autostart;
+    const tr=document.getElementById('setTray');
+    if(tr && LAST_STATE) tr.checked=(LAST_STATE.settings.tray_enabled||'true')!=='false';
+    const h=document.getElementById('sysHint');
+    if(h) h.textContent='数据目录：'+j.data_dir+(j.backups&&j.backups.length?(' · 最近备份：'+j.backups[0].name):'');
+    const u=j.usage_db;
+    const uh=document.getElementById('usageDbHint');
+    if(uh && u){
+      const mb=(Number(u.bytes)||0)/1048576;
+      const size=mb>=1?(mb.toFixed(1)+' MB'):(Math.max(1,Math.round((Number(u.bytes)||0)/1024))+' KB');
+      let span='';
+      if(u.oldest){
+        const d0=new Date(Number(u.oldest)*1000), d1=new Date(Number(u.newest||u.oldest)*1000);
+        const fmt=d=>`${d.getMonth()+1}/${d.getDate()}`;
+        span=` · 数据范围 ${fmt(d0)}–${fmt(d1)}`;
+      }
+      uh.textContent=`当前 ${fmt(u.rows)} 条${span} · 数据库 ${size}`;
+    }
+  }catch(e){}
+}
+async function cleanUsageNow(){
+  const days=Number((document.getElementById('setRetain').value||'0').trim())||0;
+  if(days<=0){ toast('请先把保留天数设为大于 0 的值'); return; }
+  if(!(await uiConfirm(`将删除 ${days} 天前的历史用量记录，确定继续？`,{title:'清理历史用量',danger:true}))) return;
+  const j=await api('/system/usage/clean','POST',{days});
+  if(j&&j.ok){
+    toast(j.removed?`已清理 ${j.removed} 条`:'没有需要清理的记录');
+    loadSystem();
+  }else toast((j&&j.error)||'清理失败');
+}
+async function saveAutostart(){
+  const on=document.getElementById('setAutostart').checked;
+  const j=await api('/system/autostart','POST',{enabled:on});
+  toast(j&&j.autostart?'已设置开机启动':'已取消开机启动');
+}
+async function doBackup(){
+  const j=await api('/system/backup','POST',{});
+  toast(j&&j.ok?('已备份：'+j.file):'备份失败');
+  loadSystem();
+}
+async function showLogs(){
+  const j=await api('/system/logs?lines=300');
+  const el=document.getElementById('logText');
+  el.textContent=(j&&j.lines&&j.lines.length)?j.lines.join('\n'):'暂无日志';
+  openModal('logModal');
+}
+async function doShutdown(){
+  if(!(await uiConfirm('确定退出 webai2api？退出后接口将不可用。',{title:'退出程序',danger:true}))) return;
+  await api('/system/shutdown','POST',{});
+  toast('已退出');
+}
+let SETTINGS_PROV=segGet('setProvSeg','deepseek');
+function setSettingsProvider(p){
+  SETTINGS_PROV=p;
+  segSet('setProvSeg',p);
+  document.querySelectorAll('#setProvSeg button').forEach(b=>b.classList.toggle('active',b.dataset.prov===p));
+  const blocks={deepseek:'dsSettings',glm:'glmSettings',kimi:'kimiSettings',qwen:'qwenSettings'};
+  Object.entries(blocks).forEach(([k,id])=>{
+    const el=document.getElementById(id);
+    if(el) el.style.display=k===p?'':'none';
+  });
+}
+async function saveDeepSeekSettings(){
+  const body={deepseek_wasm_path:document.getElementById('setWasm').value.trim(),
+    deepseek_session_cache:document.getElementById('setCache').checked,
+    deepseek_search:document.getElementById('setSearch').checked,
+    deepseek_anti_min:document.getElementById('setAntiMin').value.trim(),
+    deepseek_anti_max:document.getElementById('setAntiMax').value.trim(),
+    deepseek_context_limit:document.getElementById('setDsContext').value.trim()||'1000000',
+    deepseek_output_limit:document.getElementById('setDsOutput').value.trim()||'384000'};
+  await api('/settings','POST',body);toast('DeepSeek 设置已保存');refresh();
+}
+async function saveGeneralSettings(){
+  const body={tray_enabled:document.getElementById('setTray').checked,
+    usage_retain_days:(document.getElementById('setRetain').value||'0').trim()};
+  const pw=document.getElementById('setPw').value.trim();
+  if(pw)body.admin_password=pw;
+  await api('/settings','POST',body);toast('已保存');refresh();
+}
+function clampLimit(el){
+  const cap=Number(el.dataset.cap||0);
+  if(!cap) return;
+  let v=Number(el.value);
+  if(!Number.isFinite(v) || v<1){ el.value=String(cap); return; }
+  if(v>cap){ el.value=String(cap); toast('已按该模型上限收敛为 '+cap.toLocaleString()); }
+}
+function bindLimitInputs(){
+  ['setDsContext','setDsOutput','setGlmContext','setGlmOutput',
+   'setKimiContext','setKimiOutput','setQwenContext','setQwenOutput'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el && !el.dataset.bound){
+      el.dataset.bound='1';
+      el.addEventListener('change',()=>clampLimit(el));
+      el.addEventListener('blur',()=>clampLimit(el));
+    }
+  });
+}
+
+/* ── 背景纹理（强调色已撤销：按钮颜色统一跟随主题） ── */
+const PATTERNS=[
+  {id:"",name:"无纹理"},
+  {id:"lines",name:"线条"},
+  {id:"grid",name:"方格"},
+  {id:"dots",name:"圆点"},
+  {id:"cross",name:"十字"},
+  {id:"waves",name:"波纹"},
+  {id:"weave",name:"编织"},
+  {id:"veil",name:"雾面"},
+];
+/* 强调色功能下线：清掉历史存值，避免 data-accent 残留把按钮染成旧颜色 */
+try{
+  if(localStorage.getItem('wapi_accent')){
+    localStorage.removeItem('wapi_accent');
+    document.documentElement.removeAttribute('data-accent');
+  }
+}catch(e){}
+function _hexToRgb(h){
+  h=String(h||'').trim().replace('#','');
+  if(h.length===3) h=h.split('').map(c=>c+c).join('');
+  if(!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];
+}
+function _luminance(rgb){
+  const f=v=>{v/=255; return v<=0.03928? v/12.92 : Math.pow((v+0.055)/1.055,2.4);};
+  return 0.2126*f(rgb[0])+0.7152*f(rgb[1])+0.0722*f(rgb[2]);
+}
+/* ── 自定义主题色：底色 + 按钮色一并推导 ──
+   按钮/强调色由「自定义底色」自动算出主色相、并按底色明暗调好饱和度与亮度，
+   保证与底色同色系、对比度够，不会出现「黄底蓝按钮」这种违和。
+   注意：极简主题的 body 写死了 background-color:#fafafa（优先级高于 --bg），
+   所以这里同时给 <html> 打 data-theme=custom + data-bgmode，由 CSS 接管底色来源。 */
+function _rgbToHsl([r,g,b]){
+  r/=255; g/=255; b/=255;
+  const mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+  const l=(mx+mn)/2;
+  if(mx===mn) return [0,0,l*100];
+  const d=mx-mn;
+  const s=l>0.5 ? d/(2-mx-mn) : d/(mx+mn);
+  let h;
+  if(mx===r) h=((g-b)/d+(g<b?6:0));
+  else if(mx===g) h=(b-r)/d+2;
+  else h=(r-g)/d+4;
+  return [h*60, s*100, l*100];
+}
+function _hslToHex(h,s,l){
+  s/=100; l/=100;
+  const k=n=>(n+h/30)%12;
+  const a=s*Math.min(l,1-l);
+  const f=n=>{
+    const c=l-a*Math.max(-1,Math.min(k(n)-3,Math.min(9-k(n),1)));
+    return Math.round(c*255).toString(16).padStart(2,'0');
+  };
+  return '#'+f(0)+f(8)+f(4);
+}
+function _relativeLum(hex){
+  const rgb=_hexToRgb(hex);
+  const f=v=>{v/=255; return v<=0.03928? v/12.92 : Math.pow((v+0.055)/1.055,2.4);};
+  return 0.2126*f(rgb[0])+0.7152*f(rgb[1])+0.0722*f(rgb[2]);
+}
+function _contrast(a,b){
+  const l1=_relativeLum(a), l2=_relativeLum(b);
+  const hi=Math.max(l1,l2), lo=Math.min(l1,l2);
+  return (hi+0.05)/(lo+0.05);
+}
+/* 由底色推导按钮色：保持底色自己的色相；中性底色直接给黑白，
+   彩色底色按明暗收紧饱和 + 校验对比度，保证与底色同系不违和 */
+function _accentFromBg(hex){
+  const base=_hexToRgb(hex);
+  const [h,s]=_rgbToHsl(base);
+  const darkBg = _luminance(base)<=0.42;
+  // 近中性底色（灰/黑/白）→ 按钮走黑白，换色时只有深浅变化
+  if(s < 10){
+    return darkBg ? '#f2f2f2' : '#1d1d1f';
+  }
+  const sat = Math.max(30, Math.min(70, s + (darkBg ? 10 : 6)));
+  let light = darkBg ? 66 : 40;
+  let out = _hslToHex(h, sat, light);
+  let guard = 0;
+  while(_contrast(out, hex) < 2.2 && guard++ < 14){
+    light = darkBg ? light + 2.5 : light - 2.5;
+    if(light < 10 || light > 90) break;
+    out = _hslToHex(h, sat, light);
+  }
+  return out;
+}
+function _accentRgb(hex){
+  const rgb=_hexToRgb(hex);
+  return rgb ? `${rgb[0]},${rgb[1]},${rgb[2]}` : '0,0,0';
+}
+function _applyCustomTheme(bg){
+  const root=document.documentElement;
+  const dark = _luminance(_hexToRgb(bg))<=0.42;
+  const acc = _accentFromBg(bg);
+  root.setAttribute('data-theme','custom');
+  root.setAttribute('data-bgmode', dark?'dark':'light');
+  root.style.setProperty('--bg', bg);
+  root.style.setProperty('--accent', acc);
+  root.style.setProperty('--accent-hover', dark?_hslToHex(_rgbToHsl(_hexToRgb(acc))[0], _rgbToHsl(_hexToRgb(acc))[1], Math.min(88,_rgbToHsl(_hexToRgb(acc))[2]+7))
+                                                    :_hslToHex(_rgbToHsl(_hexToRgb(acc))[0], _rgbToHsl(_hexToRgb(acc))[1], Math.max(12,_rgbToHsl(_hexToRgb(acc))[2]-7)));
+  root.style.setProperty('--accent-rgb', _accentRgb(acc));
+  root.style.setProperty('--accent-soft', `rgba(${_accentRgb(acc)},${dark?0.22:0.12})`);
+  root.style.setProperty('--accent-grad',
+    dark ? `linear-gradient(180deg,${_hslToHex(_rgbToHsl(_hexToRgb(acc))[0],_rgbToHsl(_hexToRgb(acc))[1],Math.min(90,_rgbToHsl(_hexToRgb(acc))[2]+6))},${acc})`
+         : `linear-gradient(180deg,${acc},${_hslToHex(_rgbToHsl(_hexToRgb(acc))[0],_rgbToHsl(_hexToRgb(acc))[1],Math.max(10,_rgbToHsl(_hexToRgb(acc))[2]-6))})`);
+  root.style.setProperty('--accent-glow', `rgba(${_accentRgb(acc)},.55)`);
+  // 按钮上的文字：按按钮本身明暗决定黑/白
+  root.style.setProperty('--accent-fg', _luminance(_hexToRgb(acc))>0.55 ? '#101010' : '#ffffff');
+}
+function _clearCustomTheme(){
+  const root=document.documentElement;
+  ['--bg','--accent','--accent-hover','--accent-rgb','--accent-soft',
+   '--accent-grad','--accent-glow','--accent-fg'].forEach(v=>root.style.removeProperty(v));
+  root.removeAttribute('data-bgmode');
+  root.removeAttribute('data-theme');
+}
+function currentCustomBg(){ try{ return localStorage.getItem('wapi_custom_bg')||''; }catch(e){ return ''; } }
+function applyCustomBg(c){
+  const hex=c?('#'+String(c).replace('#','').toLowerCase()):'';
+  const rgb=hex?_hexToRgb(hex):null;
+  if(rgb){
+    _applyCustomTheme(hex);          // 底色 + 按钮色一并推导
+    try{ localStorage.setItem('wapi_custom_bg',hex); }catch(e){}
+  }else{
+    // 取消自定义：回到之前选中的四款主题之一
+    const back=(()=>{ try{ return localStorage.getItem('wapi_theme')||'mono-light'; }catch(e){ return 'mono-light'; } })();
+    applyTheme(back);
+    try{ localStorage.removeItem('wapi_custom_bg'); }catch(e){}
+  }
+  renderBgPick();
+}
+function applyCustomHex(v){
+  const rgb=_hexToRgb(v);
+  if(!rgb){ renderBgPick(); return; }   // 非法输入：还原显示，不写入
+  applyCustomBg('#'+String(v).replace('#','').toLowerCase());
+}
+/* 自定义底色如何适配卡片与文字：
+   - data-bgmode=light/dark 负责「文字/输入框/分隔线」等语义
+   - 卡片/工具栏跟随底色明暗半透明化，浮在底色上而不是贴一块纯色 */
+function resetCustomBg(){ applyCustomBg(''); }
+function themeBaseBg(){
+  // 主题自身基底色：用于「未自定义」时取色器/预览的展示值
+  try{
+    const probe=document.createElement('div');
+    probe.style.cssText='position:absolute;left:-9999px;top:0;width:0;height:0;background-color:var(--bg)';
+    document.body.appendChild(probe);
+    const v=getComputedStyle(probe).backgroundColor; probe.remove();
+    const m=v.match(/\d+/g);
+    if(m&&m.length>=3) return '#'+[0,1,2].map(i=>Number(m[i]).toString(16).padStart(2,'0')).join('');
+  }catch(e){}
+  return '#fafafa';
+}
+function renderBgPick(){
+  const cur=currentCustomBg();
+  const customTheme=currentTheme()==='custom';
+  // 显示值永远等于「页面现在的真实底色」，绝不允许和主题对不上：
+  // 预设主题 → 该主题底色；自定义 → 已选的色（未选则空着等用户调）
+  const shown = customTheme ? (cur || themeBaseBg()) : themeBaseBg();
+  const el=document.getElementById('bgPick');
+  if(el) el.value=shown;
+  const hexEl=document.getElementById('bgHex');
+  if(hexEl){
+    if(document.activeElement!==hexEl){
+      hexEl.value = (customTheme && cur) ? cur.toUpperCase() : shown.toUpperCase();
+    }
+    hexEl.placeholder = customTheme && !cur ? '拖动滑块' : '';
+    hexEl.readOnly = false;   // 随时可改：一改就自动进入自定义主题
+  }
+  const pv=document.getElementById('pickerFace');
+  if(pv) pv.style.setProperty('--pick-color',shown);
+  const rs=document.getElementById('bgResetBtn');
+  if(rs) rs.disabled = !cur;
+  const row=document.getElementById('customBgRow');
+  if(row) row.classList.toggle('is-active', customTheme);
+  const ctrl=document.querySelector('#customBgRow .setup-control');
+  if(ctrl) ctrl.classList.remove('locked');
+  const nat=document.getElementById('bgPick');
+  if(nat) nat.disabled = false;
+  renderMiniPicker(shown);
+}
+
+/* ── 迷你调色板：应用内自绘，不再弹系统那个又大又丑的原生取色器 ──
+   预设色块 + 明度/色相两条渐变滑杆 + 「更多颜色…」兜底原生吸管 */
+const MP_PRESETS=[
+  ['#ffffff','纯白'],['#f5f5f7','浅灰'],['#eceff5','雾蓝'],['#f6f2ea','米白'],
+  ['#f3e8dc','暖沙'],['#e7f0ea','淡青'],['#efeafa','淡紫'],['#f8ecec','淡粉'],
+  ['#e1ecf7','天蓝'],['#e9e5da','燕麦'],['#dfe6df','苔绿'],['#e8e4ef','藕紫'],
+  ['#3a3f47','青灰'],['#101826','深海'],['#1c1a17','暖黑'],['#050505','纯黑'],
+];
+let _mpHsl=[0,0,96];
+function _mpSync(h,s,l){
+  _mpHsl=[h,s,l];
+  const hex=_hslToHex(h,s,l).toUpperCase();
+  const light=document.getElementById('mpLight');
+  if(light){
+    // 滑杆本体画成当前色相/饱和下的明度渐变，拖动所见即所得
+    light.style.setProperty('--mp-from',_hslToHex(h,s,8));
+    light.style.setProperty('--mp-to',_hslToHex(h,s,96));
+    light.value=Math.round(l);
+  }
+  const hueEl=document.getElementById('mpHue');
+  if(hueEl) hueEl.value=Math.round(h);
+  const hexEl=document.getElementById('mpHex');
+  if(hexEl) hexEl.textContent=hex;
+  document.querySelectorAll('#mpPresets .mp-dot').forEach(d=>{
+    d.classList.toggle('on', d.dataset.hex.toUpperCase()===hex);
+  });
+}
+function renderMiniPicker(shown){
+  const rgb=_hexToRgb(shown||'#ffffff');
+  if(rgb) _mpHsl=_rgbToHsl(rgb);
+  const host=document.getElementById('mpPresets');
+  if(host && !host.children.length){
+    host.innerHTML=MP_PRESETS.map(([v,n])=>
+      `<button type="button" class="mp-dot" data-hex="${v}" title="${n} ${v}" aria-label="${n}"
+        style="--dot:${v}" onclick="pickMiniColor('${v}')"></button>`).join('');
+  }
+  _mpSync(_mpHsl[0],_mpHsl[1],_mpHsl[2]);
+}
+/* 只动滑块就是「切到自定义主题」：第一次拖动时若还在预设主题，
+   先切到自定义模式，之后底色的变化完全由滑块驱动 */
+function _ensureCustomTheme(){
+  if(document.documentElement.getAttribute('data-theme') !== 'custom'){
+    // 必须先切主题再写颜色：applyTheme('custom') 会清掉内联色，
+    // 顺序反了会把刚写入的底色一起清掉（表现为「拖了滑块没反应」）
+    applyTheme('custom');
+  }
+}
+function pickMiniColor(hex){
+  const rgb=_hexToRgb(hex);
+  if(rgb) _mpHsl=_rgbToHsl(rgb);
+  applyCustomBg('#'+String(hex).replace('#','').toLowerCase());
+}
+function toggleMiniPicker(ev){
+  // 用 pointerdown + 同步 preventDefault：不让这次事件继续走到 document 的
+  // 「点外面就收起」监听，否则会「开→立刻关」→ 表现为「点一下闪一下就没了」
+  if(ev){ ev.preventDefault(); ev.stopPropagation(); }
+  // 任何时候都能开调色板：只要开始拖滑块就自动切到「自定义」主题，
+  // 不再出现「主题说极简白、背景却是深色」这种自相矛盾的状态
+  const box=document.getElementById('miniPicker');
+  const btn=document.getElementById('bgSwatch');
+  if(!box) return;
+  const willOpen=box.hidden;
+  box.hidden=!willOpen;
+  if(btn) btn.setAttribute('aria-expanded', String(willOpen));
+  if(willOpen) renderMiniPicker(currentCustomBg()||themeBaseBg());
+}
+function closeMiniPicker(){
+  const box=document.getElementById('miniPicker');
+  if(box) box.hidden=true;
+  const btn=document.getElementById('bgSwatch');
+  if(btn) btn.setAttribute('aria-expanded','false');
+}
+function openNativePicker(){
+  const el=document.getElementById('bgPick');
+  if(!el) return;
+  // display:none 的 input 不能 showPicker，临时挂出来再弹
+  el.classList.remove('sr-color');
+  if(el.showPicker){
+    try{ el.showPicker(); el.classList.add('sr-color'); return; }
+    catch(e){}
+  }
+  el.click();
+  el.classList.add('sr-color');
+}
+function _mpBind(){
+  const light=document.getElementById('mpLight');
+  const hue=document.getElementById('mpHue');
+  if(light) light.addEventListener('input',()=>{
+    _ensureCustomTheme();
+    pickMiniColor(_hslToHex(+document.getElementById('mpHue').value, _mpHsl[1], +light.value));
+  });
+  if(hue) hue.addEventListener('input',()=>{
+    _ensureCustomTheme();
+    pickMiniColor(_hslToHex(+hue.value, _mpHsl[1], +document.getElementById('mpLight').value));
+  });
+  document.addEventListener('click',e=>{
+    const box=document.getElementById('miniPicker');
+    if(!box || box.hidden) return;
+    // 面板内部（预设/滑杆/更多颜色）点击都不收起；点色块本身交给 toggle
+    if(box.contains(e.target) || e.target.closest('#bgSwatch')) return;
+    closeMiniPicker();
+  });
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeMiniPicker(); });
+}
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_mpBind);
+else _mpBind();
+function currentPattern(){try{return localStorage.getItem('wapi_pattern')||''}catch(e){return ''}}
+function applyPattern(id){
+  if(id)document.documentElement.setAttribute('data-pattern',id);
+  else document.documentElement.removeAttribute('data-pattern');
+  try{localStorage.setItem('wapi_pattern',id)}catch(e){}
+  renderPatternChips();
+}
+function renderPatternChips(){
+  const host=document.getElementById('patternChips');
+  if(!host) return;
+  const cur=currentPattern();
+  host.innerHTML=PATTERNS.map(x=>
+    `<button type="button" class="${x.id===cur?'on':''}" onclick="applyPattern('${x.id}')" aria-pressed="${x.id===cur}">${x.name}</button>`).join('');
+}
+document.addEventListener('DOMContentLoaded',()=>{renderThemeChips();renderPatternChips();renderBgPick();});
+function placeMenuByRow(btn){
+  // 下拉改为 body 级 fixed 浮层（见 openRowMenu）：不再受表格滚动容器
+  // 的 overflow 裁剪，也不受行高限制。
+  const menu = btn.parentElement.querySelector('.row-menu');
+  menu.style.top = '0px';
+  menu.style.bottom = 'auto';
+  return menu;
+}
+function openRowMenu(btn,force){
+  // 单例浮层：把 .row-menu 挂到 body 并按 ⋯ 按钮位置 fixed 定位。
+  // 留在原地会被 .tbl-scroll 的 overflow:auto 裁剪成一条窄缝（之前踩过的坑），
+  // 且会被邻近行按钮压住，故整块菜单移出表格。
+  const menu = btn.parentElement.querySelector('.row-menu');
+  if(!menu) return null;
+  const wasOpen = menu.classList.contains('open');
+  closeRowMenus();
+  if(wasOpen && !force) return null;
+  // 先测尺寸再挂载：.row-menu 是 display:none，直接挂上去量出来是 0，
+  // 定位会算成左上角。这里临时挂到 body（视觉隐藏）量一次。
+  menu.style.visibility = 'hidden';
+  menu.style.display = 'block';
+  document.body.appendChild(menu);
+  const mr = menu.getBoundingClientRect();
+  menu.style.visibility = '';
+  menu.style.display = '';
+  const br = btn.getBoundingClientRect();
+  const gap = 6, pad = 8;
+  const h = mr.height || 0, w = mr.width || 140;
+  let top = br.bottom + gap;
+  if(top + h > window.innerHeight - pad){
+    const up = br.top - gap - h;
+    top = up >= pad ? up : Math.max(pad, window.innerHeight - pad - h);
+  }
+  let left = br.right - w;
+  left = Math.min(Math.max(pad, left), window.innerWidth - pad - w);
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+  menu.classList.add('open');
+  // 记住来源按钮，便于关闭时归位
+  menu._anchor = btn;
+  btn.classList.add('menu-anchor');
+  return menu;
+}
+function closeRowMenus(){
+  document.querySelectorAll('.row-menu.open').forEach(m=>{
+    m.classList.remove('open');
+    const a = m._anchor;
+    if(a){
+      a.classList.remove('menu-anchor');
+      const wrap = a.parentElement;
+      if(wrap && wrap.classList.contains('row-menu-wrap')) wrap.appendChild(m);
+      m._anchor = null;
+    }
+  });
+  document.querySelectorAll('.menu-anchor').forEach(b=>b.classList.remove('menu-anchor'));
+}
+function toggleAccMenu(btn,ev){
+  // document 上的 click 监听负责「点别处收起」。这里不能再 stopPropagation：
+  // 冒泡被掐断后，点按钮并不会触发收起，但打开态靠 _guardClick 标记保护本次事件。
+  openRowMenu(btn);
+  _guardClick = true;
+  if(ev) ev.preventDefault();
+}
+let _guardClick = false;
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape') closeRowMenus();
+});
+document.addEventListener('click',()=>{
+  if(_guardClick){ _guardClick = false; return; }
+  closeRowMenus();
+});
+// 菜单挂在 body 上，页面滚动/改窗口大小后与按钮脱位 → 直接收起
+window.addEventListener('scroll',()=>closeRowMenus(),true);
+window.addEventListener('resize',()=>closeRowMenus());
+
+
+/* ── 主题系统：五种 —— 四个预设 + 自定义（自定义=自己选底色的主题）
+   主题切换时按钮色始终由主题本身决定（极简=黑白、液态=蓝、自定义=按底色推导同色系）── */
+const THEMES=[
+  {id:'mono-light',name:'极简白', sw:'#ffffff', dark:false},
+  {id:'mono-dark', name:'极简黑', sw:'#050505', dark:true},
+  {id:'light',      name:'液态浅色', sw:'#e7edf7', dark:false},
+  {id:'dark',       name:'液态深色', sw:'#0d1015', dark:true},
+];
+const CUSTOM_THEME={id:'custom',name:'自定义'};
+function isDarkTheme(t){
+  if(t==='custom') return _luminance(_hexToRgb(currentCustomBg()||themeBaseBg()))<=0.42;
+  const th=THEMES.find(x=>x.id===t); return th?th.dark:false;
+}
+function currentTheme(){
+  const t=document.documentElement.getAttribute('data-theme');
+  if(t==='custom') return 'custom';
+  return THEMES.some(x=>x.id===t)?t:'mono-light';
+}
+function applyTheme(t){
+  const root=document.documentElement;
+  if(t==='custom'){
+    // 选「自定义」不预设任何颜色：进入自定义模式，等用户拖滑块/填色值才接管背景
+    _clearCustomTheme();
+    root.setAttribute('data-theme','custom');
+    try{ localStorage.setItem('wapi_theme','custom'); }catch(e){}
+    renderThemeChips();
+    renderBgPick();
+    tuneGlass(isDarkTheme('custom'));
+    document.body.classList.add('theme-fade');
+    clearTimeout(applyTheme._t);
+    applyTheme._t=setTimeout(()=>document.body.classList.remove('theme-fade'),460);
+    return;
+  }
+  if(!THEMES.some(x=>x.id===t)) t='mono-light';
+  _clearCustomTheme();                    // 摘掉自定义内联色与 data-bgmode
+  root.setAttribute('data-theme',t);
+  try{ localStorage.setItem('wapi_theme',t); }catch(e){}
+  tuneGlass(isDarkTheme(t));
+  renderThemeChips();
+  renderBgPick();
+  document.body.classList.add('theme-fade');
+  clearTimeout(applyTheme._t);
+  applyTheme._t=setTimeout(()=>document.body.classList.remove('theme-fade'),460);
+}
+function renderThemeChips(){
+  const host=document.getElementById('themeChips');
+  if(!host) return;
+  const cur=currentTheme();
+  const custom=currentCustomBg();
+  // 自定义项：没设过色时显示棋盘格（表示"还没选"），设过色就显示该色
+  host.innerHTML=THEMES.map(x=>{
+    const on=x.id===cur;
+    return `<button type="button" class="theme-opt${on?' on':''}" onclick="applyTheme('${x.id}')" aria-pressed="${on}">`
+      +`<span class="to-swatch" style="background:${x.sw}"></span><span class="to-name">${x.name}</span>`
+      +`<span class="to-tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>`
+      +`</button>`;
+  }).join('') + (()=>{
+    const on=cur==='custom';
+    const fill = custom
+      ? `background:${custom}`
+      : 'background:repeating-conic-gradient(rgba(0,0,0,.12) 0% 25%,transparent 0% 50%) 50%/5px 5px,#fff';
+    return `<button type="button" class="theme-opt${on?' on':''}" onclick="applyTheme('custom')" aria-pressed="${on}">`
+      +`<span class="to-swatch${custom?'':' empty'}" style="${fill}"></span><span class="to-name">自定义</span>`
+      +`<span class="to-tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>`
+      +`</button>`;
+  })();
+  // 自定义底色输入框只在「自定义」主题下可编辑
+  const row=document.getElementById('customBgRow');
+  if(row) row.classList.toggle('is-active', cur==='custom');
+  const ctrl=document.querySelector('#customBgRow .setup-control');
+  if(ctrl) ctrl.classList.toggle('locked', cur!=='custom');
+}
+/* ── 液玻璃（hyalite）：悬浮表面的边缘折射 ── */
+function glassOpts(dark){
+  return {
+    bevel:22, thickness:30, slope:1.25, shape:'squircle',
+    blur:6, dispersion:.6,
+    shade: dark?.6:.30, rim: dark?1.9:1.35,
+    edgeW:6, sat:.92, edge: dark?.42:.26,
+    light:-140, settle:160
+  };
+}
+function tuneGlass(dark){
+  try{
+    if(!window.Hyalite || !Hyalite.supported()) return;
+    Hyalite.setOpts(glassOpts(dark));
+  }catch(e){}
+}
+(function initGlass(){
+  try{
+    if(!window.Hyalite || !Hyalite.supported()) return;
+    Hyalite.watch(document.body,'.hyalite',glassOpts(isDarkTheme(currentTheme())));
+  }catch(e){}
+})();
+
+(async function init(){
+  const loc=location.origin;
+  document.getElementById('baseHint').textContent=loc+'/v1';
+  document.getElementById('baseHint2').textContent=loc+'/v1';
+  let OC_SNIP='';
+  let LIMITS={deepseek:{context:1000000,output:384000},chatglm:{context:1000000,output:128000},kimi:{context:262144,output:32768},qwen:{context:262144,output:65536}};
+  const provOf=m=>{const s=String(m||'').toLowerCase();
+    if(s.startsWith('glm'))return'chatglm'; if(s.startsWith('kimi')||s.startsWith('moonshot'))return'kimi';
+    if(s.startsWith('qwen'))return'qwen'; return'deepseek';};
+  function buildSnippet(models,keyVal){
+    const lines=[];
+    for(const m of models){
+      const low=m.toLowerCase();
+      const prov=provOf(m);
+      const lim=LIMITS[prov]||LIMITS.deepseek;
+      const reason=!(low==='deepseek-chat'||low==='deepseek-v4-flash');
+      // V2 variants 是数组（每项 {id, settings}），对象 map 过不了 schema，
+      // 整个 provider 会被 opencode 静默丢弃
+      const tiers = prov==='chatglm' ? [["快速","low"],["深度","medium"],["极致","max"]]
+        : prov==='kimi' ? (low.includes('k2.6')
+          ? [["标准","low"],["进阶","high"]]
+          : [["标准","low"],["进阶","high"],["极致","max"]])
+        : prov==='qwen' ? (low.includes('flash')
+          ? [["思考","high"],["快速","low"]]
+          : [["自动","medium"],["思考","high"],["快速","low"]])
+        : null;
+      const variants = tiers
+        ? `,
+      "variants": [${tiers.map(([id,eff])=>`{ "id": ${JSON.stringify(id)}, "settings": { "reasoningEffort": "${eff}" } }`).join(", ")}]`
+        : '';
+      lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)},\n`
+        +`      "capabilities": { "input": ["image","text"], "output": ["text"],\n`
+        +`        "reasoning": { "supported": ${reason} } },\n`
+        +`      "limit": { "context": ${lim.context}, "output": ${lim.output} }${variants} }`);
+    }
+    return `"webai2api": {
+  "package": "@opencode/ai/providers/openai-compatible",
+  "name": "webai2api 多账号网关",
+  "settings": {
+    "baseURL": "${loc}/v1",
+    "apiKey": ${JSON.stringify(keyVal||'')},
+    "maxRetries": 0
+  },
+  "compatibility": { "streamUsage": true },
+  "models": {
+${lines.join(',\n')}
+  }
+}`;
+  }
+  window.__setLimits=function(settings){
+    const n=(v,d)=>{const x=Number(v);return Number.isFinite(x)&&x>0?x:d;};
+    LIMITS={deepseek:{context:n(settings.deepseek_context_limit,1000000),output:n(settings.deepseek_output_limit,384000)},
+            chatglm:{context:n(settings.glm_context_limit,1000000),output:n(settings.glm_output_limit,128000)},
+            kimi:{context:n(settings.kimi_context_limit,262144),output:n(settings.kimi_output_limit,32768)},
+            qwen:{context:n(settings.qwen_context_limit,262144),output:n(settings.qwen_output_limit,65536)}};
+    if(window.__lastModels) window.__setSnippet(window.__lastModels);
+  };
+  let OC_SELECTED_KEY='';
+  function getOcKeyOptions(){
+    const keys=(LAST_STATE&&LAST_STATE.keys)||[];
+    return keys.filter(k=>k.enabled);
+  }
+  function maskKey(k){ const v=String((k&&k.key)||''); if(v.length<=12) return v; return v.slice(0,8)+'…'+v.slice(-4); }
+  // sel.value 始终是 Key 的 id；明文 key 仅通过 LAST_STATE.keys 按 id 查找
+  function selectedKeyObj(){
+    const sel=document.getElementById('ocKeySel');
+    const id=sel?sel.value:'';
+    return getOcKeyOptions().find(k=>k.id===id)||null;
+  }
+  function rebuildOcSel(){
+    const sel=document.getElementById('ocKeySel'); if(!sel) return;
+    const opts=getOcKeyOptions();
+    const prev=sel.value;
+    sel.innerHTML=opts.length?opts.map((k,i)=>`<option value="${esc(k.id)}" ${(prev?k.id===prev:i===0)?'selected':''}>${esc(k.name)}</option>`).join(''):'<option value="">无可用 Key</option>';
+    OC_SELECTED_KEY=sel.value;
+    if(typeof selBuild==='function') selBuild('ocKeySel');
+    const gh=document.getElementById('guideKeyHint');
+    if(gh){ const ok=sel.value?(opts.find(k=>k.id===sel.value)||opts[0]):opts[0]; gh.textContent=ok?maskKey(ok):'在上方列表中选择或生成'; }
+    rebuildSnippet();
+  }
+  function rebuildSnippet(){
+    const models=window.__lastModels||['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash','kimi-k3','kimi-k2.8','kimi-k2.6','qwen3.7-plus','qwen3.8-max','qwen3.8-omni-flash'];
+    const k=selectedKeyObj();
+    OC_SNIP=buildSnippet(models, k?k.key:'');
+    const el=document.getElementById('ocSnippet'); if(el) el.textContent=OC_SNIP;
+    const cEl=document.getElementById('claudeSnippet');
+    if(cEl) cEl.textContent=buildClaudeSnippet(k?k.key:'');
+    const zEl=document.getElementById('zcodeSnippet');
+    if(zEl) zEl.textContent=buildZCodeSnippet(k?k.key:'');
+    // 通用兼容卡：模型列表按本机可用模型动态生成
+    const gm=document.getElementById('guideModels');
+    if(gm) gm.innerHTML=models.map(m=>
+      `<div class="guide-model"><code>${esc(m)}</code><button class="btn gray sm" onclick="copyText('${esc(m)}')">复制 ID</button></div>`).join('');
+    // WorkBuddy 卡：接口地址是完整 chat/completions 路径，模型逐条添加
+    const wbB=document.getElementById('wbBase');
+    if(wbB) wbB.textContent=location.origin+'/v1/chat/completions';
+    const wbK=document.getElementById('wbKeyHint');
+    if(wbK) wbK.textContent=k?maskKey(k):'在上方列表中选择或生成';
+    window.__wbKey=k?k.key:'';
+    const wm=document.getElementById('wbModels');
+    if(wm) wm.innerHTML=models.map(m=>
+      `<div class="guide-model"><code>${esc(m)}</code><span class="muted" style="font-size:12px">单独添加</span><button class="btn gray sm" onclick="copyText('${esc(m)}')">复制</button></div>`).join('');
+  }
+  function buildClaudeSnippet(keyVal){
+    const base=location.origin;
+    const k=keyVal||'sk-你的Key';
+    return `# 写进 ~/.claude/settings.json（或设为系统环境变量）
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "`+base+`",
+    "ANTHROPIC_AUTH_TOKEN": "`+k+`"
+  }
+}`;
+  }
+  function buildZCodeSnippet(keyVal){
+    const base=location.origin;
+    const k=keyVal||'sk-你的Key';
+    return `# ZCode —— 自定义模型模板选 anthropic-messages 协议：
+#   baseUrl: `+base+`
+#   apiKey: `+k+`
+# 模型任选四平台：deepseek-chat / GLM-5.3-Flash / kimi-k2.8 / qwen3.7-plus …
+# （完整清单见「通用 OpenAI 兼容客户端」）`;
+  }
+  window.onOcKeyChange=function(){
+    const sel=document.getElementById('ocKeySel');
+    OC_SELECTED_KEY=sel?sel.value:'';
+    const gh=document.getElementById('guideKeyHint');
+    if(gh){ const ok=selectedKeyObj(); gh.textContent=ok?maskKey(ok):'在上方列表中选择或生成'; }
+    rebuildSnippet();
+  };
+  async function ocConnect(id){
+    if(!id){ toast('请先创建并启用一个 Key'); return; }
+    if(!(await uiConfirm('确定将该 Key 写入 opencode 配置？',{title:'接入 opencode'}))) return;
+    try{
+      const r=await api('/keys/'+id+'/opencode/connect','POST');
+      if(r&&r.ok){ toast('已写入 opencode 配置，重启 opencode 生效'); }
+      else if(r&&r.snippet){ openOcResultModal(r.error||'写入失败，可手动复制', r.snippet); }
+      else { toast((r&&r.error)||'接入失败'); }
+    }catch(e){ toast('接入失败: '+e.message); }
+  }
+  async function ocDisconnect(id){
+    if(!id){ toast('请先创建并启用一个 Key'); return; }
+    try{
+      const r=await api('/keys/'+id+'/opencode/disconnect','POST');
+      if(r&&r.ok){ toast('已移除 opencode 配置'); }
+      else { toast((r&&r.error)||'移除失败'); }
+    }catch(e){ toast('移除失败: '+e.message); }
+  }
+  function ocConnectCurrent(){ const sel=document.getElementById('ocKeySel'); if(!sel||!sel.value){ toast('请先选择或创建一个启用中的 Key'); return; } ocConnect(sel.value); }
+  function ocDisconnectCurrent(){ const sel=document.getElementById('ocKeySel'); if(!sel||!sel.value){ toast('请先选择 Key'); return; } ocDisconnect(sel.value); }
+  // 供全局函数（renderKeys）与 inline onclick 使用
+  window.rebuildOcSel=rebuildOcSel;
+  window.rebuildSnippet=rebuildSnippet;
+  window.ocConnect=ocConnect;
+  window.ocDisconnect=ocDisconnect;
+  window.ocConnectCurrent=ocConnectCurrent;
+  window.ocDisconnectCurrent=ocDisconnectCurrent;
+  function openOcResultModal(title,snippet){
+    let m=document.getElementById('ocResultModal');
+    if(!m){
+      m=document.createElement('div'); m.id='ocResultModal'; m.className='modal-bg';
+      m.innerHTML=`<div class="modal"><div class="modal-head"><h3 id="ocResultTitle"></h3><button class="modal-x" onclick="closeModal('ocResultModal')" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><pre id="ocResultPre" class="code-pre" style="max-height:60vh"></pre><div class="modal-foot"><button class="btn" onclick="copyText(document.getElementById('ocResultPre').textContent);closeModal('ocResultModal')">复制并关闭</button></div></div>`;
+      document.body.appendChild(m);
+    }
+    document.getElementById('ocResultTitle').textContent=title||'结果';
+    document.getElementById('ocResultPre').textContent=snippet||'';
+    openModal('ocResultModal');
+  }
+  OC_SNIP=buildSnippet(['deepseek-chat','deepseek-reasoner','GLM-5.3','GLM-5.3-Flash','kimi-k3','kimi-k2.8','kimi-k2.6','qwen3.7-plus','qwen3.8-max','qwen3.8-omni-flash']);
+  const cEl0=document.getElementById('claudeSnippet'); if(cEl0) cEl0.textContent=buildClaudeSnippet('');
+  const zEl0=document.getElementById('zcodeSnippet'); if(zEl0) zEl0.textContent=buildZCodeSnippet('');
+  const el = document.getElementById('ocSnippet');
+  if(el) el.textContent = OC_SNIP;
+  window.__setSnippet=function(models){
+    if(!models||!models.length) return;
+    window.__lastModels=models;
+    rebuildSnippet();
+    const mh=document.getElementById('modelHint');
+    if(mh) mh.textContent=models.join(' / ');
+  };
+  // 应用段选记忆：激活态在首次数据加载前同步，避免“数字与选中对不上”
+  document.querySelectorAll('#rangeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.range===RANGE));
+  document.querySelectorAll('#modelSortSeg button').forEach(b=>b.classList.toggle('active',b.dataset.sort===MODEL_SORT));
+  document.querySelectorAll('#barWinSeg button').forEach(b=>b.classList.toggle('active',Number(b.dataset.win)===BAR_WIN));
+  setSettingsProvider(SETTINGS_PROV);
+  const tab0=segGet('tabs','overview');
+  if(tab0!=='overview'){
+    document.querySelectorAll('.seg button[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab0));
+    document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active',p.id==='tab-'+tab0));
+  }
+  requestAnimationFrame(()=>document.querySelectorAll('.seg').forEach(segSlide));
+  ['accProvider','accEgress'].forEach(selBuild);
+  if(TOKEN){document.body.classList.add('loading');try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
+  setInterval(()=>{
+    if(document.hidden) return;
+    if(document.getElementById('mainView').style.display==='none') return;
+    if(document.body.classList.contains('modal-open')) return;
+    refreshData(false);
+  },15000);
+})();

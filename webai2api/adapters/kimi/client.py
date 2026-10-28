@@ -617,6 +617,10 @@ class KimiWebClient:
                     self.logger.info("Kimi accessToken 已自动续期")
                 return self._access_token
             except Exception as exc:  # noqa: BLE001
+                try:
+                    conn.close()  # 续期中途抛错也必须关连接
+                except Exception:
+                    pass
                 self.logger.warning("Kimi 续期异常: %s", exc)
                 self._token_checked_at = now
                 return self._access_token
