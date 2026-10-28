@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.49">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.50">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -51,7 +51,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','mono-light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.49"></script>
+<script src="/admin/static/hyalite.js?v=0.1.50"></script>
 </head>
 <body>
 
@@ -1309,12 +1309,12 @@ function renderOverview(s){
     if(i<MAX_SEG) colorMap.set(m.label, DONUT_COLORS[i%DONUT_COLORS.length]);
     else colorMap.set(m.label, '#d6d9de');
   });
-  rows.forEach(m=>{
+  tb.innerHTML=rows.map(m=>{
     const c=colorMap.get(m.label)||'#c9cdd4';
-    tb.innerHTML+=`<tr><td><span class="m-dot" style="background:${c}"></span><b>${esc(m.label)}</b></td>
+    return `<tr><td><span class="m-dot" style="background:${c}"></span><b>${esc(m.label)}</b></td>
       <td class="num-t">${fmt(m.n)}</td>
       <td class="num-t">${fmtTok(m.p)}</td><td class="num-t">${fmtTok(m.c)}</td>
-      <td class="num-t"><b>${fmtTok(m.t)}</b></td></tr>`;});
+      <td class="num-t"><b>${fmtTok(m.t)}</b></td></tr>`;}).join('');
   if(!rows.length)tb.innerHTML='<tr><td colspan="5" class="empty">暂无数据</td></tr>';
   renderDonut(byToken.map(x=>({model:x.label,t:x.t})));
   renderHeatmap(s);
@@ -1676,25 +1676,24 @@ function renderUsage(s){
   let tb=document.querySelector('#keyUsageTable tbody');tb.innerHTML='';
   // 已删除的 Key/账号不再出现在用量明细与最近请求里（统计卡总量仍含其历史用量）
   const byKeyAlive=(s.usage.by_key||[]).filter(k=>kids.has(k.api_key_id));
-  byKeyAlive.forEach(k=>{
-    tb.innerHTML+=`<tr><td>${keyName(k.api_key_id,k.api_key_name)}</td>
-      <td class="num-t">${fmt(k.n)}</td><td class="num-t"><b>${fmtTok(k.t)}</b></td></tr>`;});
+  tb.innerHTML=byKeyAlive.map(k=>`<tr><td>${keyName(k.api_key_id,k.api_key_name)}</td>
+      <td class="num-t">${fmt(k.n)}</td><td class="num-t"><b>${fmtTok(k.t)}</b></td></tr>`).join('');
   if(!byKeyAlive.length)tb.innerHTML='<tr><td colspan="6" class="empty">暂无数据</td></tr>';
   tb=document.querySelector('#accUsageTable tbody');tb.innerHTML='';
   const byAccAlive=(s.usage.by_account||[]).filter(a=>accIds.has(a.account_id));
-  byAccAlive.forEach(a=>{tb.innerHTML+=`<tr><td><b>${esc(a.account_name||'–')}</b></td>
-    <td class="muted">${esc(a.provider||'')}</td><td class="num-t">${fmt(a.n)}</td><td class="num-t"><b>${fmtTok(a.t)}</b></td></tr>`;});
+  tb.innerHTML=byAccAlive.map(a=>`<tr><td><b>${esc(a.account_name||'–')}</b></td>
+    <td class="muted">${esc(a.provider||'')}</td><td class="num-t">${fmt(a.n)}</td><td class="num-t"><b>${fmtTok(a.t)}</b></td></tr>`).join('');
   if(!byAccAlive.length)tb.innerHTML=empty('暂无数据',4);
   tb=document.querySelector('#recentTable tbody');tb.innerHTML='';
   const recentAlive=(s.recent||[]).filter(r=>
     !(r.api_key_id&&!kids.has(r.api_key_id)) && !(r.account_id&&!accIds.has(r.account_id))
     &&!(RECENT_STATUS==='error'&&r.status==='ok'));
-  recentAlive.forEach(r=>{tb.innerHTML+=`<tr><td class="muted">${fmtTime(r.ts)}</td>
+  tb.innerHTML=recentAlive.map(r=>`<tr><td class="muted">${fmtTime(r.ts)}</td>
     <td>${keyName(r.api_key_id,r.api_key_name)}</td><td>${esc(r.account_name||'–')}</td>
     <td class="mono">${esc(r.model)}</td><td class="num-t">${fmtTok(r.prompt_tokens)}</td>
     <td class="num-t">${fmtTok(r.completion_tokens)}</td><td class="num-t"><b>${fmtTok(r.total_tokens)}</b></td>
     <td class="num-t">${r.latency_ms?((r.latency_ms/1000).toFixed(1)+'s'):'–'}</td>
-    <td>${r.status==='ok'?'<span class="tag on">成功</span>':`<span class="tag err" title="${esc(errHint(r.error_code||r.status))}">${esc(r.error_code||r.status)}</span>`}</td></tr>`;});
+    <td>${r.status==='ok'?'<span class="tag on">成功</span>':`<span class="tag err" title="${esc(errHint(r.error_code||r.status))}">${esc(r.error_code||r.status)}</span>`}</td></tr>`).join('');
   if(!recentAlive.length)tb.innerHTML=empty('暂无记录');
   const info=document.getElementById('recentInfo');
   if(info){
