@@ -219,6 +219,89 @@ class StreamAction:
 
 
 # ═══════════════════════════════════════════════════════════════
+# 残留剥离（非流式 Artifacts 零容忍）
+# ═══════════════════════════════════════════════════════════════
+
+
+def strip_dsml_residue(text: str) -> str:
+    """把「解析不出调用」的完整 DSML/哨兵块从正文剥掉。
+
+    流式检测器天然扣住标记不漏；非流式 parse_tool_calls 解析失败时
+    clean_text 会原样带回标记原文，客户端就会看到一坨 DSML。按本模块
+    「Artifacts 零容忍」原则，**完整**块静默删除（残缺尾部不剥——保守，
+    交给续写前的 _drop_trailing_partial_markup 处理）。剥完为空即代表
+    「客户端可见输出为空」，供空响应重试判定使用。
+    """
+    if not text:
+        return text
+    out = text
+
+    # 完整 DSML calls 块（含缺 invoke 的空壳块）
+    while True:
+        m_open = _CALLS_OPEN_RE.search(out)
+        if not m_open:
+            break
+        m_close = _CALLS_CLOSE_RE.search(out, m_open.end())
+        if not m_close:
+            break
+        out = out[: m_open.start()] + out[m_close.end() :]
+
+    # 孤立 DSML invoke 块（缺 calls 包裹但 invoke 完整）
+    while True:
+        m_open = _INVOKE_OPEN_RE.search(out)
+        if not m_open:
+            break
+        m_close = _INVOKE_CLOSE_RE.search(out, m_open.end())
+        if not m_close:
+            break
+        out = out[: m_open.start()] + out[m_close.end() :]
+
+    # 哨兵块
+    for open_v in _OPEN_VARIANTS:
+        while True:
+            i = out.find(open_v)
+            if i < 0:
+                break
+            closed = None
+            for cv in _CLOSE_VARIANTS:
+                j = out.find(cv, i + len(open_v))
+                if j >= 0:
+                    closed = (cv, j)
+                    break
+            if closed is None:
+                break
+            out = out[:i] + out[closed[1] + len(closed[0]) :]
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════
+# tool_choice=required 强校验重试指令
+# ═══════════════════════════════════════════════════════════════
+
+
+def build_required_nudge(tool_name: str = "") -> str:
+    """required 强校验重试时追加给模型的加强指令（全角 DSML 示例）。
+
+    与 GLM 的 tool_bridge.required_nudge 同语义；示例必须用本平台的
+    全角竖线 DSML 形态，模型才认得。tool_name 非空时点名必须调谁。
+    """
+    D = _DSML
+    example = (
+        f"<{D} calls>\n"
+        f'<{D} invoke name="工具名">\n'
+        f'<{D} parameter name="参数名" string="true">参数值</{D} parameter>\n'
+        f"</{D} invoke>\n"
+        f"</{D} calls>"
+    )
+    demand = f"这次必须调用 `{tool_name}`。" if tool_name else "这次必须调用一个工具。"
+    return (
+        "上一次回复没有调用任何工具，这不符合要求。" + demand
+        + "不要用文字回答，不要解释，只输出一次工具调用，"
+        "它必须是回复的全部内容，格式严格为：\n" + example
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
 # 属性解析
 # ═══════════════════════════════════════════════════════════════
 
@@ -308,6 +391,9 @@ def _build_tool_prompt_impl(tools, tool_choice="auto"):
         f"  - A tool call MISSING any required argument is INVALID and will be DISCARDED.",
         f"    Write every required parameter BEFORE closing the invoke; never emit an empty",
         f"    invoke and try to fill it in later — you get one shot per response.",
+        f"  - Do NOT write tool calls inside your thinking. Drafting invokes in the",
+        f"    reasoning is wasted: only the <{D} calls> block in your visible reply",
+        f"    is executed, and a half-written draft gets discarded entirely.",
         f"  - When the user asks you to create/write a file, you MUST call the",
         f"    file-writing tool. Do NOT paste the file content into your reply",
         f"    and consider the task done.",

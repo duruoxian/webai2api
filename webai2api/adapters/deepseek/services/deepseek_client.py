@@ -47,8 +47,10 @@ from .tool_calling import (
     TOOL_CLOSE_SINGULAR,
     TOOL_OPEN_PLURAL,
     TOOL_OPEN_SINGULAR,
+    build_required_nudge,
     configure_tool_parsing,
     parse_tool_calls,
+    strip_dsml_residue,
 )
 from .file_uploader import FileUploader
 from .translator import (
@@ -58,6 +60,7 @@ from .translator import (
     convert_deepseek_to_openai_chunk,
     extract_images_from_messages,
 )
+from ...tool_bridge import is_forced_tool_choice
 from .citation_utils import CitationStripper, strip_citation_marks
 
 # ── 重试策略 ────────────────────────────────────────────────────
@@ -66,6 +69,8 @@ RATE_LIMIT_COOLDOWN_SECONDS = 60
 MAX_RATE_LIMIT_RETRIES = 3
 MAX_CONTEXT_LENGTH_RETRIES = 2
 MAX_FILE_PARSE_RETRIES = 1
+# 上游正常结束但输出全空（empty_response）的弃会话重试上限
+MAX_EMPTY_RETRIES = 1
 
 # ── 断流自动续写 ────────────────────────────────────
 # 上游偶尔在长思考/长回答中途掐流且不发 finish 帧。检测到断流后，向
@@ -74,6 +79,45 @@ MAX_FILE_PARSE_RETRIES = 1
 # 每次续写都是一轮新的 completion PoW + 请求（有日志可查）。
 MAX_AUTO_CONTINUATIONS = 2
 CONTINUE_PROMPT = "继续"
+
+# 续写接缝重叠剪除的比较窗口（已发内容尾巴的长度上限）
+SEAM_WINDOW = 200
+
+
+class _SeamTrimmer:
+    """续写接缝重叠剪除：模型「继续」常把断点前最后一段逐字重说一遍。
+
+    复读形态：从已发尾巴的某处开始、逐字复读到尾巴末尾，再接新内容。
+    所以增量开头只要还「出现在尾巴里」就可能是复读的开头，继续扣住；
+    分叉时提交最长重叠——剪掉的任何字节都与客户端已收到内容逐字相同，
+    剪除永不丢新内容。窗口 SEAM_WINDOW 之外不比较（保守上限）。
+    """
+
+    def __init__(self, tail: str) -> None:
+        self._tail = (tail or "")[-SEAM_WINDOW:]
+        self._lead = ""
+        self._done = not self._tail
+
+    def feed(self, piece: str) -> str:
+        """喂入续写增量，返回可安全下发的部分（重叠段被剪掉）。"""
+        if self._done:
+            return piece
+        self._lead += piece or ""
+        tail, lead = self._tail, self._lead
+        if len(lead) <= len(tail) and lead in tail:
+            return ""  # 仍是「尾巴某处开始复读」的候选，继续扣
+        j = 0
+        for k in range(min(len(lead), len(tail)), 0, -1):
+            if tail.endswith(lead[:k]):
+                j = k
+                break
+        self._done = True
+        return lead[j:]
+
+    def finish(self) -> str:
+        """续写轮收尾：仍扣着的一段必然是已发尾巴内的逐字复读，丢弃。"""
+        self._done = True
+        return ""
 
 
 def _drop_trailing_partial_markup(text: str) -> str:
@@ -1031,7 +1075,47 @@ class DeepSeekWebClient:
         resolved = self._resolve_conversation(payload)
         # 一次 completion 内所有 chunk/结果共享同一个 id（OpenAI 规范）。
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-        return self._chat_completion_impl(payload, resolved, completion_id)
+        resp = self._chat_completion_impl(payload, resolved, completion_id)
+
+        # required 强校验（镜像 GLM 的 _forced_retry）：客户端要求必须调工具
+        # 却拿到纯文本 → 带加强指令在同一会话上重试一次；再不行明确报错，
+        # 不把注定让 agent 空转一轮的纯文本默默递出去。
+        if (
+            _payload_has_tools(payload)
+            and is_forced_tool_choice(payload)
+            and not (resp.get("choices") or [{}])[0]
+            .get("message", {})
+            .get("tool_calls")
+        ):
+            tc = payload.get("tool_choice")
+            hint = (
+                (tc.get("function") or {}).get("name", "")
+                if isinstance(tc, dict)
+                else ""
+            )
+            self.logger.info(
+                "GLM式 required 强校验：首轮未调用工具，加强指令重试一次%s",
+                f"（点名 {hint}）" if hint else "",
+            )
+            retry_payload = dict(payload)
+            retry_payload["messages"] = list(payload.get("messages") or []) + [
+                {"role": "user", "content": build_required_nudge(hint)}
+            ]
+            retry_resp = self._chat_completion_impl(
+                retry_payload,
+                self._resolve_conversation(retry_payload),
+                completion_id,
+            )
+            if (
+                retry_resp.get("choices") or [{}]
+            )[0].get("message", {}).get("tool_calls"):
+                return retry_resp
+            raise UpstreamAPIError(
+                status_code=502,
+                message="工具调用强校验失败：重试一次后模型仍未按要求调用工具"
+                "（tool_choice=required）",
+            )
+        return resp
 
     def _chat_completion_impl(
         self, payload: dict, resolved: dict, completion_id: str
@@ -1046,6 +1130,7 @@ class DeepSeekWebClient:
         context_retries = 0
         rate_limit_retries = 0
         file_retries = 0
+        empty_retries = 0
         has_tools = _payload_has_tools(payload)
         slot_name = f"chat:{payload.get('model', 'unknown')}"
 
@@ -1150,6 +1235,33 @@ class DeepSeekWebClient:
                         payload.get("tools"),
                         require_marker=not has_tools,
                     )
+                    if not parsed.calls and full_text:
+                        # 非流式 Artifacts 零容忍：解析不出调用的完整 DSML/哨兵
+                        # 块剥掉不漏给客户端；剥完为空 = 客户端可见输出为空
+                        # （v0.1.43 丢弃骨架调用后，残留会以原文漏进 content）
+                        full_text = strip_dsml_residue(full_text)
+
+                    if (
+                        not parsed.calls
+                        and has_tools
+                        and not full_text.strip()
+                        and full_reasoning
+                    ):
+                        # P0 思考双通道：正文可见输出为空时才扫 reasoning，
+                        # 只认完整 DSML/哨兵块——思考里的「草稿调用」绝不提取，
+                        # 否则模型想到但没决定发的调用会被真的执行（shell 级风险）
+                        rparsed = parse_tool_calls(
+                            full_reasoning,
+                            payload.get("tools"),
+                            require_marker=True,
+                        )
+                        if rparsed.calls:
+                            self.logger.warning(
+                                "思考里发现完整工具调用（正文为空），已提取下发"
+                            )
+                            parsed = rparsed
+                            full_reasoning = rparsed.clean_text
+
                     if parsed.calls:
                         self.logger.info(
                             "ToolCall   | blocking | %s",
@@ -1180,12 +1292,34 @@ class DeepSeekWebClient:
                         )
 
                     # 空正文兜底（对齐 Kimi/GLM 的 finalize_reasoning 语义）：
-                    # 正文空、思考有货 → 思考顶成正文并清空 reasoning_content，
-                    # 否则非流式返回空 content，且客户端会在思考与正文里
-                    # 看到重复的同一份答案
-                    if not full_text and full_reasoning:
+                    # 正文空（纯空白也算空）、思考有货 → 思考顶成正文并清空
+                    # reasoning_content，否则非流式返回空 content，且客户端会
+                    # 在思考与正文里看到重复的同一份答案
+                    if not full_text.strip() and full_reasoning:
                         full_text = full_reasoning
                         full_reasoning = ""
+
+                    # P0 空响应重试：上游正常结束但客户端一无所获（无正文、
+                    # 无思考、无调用）→ 判定 empty_response，弃当前上游会话
+                    # 全量重开重试一次；再空按原样返回（gateway 记 error_code）。
+                    # DSML 残留剥离后为空同样命中这里——骨架调用轮直接重试，
+                    # 不再把空壳还给 agent。
+                    if (
+                        saw_upstream_finish
+                        and not parsed.calls
+                        and not full_text.strip()
+                        and not full_reasoning.strip()
+                        and empty_retries < MAX_EMPTY_RETRIES
+                    ):
+                        empty_retries += 1
+                        self.logger.warning(
+                            "上游正常结束但输出全空（empty_response），弃会话重试 %d/%d",
+                            empty_retries,
+                            MAX_EMPTY_RETRIES,
+                        )
+                        self._invalidate_and_delete_session(resolved)
+                        resolved = self._resolve_conversation(payload)
+                        continue
 
                     if not saw_upstream_finish:
                         self.logger.warning(
@@ -1329,7 +1463,61 @@ class DeepSeekWebClient:
     # Public API - stream
     # ═══════════════════════════════════════════════════════
 
+    def _stream_forced(self, payload: dict[str, object]):
+        """tool_choice=required 的流式形态：非流式结果翻制为 SSE。"""
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        created = int(time.time())
+        model = str(payload.get("model", self.config.default_model))
+
+        def chunk(delta: dict, finish=None, usage=None) -> str:
+            obj = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "system_fingerprint": "",
+                "choices": [
+                    {"index": 0, "delta": delta, "finish_reason": finish,
+                     "logprobs": None}
+                ],
+            }
+            if usage is not None:
+                obj["usage"] = usage
+            return _sse(obj)
+
+        # 强校验失败时 chat_completion 抛 UpstreamAPIError，交给网关的
+        # 标准错误通道（生成器异常 → error 事件 → [DONE]）
+        resp = self.chat_completion(payload)
+        msg = (resp.get("choices") or [{}])[0].get("message") or {}
+        yield chunk({"role": "assistant", "content": ""})
+        reasoning = msg.get("reasoning_content") or ""
+        if reasoning:
+            yield chunk({"reasoning_content": reasoning})
+        if msg.get("content"):
+            yield chunk({"content": msg["content"]})
+        calls = [
+            ParsedToolCall(
+                id=c.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+                name=(c.get("function") or {}).get("name") or "",
+                arguments=(c.get("function") or {}).get("arguments") or "{}",
+            )
+            for c in msg.get("tool_calls") or []
+            if isinstance(c, dict)
+        ]
+        for ch in _make_tool_call_chunks(calls, model, completion_id):
+            yield ch
+        yield chunk({}, usage=resp.get("usage"))
+        yield chunk({}, finish="tool_calls" if calls else "stop")
+        yield "data: [DONE]\n\n"
+
     def stream_chat_completion(self, payload: dict[str, object]):
+        # required 强校验走专用流式形态：不直播。内部跑非流式链路
+        # （chat_completion 自带「加强指令重试一次」），拿到确定结果再
+        # 翻成 SSE 一次性下发——直播一段注定作废的正文没有意义（与 GLM 同口径）。
+        # 注意本函数保持「普通函数返回生成器」的契约，这里 return 生成器。
+        if _payload_has_tools(payload) and is_forced_tool_choice(payload):
+            return self._stream_forced(payload)
+
         resolved = self._resolve_conversation(payload)
         lease = self.request_queue.acquire(f"stream:{payload.get('model', 'unknown')}")
         # 一次 completion 内所有 chunk 共享同一个 id（OpenAI 规范）。
@@ -1345,6 +1533,11 @@ class DeepSeekWebClient:
             context_retries = 0
             rate_limit_retries = 0
             file_retries = 0
+            empty_retries = 0
+            # 客户端可见正文的尾巴（续写接缝剪除的比较基准）
+            emitted_tail = ""
+            # 仅在续写轮激活；None = 直通
+            seam = None
 
             try:
                 while True:
@@ -1390,6 +1583,90 @@ class DeepSeekWebClient:
                                 )
                             except Exception:  # noqa: BLE001
                                 return False
+
+                        def _emit_content(text: str):
+                            """统一正文出口：发 chunk + 维护客户端可见尾巴
+                            （emitted_tail 供续写接缝剪除做重叠比较）。"""
+                            nonlocal content_emitted, anything_yielded, emitted_tail
+                            if not text:
+                                return
+                            yield _make_content_chunk(
+                                text, current_resolved["model"], completion_id
+                            )
+                            content_emitted = True
+                            anything_yielded = True
+                            emitted_tail = (emitted_tail + text)[-SEAM_WINDOW:]
+
+                        def _emit_tool_calls(calls):
+                            nonlocal tool_calls_emitted, anything_yielded
+                            for ch in _make_tool_call_chunks(
+                                calls,
+                                current_resolved["model"],
+                                completion_id,
+                                base_index=len(emitted_calls),
+                            ):
+                                yield ch
+                            tool_calls_emitted = True
+                            emitted_calls.extend(calls)
+                            anything_yielded = True
+
+                        def _finalize_round():
+                            """流收尾：检测器残余 → citation 尾巴 → P0 思考扫
+                            调用 → 空正文兜底。空响应重试轮会换新检测器后再调
+                            一次，所以收成闭包而不是内联代码。"""
+                            nonlocal full_text
+                            # 1. 检测器残余
+                            for action in detector.finalize():
+                                if action.kind == "text" and action.text:
+                                    out = (
+                                        stripper.feed(action.text)
+                                        if stripper
+                                        else action.text
+                                    )
+                                    if out:
+                                        yield from _emit_content(out)
+                                elif action.kind == "tool_calls" and action.tool_calls:
+                                    yield from _emit_tool_calls(action.tool_calls)
+
+                            # 2. stripper 尾部残留
+                            if stripper is not None:
+                                tail = stripper.finalize()
+                                if tail:
+                                    yield from _emit_content(tail)
+
+                            # 2.25 P0 思考双通道：客户端可见输出为空（纯空白
+                            # 也算空）时才扫 reasoning，只认完整 DSML/哨兵块
+                            # ——思考里的「草稿调用」绝不提取，否则模型想到
+                            # 但没决定发的调用会被真的执行（shell 级风险）。
+                            if (
+                                has_tools
+                                and not tool_calls_emitted
+                                and not emitted_tail.strip()
+                                and full_reasoning
+                            ):
+                                rparsed = parse_tool_calls(
+                                    full_reasoning,
+                                    payload.get("tools"),
+                                    require_marker=True,
+                                )
+                                if rparsed.calls:
+                                    self.logger.warning(
+                                        "思考里发现完整工具调用（正文为空），已提取下发"
+                                    )
+                                    yield from _emit_tool_calls(rparsed.calls)
+
+                            # 2.5 空正文兜底（对齐 Kimi/GLM 的 finalize_reasoning）：
+                            #     正文一个字都没发、思考里有货——上游把答案整个写进
+                            #     思考，或思考中途被上游掐流时，把思考顶成正文，
+                            #     否则客户端只看得到空消息或「全部藏在思考里」。
+                            if (
+                                not tool_calls_emitted
+                                and not emitted_tail.strip()
+                                and full_reasoning
+                            ):
+                                yield from _emit_content(full_reasoning)
+                                if not full_text:
+                                    full_text = full_reasoning
 
                         def _consume(resp, *, skip_role: bool) -> bool:
                             """消费一个上游 SSE 流直到 finish/断流，返回是否见到 finish 帧。
@@ -1466,28 +1743,17 @@ class DeepSeekWebClient:
                                                 if stripper
                                                 else action.text
                                             )
+                                            if out and seam is not None:
+                                                out = seam.feed(out)
                                             if out:
-                                                yield _make_content_chunk(
-                                                    out,
-                                                    current_resolved["model"],
-                                                    completion_id,
-                                                )
-                                                content_emitted = True
-                                                anything_yielded = True
+                                                yield from _emit_content(out)
                                         elif (
                                             action.kind == "tool_calls"
                                             and action.tool_calls
                                         ):
-                                            for ch in _make_tool_call_chunks(
-                                                action.tool_calls,
-                                                current_resolved["model"],
-                                                completion_id,
-                                                base_index=len(emitted_calls),
-                                            ):
-                                                yield ch
-                                            tool_calls_emitted = True
-                                            emitted_calls.extend(action.tool_calls)
-                                            anything_yielded = True
+                                            yield from _emit_tool_calls(
+                                                action.tool_calls
+                                            )
                                 elif finish_reason is None:
                                     # 纯 role chunk / 空 delta chunk：原样透传
                                     # （续写轮客户端已收到过 role，跳过重复的）
@@ -1535,6 +1801,10 @@ class DeepSeekWebClient:
                                 _cont_rounds,
                                 MAX_AUTO_CONTINUATIONS,
                             )
+                            # P1 续写接缝剪除：模型「继续」常把断点前最后一句
+                            # 逐字重说一遍。剪除器只裁「已发尾巴的逐字后缀」，
+                            # 数学上不丢新内容（见 _SeamTrimmer 注释）。
+                            seam = _SeamTrimmer(emitted_tail)
                             try:
                                 cont_resolved = self._continuation_resolved(
                                     current_resolved,
@@ -1563,62 +1833,78 @@ class DeepSeekWebClient:
                                     "自动续写失败（按截断返回）: %s", exc
                                 )
                                 break
+                            finally:
+                                # 本轮收尾：仍扣着的一定是已发尾巴的逐字复读（丢弃），
+                                # 之后恢复直通。扣住的字节与客户端已有内容逐字相同，
+                                # 丢弃不损失内容。
+                                if seam is not None:
+                                    seam = None
                             if saw or upstream_finish_reason is not None:
                                 saw_upstream_finish = True
 
                         # ── 流结束收尾（finalize 必须在续写全部结束后）──
-                        # 1. 检测器残余
-                        for action in detector.finalize():
-                            if action.kind == "text" and action.text:
-                                out = (
-                                    stripper.feed(action.text)
-                                    if stripper
-                                    else action.text
-                                )
-                                if out:
-                                    yield _make_content_chunk(
-                                        out, current_resolved["model"], completion_id
-                                    )
-                                    content_emitted = True
-                                    anything_yielded = True
-                            elif action.kind == "tool_calls" and action.tool_calls:
-                                for ch in _make_tool_call_chunks(
-                                    action.tool_calls,
-                                    current_resolved["model"],
-                                    completion_id,
-                                    base_index=len(emitted_calls),
-                                ):
-                                    yield ch
-                                tool_calls_emitted = True
-                                emitted_calls.extend(action.tool_calls)
-                                anything_yielded = True
+                        yield from _finalize_round()
 
-                        # 2. stripper 尾部残留
-                        if stripper is not None:
-                            tail = stripper.finalize()
-                            if tail:
-                                yield _make_content_chunk(
-                                    tail, current_resolved["model"], completion_id
-                                )
-                                content_emitted = True
-                                anything_yielded = True
-
-                        # 2.5 空正文兜底（对齐 Kimi/GLM 的 finalize_reasoning）：
-                        #     正文一个字都没发、思考里有货——上游把答案整个写进
-                        #     思考，或思考中途被上游掐流时，把思考顶成正文，
-                        #     否则客户端只看得到空消息或「全部藏在思考里」。
+                        # ── P0 空响应重试 ──
+                        # 上游正常结束但客户端一无所获（无正文、无思考、无调用）
+                        # → 判定 empty_response，弃当前上游会话全量重开重试一次；
+                        # 再空按原样返回（gateway 记 error_code=empty_response）。
+                        # DSML 残留/骨架调用被检测器吞光的情况同样命中——
+                        # 不把空壳还给 agent。
                         if (
-                            not tool_calls_emitted
-                            and not content_emitted
-                            and full_reasoning
+                            saw_upstream_finish
+                            and not tool_calls_emitted
+                            and not emitted_tail.strip()
+                            and not full_reasoning
+                            and empty_retries < MAX_EMPTY_RETRIES
                         ):
-                            yield _make_content_chunk(
-                                full_reasoning, current_resolved["model"], completion_id
+                            empty_retries += 1
+                            self.logger.warning(
+                                "上游正常结束但输出全空（empty_response），弃会话重试 %d/%d",
+                                empty_retries,
+                                MAX_EMPTY_RETRIES,
                             )
-                            content_emitted = True
-                            anything_yielded = True
-                            if not full_text:
-                                full_text = full_reasoning
+                            self._invalidate_and_delete_session(current_resolved)
+                            current_resolved = self._resolve_conversation(payload)
+                            current_session_id = (
+                                current_resolved.get("session_id") or ""
+                            )
+                            detector = StreamingToolDetector(
+                                payload.get("tools"),
+                                require_marker=not has_tools,
+                            )
+                            stripper = (
+                                CitationStripper()
+                                if self.config.strip_citations
+                                else None
+                            )
+                            try:
+                                retry_resp, retry_session = self._open_chat_stream(
+                                    current_resolved
+                                )
+                                if retry_session:
+                                    current_session_id = retry_session
+                                try:
+                                    saw = yield from _consume(
+                                        retry_resp, skip_role=True
+                                    )
+                                    if saw or upstream_finish_reason is not None:
+                                        saw_upstream_finish = True
+                                finally:
+                                    try:
+                                        retry_resp.read()
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                    try:
+                                        retry_resp.close()
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                yield from _finalize_round()
+                            except Exception as exc:  # noqa: BLE001
+                                self.logger.warning(
+                                    "空响应重试失败（按空返回）: %s", exc
+                                )
+                                saw_upstream_finish = False
 
                         # 3. JSON 模式校验（仅在没有工具调用发出且正常结束时：
                         #    截断的半截 JSON 必然校验失败，不能让已输出的流变报错）

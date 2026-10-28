@@ -622,6 +622,14 @@ def create_gateway_router(
             if not t:
                 t = p + c
             _quota_release(key_row["id"], reserve)
+            # P0 埋点：上游正常结束但正文/思考/调用全空 → 记 empty_response，
+            # 攒「没输出」的发生率数据（客户端层已带弃会话重试，这里是重试仍空）
+            msg0 = (resp.get("choices") or [{}])[0].get("message") or {}
+            empty_hit = not (
+                (msg0.get("content") or "").strip()
+                or (msg0.get("reasoning_content") or "").strip()
+                or msg0.get("tool_calls")
+            )
             await run_in_threadpool(
                 store.log_usage,
                 prompt_tokens=p,
@@ -629,6 +637,7 @@ def create_gateway_router(
                 total_tokens=t,
                 **base,
                 latency_ms=int((time.perf_counter() - started) * 1000),
+                error_code="empty_response" if empty_hit else "",
             )
             return JSONResponse(resp)
 
@@ -658,6 +667,7 @@ def create_gateway_router(
             prompt_t = completion_t = total_t = 0
             status = "ok"
             out_parts: list[str] = []
+            last_finish = ""
             aq: "asyncio.Queue" = asyncio.Queue()
             loop = asyncio.get_event_loop()
             _DONE = object()
@@ -732,6 +742,8 @@ def create_gateway_router(
                                     )
                                     if piece:
                                         out_parts.append(str(piece))
+                                    if ch.get("finish_reason"):
+                                        last_finish = str(ch["finish_reason"])
                             except Exception:
                                 pass
                     yield line
@@ -749,6 +761,19 @@ def create_gateway_router(
                     completion_t = _estimate_completion(payload, "".join(out_parts))
                 if not total_t:
                     total_t = prompt_t + completion_t
+                # P0 埋点：finish=stop 且全文/思考零字节 → empty_response
+                # （工具调用轮 finish=tool_calls 不算空；客户端层已带重试，
+                # 这里记的是「重试后仍空」）
+                if status == "ok":
+                    err = (
+                        "empty_response"
+                        if (not out_parts and last_finish == "stop")
+                        else ""
+                    )
+                elif status == "cancelled":
+                    err = "cancelled"
+                else:
+                    err = "upstream"
                 _log = dict(
                     prompt_tokens=prompt_t,
                     completion_tokens=completion_t,
@@ -757,11 +782,7 @@ def create_gateway_router(
                     **base,
                     latency_ms=int((time.perf_counter() - started) * 1000),
                     first_token_ms=ttft_ms,
-                    error_code=(
-                        ""
-                        if status == "ok"
-                        else ("cancelled" if status == "cancelled" else "upstream")
-                    ),
+                    error_code=err,
                 )
                 if status == "cancelled":
                     # 任务已被取消，不能再 await，交给后台线程落库
