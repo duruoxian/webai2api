@@ -47,6 +47,8 @@ __all__ = [
     "strip_call_json",
     "is_first_turn",
     "is_forced_tool_choice",
+    "SeamTrimmer",
+    "SEAM_WINDOW",
     "required_nudge",
     "assistant_fingerprint",
     "conv_fingerprint",
@@ -880,3 +882,54 @@ class DeltaToolBuffer(_ToolHoldBuffer):
         if piece:
             self._full += piece
         return self._advance()
+
+
+# ── 续写接缝重叠剪除（2026-10-29 自 deepseek 上移共用）──────────
+# 模型「继续」常把断点前最后一段逐字重说一遍。复读形态：从已发尾巴的
+# 某处开始、逐字复读到尾巴末尾，再接新内容。
+SEAM_WINDOW = 200
+
+
+class SeamTrimmer:
+    """续写接缝重叠剪除：增量开头只要「出现在尾巴里」就可能是复读的开头，
+    继续扣住；分叉时提交最长后缀-前缀重叠。
+
+    无损性：剪掉的任何字节都与客户端已收到内容逐字相同——剪除永不丢
+    新内容。窗口 SEAM_WINDOW 之外不比较（保守上限）。`committed` 是已经
+    放行的累计文本，供「全文快照」口径的调用方拼装单调快照（扣住期间
+    快照不增长即不向客户端发新字）。
+    """
+
+    def __init__(self, tail: str) -> None:
+        self._tail = (tail or "")[-SEAM_WINDOW:]
+        self._lead = ""
+        self._done = not self._tail
+        self._committed = ""
+
+    @property
+    def committed(self) -> str:
+        return self._committed
+
+    def feed(self, piece: str) -> str:
+        """喂入续写增量，返回可安全下发的部分（重叠段被剪掉）。"""
+        if self._done:
+            self._committed += piece or ""
+            return piece
+        self._lead += piece or ""
+        tail, lead = self._tail, self._lead
+        if len(lead) <= len(tail) and lead in tail:
+            return ""  # 仍是「尾巴某处开始复读」的候选，继续扣
+        j = 0
+        for k in range(min(len(lead), len(tail)), 0, -1):
+            if tail.endswith(lead[:k]):
+                j = k
+                break
+        self._done = True
+        out = lead[j:]
+        self._committed += out
+        return out
+
+    def finish(self) -> str:
+        """续写轮收尾：仍扣着的一段必然是已发尾巴内的逐字复读，丢弃。"""
+        self._done = True
+        return ""

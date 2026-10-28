@@ -141,12 +141,14 @@ def _estimate_tokens(text: str) -> int:
     return max(1, int(cjk / 1.5 + other / 4))
 
 
-def _usage(payload: dict, text: str) -> dict:
+def _usage(payload: dict, text: str, reasoning: str = "") -> dict:
+    """本地估算用量。思考与正文都是真实输出，completion 必须都算
+    （2026-10-29 与 deepseek/GLM 口径对齐：此前只算正文导致低估）。"""
     msgs = payload.get("messages") or []
     p = max(
         1, _estimate_tokens("".join(_text_of(m) for m in msgs if isinstance(m, dict)))
     )
-    c = max(1, _estimate_tokens(text or ""))
+    c = max(1, _estimate_tokens(text or "") + _estimate_tokens(reasoning or ""))
     return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
 
 
@@ -185,8 +187,14 @@ TOOL_INSTRUCTION = """你可以调用以下工具来完成任务：
 4. 不需要工具时直接用自然语言回答，禁止输出任何 DSML 标记。
 5. 你运行在用户的本地电脑上，工具就是你唯一能操作本地文件的方式；
    不要说「我不能访问你的系统盘」，需要写文件时直接调用对应工具。
+   用户要求创建/写入/生成文件时，必须调用对应的写文件工具完成，
+   不要把文件内容整段贴在回答里就当作已经完成。
 6. 收到 <|DSML|tool_result ...> 包裹的工具执行结果后，基于真实结果继续：
    需要更多信息就再调用工具，信息够了就给出最终回答（不要再输出标记）。
+7. 编辑文件时，old_string 必须逐字复制自最近一次读到的文件内容，
+   禁止凭记忆改写；不确定或上次编辑失败时，先重新读取文件再编辑。
+8. 不要把工具调用写进思考：思考里草拟的调用不会被执行，只有回复里的
+   DSML 块才算数。
 """
 
 
@@ -941,6 +949,12 @@ class KimiWebClient:
             base_reasoning = ""
             _cont_rounds = 0
             cont_failed = False
+            # P1 续写接缝剪除：模型「继续」常把断点前最后一段逐字重说一遍。
+            # 增量开头只要「出现在已发尾巴里」就扣住，分叉时提交最长重叠——
+            # 剪掉的字节都与客户端已有内容逐字相同，数学上不丢新内容。
+            cont_shown = ""  # 本续写轮已放行给客户端的文本（剪除后）
+            cont_fed = ""  # 本续写轮上游已给出的原始文本（切增量用）
+            seam = None  # 仅续写轮激活；None = 直通
             while (
                 not finished
                 and not cont_failed
@@ -955,9 +969,15 @@ class KimiWebClient:
                     _cont_rounds,
                     MAX_AUTO_CONTINUATIONS,
                 )
-                base_text += state.text_value()
+                if _cont_rounds == 1:
+                    base_text += state.text_value()  # 首轮无接缝，全文已示
+                else:
+                    base_text += cont_shown  # 上一续写轮只并入已示部分
                 base_reasoning += state.think_value()
                 state = _ReplyState()
+                seam = tool_bridge.SeamTrimmer(base_text[-tool_bridge.SEAM_WINDOW :])
+                cont_shown = ""
+                cont_fed = ""
                 cont_finished = False
                 try:
                     cont_payload = {
@@ -1001,8 +1021,16 @@ class KimiWebClient:
                                 )
                                 cont_failed = True
                                 break
+                            cur = state.text_value()
+                            if seam is not None:
+                                piece = cur[len(cont_fed) :]
+                                cont_fed = cur
+                                seam.feed(piece)
+                                cont_shown = seam.committed
+                            else:
+                                cont_shown = cur
                             yield {
-                                "text": base_text + state.text_value(),
+                                "text": base_text + cont_shown,
                                 "reasoning": base_reasoning + state.think_value(),
                                 "chat_id": state.chat_id or cur_chat,
                                 "finish_seen": cont_finished or state.done,
@@ -1029,10 +1057,12 @@ class KimiWebClient:
 
             self._resolved_models[model] = (internal, scenario)
             chat_id = state.chat_id or cached or cur_chat
+            # 最终可见文本 = 已并基线 + 本轮已示部分（接缝扣住的复读丢弃）；
+            # 没进续写轮时本轮全文就是 state.text_value()
+            reply = base_text + (cont_shown if _cont_rounds > 0 else state.text_value())
             if chat_id and self.config.session_cache_enabled:
                 # store key 必须与客户端多轮回传时的查询 key 一致：
                 # 把本轮 assistant（解析后的调用或文本）追加进历史再算指纹
-                reply = base_text + state.text_value()
                 calls = _parse_tool_calls(reply, payload.get("tools") or [])
                 asst = {
                     "role": "assistant",
@@ -1051,12 +1081,12 @@ class KimiWebClient:
                     chat_id,
                     state.assistant_message_id or state.last_message_id or cur_parent,
                     used_tokens=conv_cache.estimate_tokens(
-                        state.text_value() if hasattr(state, "text_value") else ""
+                        state.text_value(), state.think_value()
                     ),
                 )
             yield {
                 "__done__": True,
-                "text": base_text + state.text_value(),
+                "text": reply,
                 "reasoning": base_reasoning + state.think_value(),
                 "chat_id": chat_id,
                 "finish_seen": finished,
@@ -1096,17 +1126,47 @@ class KimiWebClient:
     def chat_completion(self, payload: dict) -> dict:
         model = payload.get("model") or self.config.default_model
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-        text = reasoning = ""
-        finish_seen = True
-        for ev in self._stream_events(payload):
-            text, reasoning = ev["text"], ev["reasoning"]
-            if ev.get("__done__"):
-                finish_seen = bool(ev.get("finish_seen", True))
-
         tools = payload.get("tools") or []
-        calls = _parse_tool_calls(text, tools) if tools else []
+        text = reasoning = ""
+        calls: list = []
+        finish_seen = True
+        chat_id = ""
+        # P0 空响应重试：上游正常结束但客户端可见输出全空（骨架标记被
+        # 扣光/剥光也算空）→ 作废上游会话重跑一次，再空按原样返回。
+        for attempt in range(2):
+            text = reasoning = ""
+            calls = []
+            finish_seen = True
+            chat_id = ""
+            for ev in self._stream_events(payload):
+                text, reasoning = ev["text"], ev["reasoning"]
+                chat_id = str(ev.get("chat_id") or chat_id)
+                if ev.get("__done__"):
+                    finish_seen = bool(ev.get("finish_seen", True))
+            calls = _parse_tool_calls(text, tools) if tools else []
+            # 客户端可见输出 = 剥掉工具标记后的正文（思考算有输出）
+            visible = _strip_tool_block(text) if tools and not calls else text
+            if calls or visible.strip() or reasoning.strip() or not finish_seen:
+                break
+            if attempt == 0:
+                self.logger.warning(
+                    "上游正常结束但输出全空（empty_response），弃会话重试 1/1"
+                )
+                try:
+                    self._conv_cache.delete_by_session_id(chat_id)
+                except Exception:
+                    pass
+
         if not calls and tools and tool_bridge.is_forced_tool_choice(payload):
             text, reasoning, calls = self._forced_retry(payload, tools)
+        if not calls and tools and not text.strip() and reasoning.strip():
+            # P0 思考双通道：正文可见输出为空时才扫 reasoning 里的完整
+            # DSML 块——思考里的草稿调用绝不提取（shell 级误执行风险）
+            rcalls = _parse_tool_calls(reasoning, tools)
+            if rcalls:
+                self.logger.warning("思考里发现完整工具调用（正文为空），已提取下发")
+                calls = rcalls
+                reasoning = _strip_tool_block(reasoning)
         if calls:
             return {
                 "id": completion_id,
@@ -1125,7 +1185,7 @@ class KimiWebClient:
                         "finish_reason": "tool_calls",
                     }
                 ],
-                "usage": _usage(payload, text),
+                "usage": _usage(payload, text, reasoning),
             }
 
         # 空正文兜底：Kimi 全系实测会把最终答案写进思考块（正文空白），
@@ -1155,7 +1215,7 @@ class KimiWebClient:
                     "finish_reason": "stop" if finish_seen else "length",
                 }
             ],
-            "usage": _usage(payload, text),
+            "usage": _usage(payload, text, reasoning),
         }
 
     def stream_chat_completion(self, payload: dict):
@@ -1238,48 +1298,80 @@ class KimiWebClient:
             return
 
         # 有工具时扣住标记文本，不让 DSML/旧标记漏进 content（增量口径）
-        buf = (
-            tool_bridge.DeltaToolBuffer([tool_bridge.DSML_TOOL_CALLS_OPEN, TOOL_MARKER])
-            if tools
-            else None
-        )
+        # P0 空响应重试（流式）：正常结束但客户端可见输出全空（纯空白也算
+        # 空）→ 弃上游会话重跑一次；重试轮换新扣留器/分发器
+        calls: list = []
+        buf = None
+        emitted_tail = ""
         sent_text = ""
         sent_reasoning = ""
         finish_seen = True
-        # 思考增量统一走分发器：legacy 开关决定走 reasoning_content 还是
-        # <think> 并入 content；收尾做空正文兜底
-        rs = reasoning_bridge.ReasoningStream(
-            legacy=self.config.legacy_reasoning_in_content
-        )
-        try:
-            for ev in self._stream_events(payload):
-                if ev.get("__done__"):
-                    finish_seen = bool(ev.get("finish_seen", True))
-                d_reason = ev["reasoning"][len(sent_reasoning) :]
-                if d_reason:
-                    sent_reasoning = ev["reasoning"]
-                d_text = ev["text"][len(sent_text) :]
-                sent_text = ev["text"]
-                d_out = buf.feed_delta(d_text) if buf is not None else d_text
-                out_r, out_c = rs.feed(d_reason, d_out)
-                if out_r:
-                    yield chunk({"reasoning_content": out_r})
-                if out_c:
-                    yield chunk({"content": out_c})
-        except Exception as exc:  # noqa: BLE001
-            self.logger.warning("Kimi 流式请求失败: %s", exc)
-            err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
-            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-            return
+        chat_id = ""
+        for attempt in range(2):
+            buf = (
+                tool_bridge.DeltaToolBuffer(
+                    [tool_bridge.DSML_TOOL_CALLS_OPEN, TOOL_MARKER]
+                )
+                if tools
+                else None
+            )
+            rs = reasoning_bridge.ReasoningStream(
+                legacy=self.config.legacy_reasoning_in_content
+            )
+            emitted_tail = ""
+            sent_text = ""
+            sent_reasoning = ""
+            finish_seen = True
+            chat_id = ""
+            try:
+                for ev in self._stream_events(payload):
+                    if ev.get("__done__"):
+                        finish_seen = bool(ev.get("finish_seen", True))
+                    chat_id = str(ev.get("chat_id") or chat_id)
+                    d_reason = ev["reasoning"][len(sent_reasoning) :]
+                    if d_reason:
+                        sent_reasoning = ev["reasoning"]
+                    d_text = ev["text"][len(sent_text) :]
+                    sent_text = ev["text"]
+                    d_out = buf.feed_delta(d_text) if buf is not None else d_text
+                    out_r, out_c = rs.feed(d_reason, d_out)
+                    if out_r:
+                        yield chunk({"reasoning_content": out_r})
+                    if out_c:
+                        emitted_tail = (emitted_tail + out_c)[
+                            -tool_bridge.SEAM_WINDOW :
+                        ]
+                        yield chunk({"content": out_c})
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("Kimi 流式请求失败: %s", exc)
+                err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
+                yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
 
-        # 工具调用：网页版没有原生 function calling，改成解析约定标记后按
-        # OpenAI 流式 tool_calls 分片下发，客户端才能真的执行本地工具。
-        calls = (
-            _parse_tool_calls(buf.text if buf is not None else sent_text, tools)
-            if tools
-            else []
-        )
+            # 工具调用：网页版没有原生 function calling，改成解析约定标记后按
+            # OpenAI 流式 tool_calls 分片下发，客户端才能真的执行本地工具。
+            calls = (
+                _parse_tool_calls(buf.text if buf is not None else sent_text, tools)
+                if tools
+                else []
+            )
+            if (
+                calls
+                or emitted_tail.strip()
+                or sent_reasoning.strip()
+                or not finish_seen
+            ):
+                break
+            if attempt == 0:
+                self.logger.warning(
+                    "上游正常结束但输出全空（empty_response），弃会话重试 1/1"
+                )
+                try:
+                    self._conv_cache.delete_by_session_id(chat_id)
+                except Exception:
+                    pass
+
         if calls:
             tail = rs.close_think()
             if tail:
@@ -1296,10 +1388,43 @@ class KimiWebClient:
                     ]
                 }
             )
-            yield chunk({}, usage=_usage(payload, sent_text))
+            yield chunk({}, usage=_usage(payload, sent_text, sent_reasoning))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
             return
+
+        # P0 思考双通道：正文可见输出为空时才扫 reasoning 里的完整 DSML 块
+        # ——思考里的草稿调用绝不提取（shell 级误执行风险）
+        if tools and not calls and not emitted_tail.strip() and sent_reasoning:
+            rcalls = _parse_tool_calls(sent_reasoning, tools)
+            if rcalls:
+                self.logger.warning("思考里发现完整工具调用（正文为空），已提取下发")
+                calls = rcalls
+                yield chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": calls[0]["id"],
+                                "type": "function",
+                                "function": calls[0]["function"],
+                            }
+                        ]
+                    }
+                )
+                yield chunk({}, usage=_usage(payload, sent_text, sent_reasoning))
+                yield chunk({}, finish="tool_calls")
+                yield "data: [DONE]\n\n"
+                return
+
+        # 解析失败可观测性：扣住了标记却没解析成调用（名字不在清单/JSON
+        # 残缺），静默剥离会造成「模型以为调了、客户端什么都没收到」的无头案
+        if buf is not None and buf.opener_found:
+            self.logger.warning(
+                "Kimi 输出了工具调用标记但未解析成调用（工具名不在声明清单"
+                "或 JSON 残缺），已按普通文本剥离。片段: %r",
+                (_strip_tool_block(buf.text) or buf.text)[-200:],
+            )
 
         # 普通回答：放出缓冲器扣住的尾巴（标记被拆包也没关系），
         # 再做空正文兜底——思考里就是答案时补发 content
@@ -1316,7 +1441,7 @@ class KimiWebClient:
             yield chunk({"reasoning_content": out_r})
         if out_c:
             yield chunk({"content": out_c})
-        yield chunk({}, usage=_usage(payload, sent_text))
+        yield chunk({}, usage=_usage(payload, sent_text, sent_reasoning))
         if not finish_seen:
             self.logger.warning(
                 "上游流提前中断（续写未救回），按截断返回 finish=length"

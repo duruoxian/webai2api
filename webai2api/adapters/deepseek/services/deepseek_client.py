@@ -60,7 +60,7 @@ from .translator import (
     convert_deepseek_to_openai_chunk,
     extract_images_from_messages,
 )
-from ...tool_bridge import is_forced_tool_choice
+from ...tool_bridge import SEAM_WINDOW, SeamTrimmer as _SeamTrimmer, is_forced_tool_choice
 from .citation_utils import CitationStripper, strip_citation_marks
 
 # ── 重试策略 ────────────────────────────────────────────────────
@@ -79,46 +79,6 @@ MAX_EMPTY_RETRIES = 1
 # 每次续写都是一轮新的 completion PoW + 请求（有日志可查）。
 MAX_AUTO_CONTINUATIONS = 2
 CONTINUE_PROMPT = "继续"
-
-# 续写接缝重叠剪除的比较窗口（已发内容尾巴的长度上限）
-SEAM_WINDOW = 200
-
-
-class _SeamTrimmer:
-    """续写接缝重叠剪除：模型「继续」常把断点前最后一段逐字重说一遍。
-
-    复读形态：从已发尾巴的某处开始、逐字复读到尾巴末尾，再接新内容。
-    所以增量开头只要还「出现在尾巴里」就可能是复读的开头，继续扣住；
-    分叉时提交最长重叠——剪掉的任何字节都与客户端已收到内容逐字相同，
-    剪除永不丢新内容。窗口 SEAM_WINDOW 之外不比较（保守上限）。
-    """
-
-    def __init__(self, tail: str) -> None:
-        self._tail = (tail or "")[-SEAM_WINDOW:]
-        self._lead = ""
-        self._done = not self._tail
-
-    def feed(self, piece: str) -> str:
-        """喂入续写增量，返回可安全下发的部分（重叠段被剪掉）。"""
-        if self._done:
-            return piece
-        self._lead += piece or ""
-        tail, lead = self._tail, self._lead
-        if len(lead) <= len(tail) and lead in tail:
-            return ""  # 仍是「尾巴某处开始复读」的候选，继续扣
-        j = 0
-        for k in range(min(len(lead), len(tail)), 0, -1):
-            if tail.endswith(lead[:k]):
-                j = k
-                break
-        self._done = True
-        return lead[j:]
-
-    def finish(self) -> str:
-        """续写轮收尾：仍扣着的一段必然是已发尾巴内的逐字复读，丢弃。"""
-        self._done = True
-        return ""
-
 
 def _drop_trailing_partial_markup(text: str) -> str:
     """非流式续写前清场：截掉尾部未闭合的 DSML/哨兵 opener 残块。

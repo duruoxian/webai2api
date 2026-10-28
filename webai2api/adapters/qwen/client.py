@@ -117,6 +117,12 @@ QWEN_TOOL_INSTRUCTION = """# Tools
   需要更多信息就再调用工具，信息够了就给出最终回答。
 - 不需要工具时，直接用自然语言回答，不要输出 <tool_call>。
 - 工具就是你操作本地文件的方式，不要说「我不能访问你的系统盘」。
+  用户要求创建/写入/生成文件时，必须调用对应的写文件工具完成，
+  不要把文件内容整段贴在回答里就当作已经完成。
+- 编辑文件时，old_string 必须逐字复制自最近一次读到的文件内容，
+  禁止凭记忆改写；不确定或上次编辑失败时，先重新读取文件再编辑。
+- 不要把工具调用写进思考：思考里草拟的调用不会被执行，只有回复里的
+  <tool_call> 块才算数。
 """
 
 
@@ -168,12 +174,14 @@ def _estimate_tokens(text: str) -> int:
     return max(1, int(cjk / 1.5 + other / 4))
 
 
-def _usage(payload: dict, text: str) -> dict:
+def _usage(payload: dict, text: str, reasoning: str = "") -> dict:
+    """本地估算用量。思考与正文都是真实输出，completion 必须都算
+    （2026-10-29 与 deepseek/GLM 口径对齐：此前只算正文导致低估）。"""
     msgs = payload.get("messages") or []
     p = max(
         1, _estimate_tokens("".join(_text_of(m) for m in msgs if isinstance(m, dict)))
     )
-    c = max(1, _estimate_tokens(text or ""))
+    c = max(1, _estimate_tokens(text or "") + _estimate_tokens(reasoning or ""))
     return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
 
 
@@ -708,6 +716,15 @@ class QwenWebClient:
                 round_text = ""
                 round_reasoning = ""
                 is_cont = _cont_rounds > 0
+                # P1 续写接缝剪除：模型「继续」常把断点前最后一段逐字重说
+                # 一遍。增量开头只要「出现在已发尾巴里」就扣住，分叉时提交
+                # 最长重叠——剪掉的字节都与客户端已有内容逐字相同。
+                seam = (
+                    tool_bridge.SeamTrimmer(base_text[-tool_bridge.SEAM_WINDOW :])
+                    if is_cont
+                    else None
+                )
+                round_shown = ""  # 本轮已示文本（续写轮=剪除后）
                 anchor_base = response_id
                 anchor_seen = False
                 try:
@@ -749,9 +766,15 @@ class QwenWebClient:
                                 "finish_seen": saw_done,
                             }
                         elif typ == "delta":
-                            round_text += str(event.get("content") or "")
+                            piece = str(event.get("content") or "")
+                            if seam is not None:
+                                seam.feed(piece)
+                                round_shown = seam.committed
+                            else:
+                                round_text += piece
+                                round_shown = round_text
                             yield {
-                                "text": base_text + round_text,
+                                "text": base_text + round_shown,
                                 "reasoning": base_reasoning + round_reasoning,
                                 "chat_id": chat_id or response_id,
                                 "finish_seen": saw_done,
@@ -799,7 +822,7 @@ class QwenWebClient:
                     # 「继续」会挂到上一轮的 response 上成为孤儿分支，不续写
                     break
                 _cont_rounds += 1
-                base_text += round_text
+                base_text += round_shown  # 只并入已示部分，扣住的复读丢弃
                 base_reasoning += round_reasoning
                 self._bump("auto_continued")
                 self.logger.warning(
@@ -837,7 +860,7 @@ class QwenWebClient:
             except Exception:
                 pass
 
-        text = base_text + round_text
+        text = base_text + round_shown
         reasoning = base_reasoning + round_reasoning
         if chat_id and self.config.session_cache_enabled:
             store_key = tool_bridge.conv_fingerprint(
@@ -973,21 +996,61 @@ class QwenWebClient:
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         tools = _active_tools(payload)
         text = reasoning = ""
+        calls: list = []
         finish_seen = True
-        for ev in self._stream_events(payload):
-            text, reasoning = ev["text"], ev["reasoning"]
-            if ev.get("__done__"):
-                finish_seen = bool(ev.get("finish_seen", True))
+        chat_id = ""
+        # P0 空响应重试：上游正常结束但客户端可见输出全空（标记被剥光也
+        # 算空）→ 作废上游会话重跑一次，再空按原样返回
+        for attempt in range(2):
+            text = reasoning = ""
+            calls = []
+            finish_seen = True
+            chat_id = ""
+            for ev in self._stream_events(payload):
+                text, reasoning = ev["text"], ev["reasoning"]
+                chat_id = str(ev.get("chat_id") or chat_id)
+                if ev.get("__done__"):
+                    finish_seen = bool(ev.get("finish_seen", True))
 
-        calls = (
-            tool_bridge.parse_tool_calls(
-                text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+            calls = (
+                tool_bridge.parse_tool_calls(
+                    text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+                )
+                if tools
+                else []
             )
-            if tools
-            else []
-        )
+            visible = (
+                tool_bridge.strip_tool_markup(
+                    text, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+                )
+                if tools and not calls
+                else text
+            )
+            if calls or visible.strip() or reasoning.strip() or not finish_seen:
+                break
+            if attempt == 0:
+                self.logger.warning(
+                    "上游正常结束但输出全空（empty_response），弃会话重试 1/1"
+                )
+                try:
+                    self._conv_cache.delete_by_session_id(chat_id)
+                except Exception:
+                    pass
+
         if not calls and tools and tool_bridge.is_forced_tool_choice(payload):
             text, reasoning, calls = self._forced_retry(payload, tools)
+        if not calls and tools and not text.strip() and reasoning.strip():
+            # P0 思考双通道：正文可见输出为空时才扫 reasoning 里的完整
+            # <tool_call> 块——思考里的草稿调用绝不提取（shell 级误执行风险）
+            rcalls = tool_bridge.parse_tool_calls(
+                reasoning, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+            )
+            if rcalls:
+                self.logger.warning("思考里发现完整工具调用（正文为空），已提取下发")
+                calls = rcalls
+                reasoning = tool_bridge.strip_tool_markup(
+                    reasoning, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+                )
         if calls:
             return {
                 "id": completion_id,
@@ -1006,7 +1069,7 @@ class QwenWebClient:
                         "finish_reason": "tool_calls",
                     }
                 ],
-                "usage": _usage(payload, text),
+                "usage": _usage(payload, text, reasoning),
             }
 
         # 带工具但没解析出调用：剥掉可能残留的标记再下发；
@@ -1041,7 +1104,7 @@ class QwenWebClient:
                     "finish_reason": "stop" if finish_seen else "length",
                 }
             ],
-            "usage": _usage(payload, text),
+            "usage": _usage(payload, text, reasoning),
         }
 
     def stream_chat_completion(self, payload: dict):
@@ -1124,49 +1187,79 @@ class QwenWebClient:
 
         # 有工具时扣住标记文本：<tool_call> 出现前照常流式，出现后扣留等解析，
         # 标记 JSON 不会漏进 content（增量口径扣留器）
-        buf = (
-            tool_bridge.DeltaToolBuffer([f"<{QWEN_TOOL_TAG}>", QWEN_TOOL_MARKER])
-            if tools
-            else None
-        )
+        # P0 空响应重试（流式）：正常结束但客户端可见输出全空（纯空白也算
+        # 空）→ 弃上游会话重跑一次；重试轮换新扣留器/分发器
+        calls: list = []
+        buf = None
+        emitted_tail = ""
         sent_text = ""
         sent_reasoning = ""
-        # 思考增量统一走分发器：legacy 开关决定走 reasoning_content 还是
-        # <think> 并入 content；收尾做空正文兜底
-        rs = reasoning_bridge.ReasoningStream(
-            legacy=self.config.legacy_reasoning_in_content
-        )
         finish_seen = True
-        try:
-            for ev in self._stream_events(payload):
-                if ev.get("__done__"):
-                    finish_seen = bool(ev.get("finish_seen", True))
-                d_reason = ev["reasoning"][len(sent_reasoning) :]
-                if d_reason:
-                    sent_reasoning = ev["reasoning"]
-                d_text = ev["text"][len(sent_text) :]
-                sent_text = ev["text"]
-                d_out = buf.feed_delta(d_text) if buf is not None else d_text
-                out_r, out_c = rs.feed(d_reason, d_out)
-                if out_r:
-                    yield chunk({"reasoning_content": out_r})
-                if out_c:
-                    yield chunk({"content": out_c})
-        except Exception as exc:  # noqa: BLE001
-            self.logger.warning("Qwen 流式请求失败: %s", exc)
-            err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
-            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-            return
-
-        full_text = buf.text if buf is not None else sent_text
-        calls = (
-            tool_bridge.parse_tool_calls(
-                full_text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+        chat_id = ""
+        for attempt in range(2):
+            buf = (
+                tool_bridge.DeltaToolBuffer([f"<{QWEN_TOOL_TAG}>", QWEN_TOOL_MARKER])
+                if tools
+                else None
             )
-            if tools
-            else []
-        )
+            rs = reasoning_bridge.ReasoningStream(
+                legacy=self.config.legacy_reasoning_in_content
+            )
+            emitted_tail = ""
+            sent_text = ""
+            sent_reasoning = ""
+            finish_seen = True
+            chat_id = ""
+            try:
+                for ev in self._stream_events(payload):
+                    if ev.get("__done__"):
+                        finish_seen = bool(ev.get("finish_seen", True))
+                    chat_id = str(ev.get("chat_id") or chat_id)
+                    d_reason = ev["reasoning"][len(sent_reasoning) :]
+                    if d_reason:
+                        sent_reasoning = ev["reasoning"]
+                    d_text = ev["text"][len(sent_text) :]
+                    sent_text = ev["text"]
+                    d_out = buf.feed_delta(d_text) if buf is not None else d_text
+                    out_r, out_c = rs.feed(d_reason, d_out)
+                    if out_r:
+                        yield chunk({"reasoning_content": out_r})
+                    if out_c:
+                        emitted_tail = (emitted_tail + out_c)[
+                            -tool_bridge.SEAM_WINDOW :
+                        ]
+                        yield chunk({"content": out_c})
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("Qwen 流式请求失败: %s", exc)
+                err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
+                yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            full_text = buf.text if buf is not None else sent_text
+            calls = (
+                tool_bridge.parse_tool_calls(
+                    full_text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+                )
+                if tools
+                else []
+            )
+            if (
+                calls
+                or emitted_tail.strip()
+                or sent_reasoning.strip()
+                or not finish_seen
+            ):
+                break
+            if attempt == 0:
+                self.logger.warning(
+                    "上游正常结束但输出全空（empty_response），弃会话重试 1/1"
+                )
+                try:
+                    self._conv_cache.delete_by_session_id(chat_id)
+                except Exception:
+                    pass
+
         if calls:
             tail = rs.close_think()
             if tail:
@@ -1183,10 +1276,50 @@ class QwenWebClient:
                     ]
                 }
             )
-            yield chunk({}, usage=_usage(payload, full_text))
+            yield chunk({}, usage=_usage(payload, sent_text, sent_reasoning))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
             return
+
+        # P0 思考双通道：正文可见输出为空时才扫 reasoning 里的完整
+        # <tool_call> 块——思考里的草稿调用绝不提取（shell 级误执行风险）
+        if tools and not calls and not emitted_tail.strip() and sent_reasoning:
+            rcalls = tool_bridge.parse_tool_calls(
+                sent_reasoning, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+            )
+            if rcalls:
+                self.logger.warning("思考里发现完整工具调用（正文为空），已提取下发")
+                calls = rcalls
+                yield chunk(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": calls[0]["id"],
+                                "type": "function",
+                                "function": calls[0]["function"],
+                            }
+                        ]
+                    }
+                )
+                yield chunk({}, usage=_usage(payload, sent_text, sent_reasoning))
+                yield chunk({}, finish="tool_calls")
+                yield "data: [DONE]\n\n"
+                return
+
+        # 解析失败可观测性：扣住了标记却没解析成调用（名字不在清单/JSON
+        # 残缺），静默剥离会造成「模型以为调了、客户端什么都没收到」的无头案
+        if buf is not None and buf.opener_found:
+            self.logger.warning(
+                "Qwen 输出了工具调用标记但未解析成调用（工具名不在声明清单"
+                "或 JSON 残缺），已按普通文本剥离。片段: %r",
+                (
+                    tool_bridge.strip_tool_markup(
+                        buf.text, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+                    )
+                    or buf.text
+                )[-200:],
+            )
 
         if buf is not None:
             # 没解析出工具调用：扣住的尾巴剥掉标记与调用形态 JSON 再放
@@ -1207,7 +1340,7 @@ class QwenWebClient:
             yield chunk({"reasoning_content": out_r})
         if out_c:
             yield chunk({"content": out_c})
-        yield chunk({}, usage=_usage(payload, full_text))
+        yield chunk({}, usage=_usage(payload, full_text, sent_reasoning))
         if not finish_seen:
             self.logger.warning(
                 "上游流提前中断（续写未救回），按截断返回 finish=length"
