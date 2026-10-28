@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>webai2api</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%23000'/><path d='M28 68 L50 30 L72 68' stroke='white' stroke-width='7' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/admin/static/app.css?v=0.1.40">
+<link rel="stylesheet" href="/admin/static/app.css?v=0.1.41">
 <script>
 /* 主题：在首次绘制前定下来，避免闪白 */
 (function(){
@@ -25,7 +25,7 @@
   }catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 })();
 </script>
-<script src="/admin/static/hyalite.js?v=0.1.40"></script>
+<script src="/admin/static/hyalite.js?v=0.1.41"></script>
 </head>
 <body>
 
@@ -247,7 +247,13 @@
         </div>
         <div class="set-group" style="margin-top:18px">
           <div class="set-group-title">WorkBuddy</div>
-          <p class="hint" style="margin-bottom:0">WorkBuddy 走 OpenAI 兼容协议：按下面「通用 OpenAI 兼容客户端」的参数表在 WorkBuddy 里新建提供商即可。专属一键写入待接入实测样例后支持。</p>
+          <p class="muted" style="margin:-2px 0 12px">WorkBuddy 仅支持 OpenAI 兼容协议，且每个提供商填一个模型——在「添加模型 → 自定义」里按下表逐条填写，<b>高级配置勾上「工具调用」</b>，输入/输出留默认：</p>
+          <div class="guide">
+            <div class="guide-row"><span>接口地址</span><code id="wbBase">/v1/chat/completions</code><button class="btn gray sm" onclick="copyText(document.getElementById('wbBase').textContent)">复制</button></div>
+            <div class="guide-row"><span>API Key</span><code id="wbKeyHint">在上方列表中选择或生成</code><button class="btn gray sm" onclick="copyText(window.__wbKey||'')">复制</button></div>
+            <div class="guide-row"><span>高级配置</span><code>勾选「工具调用」，其余留默认</code></div>
+          </div>
+          <div class="guide-models" id="wbModels" style="margin-top:10px"></div>
         </div>
         <div class="set-group" style="margin-top:18px">
           <div class="set-group-title">通用 OpenAI 兼容客户端</div>
@@ -501,11 +507,8 @@
           <div class="hint" style="display:block;margin-top:8px">默认 = 跟随主题；选择后所有主题统一使用该强调色</div>
           <div class="set-group-title" style="margin-top:16px">背景颜色</div>
           <div class="accent-row" style="margin-top:8px">
-            <input type="color" id="bgPick" value="#eceff5" onchange="applyCustomBg(this.value)" title="自定义背景颜色" style="width:36px;height:30px;border:none;background:none;cursor:pointer;padding:0">
-            <button type="button" class="theme-chip" onclick="applyCustomBg('#eceff5')">浅灰蓝</button>
-            <button type="button" class="theme-chip" onclick="applyCustomBg('#f6f2ea')">米白</button>
-            <button type="button" class="theme-chip" onclick="applyCustomBg('#e7f0ea')">淡青</button>
-            <button type="button" class="theme-chip" onclick="applyCustomBg('#0f1216')">墨黑</button>
+            <input type="color" id="bgPick" value="#eceff5" onchange="applyCustomBg(this.value)" title="自定义任意背景颜色" style="width:36px;height:30px;border:none;background:none;cursor:pointer;padding:0">
+            <span class="accent-row" id="bgDots" style="gap:7px"></span>
             <button type="button" class="btn gray sm" onclick="resetCustomBg()">恢复主题默认</button>
           </div>
           <div class="hint" style="display:block;margin-top:8px">调色盘只改页面底色，卡片与文字仍跟随主题，保证可读；纹理叠加在底色之上</div>
@@ -2329,9 +2332,18 @@ function applyCustomBg(c){
   renderBgPick();
 }
 function resetCustomBg(){ applyCustomBg(''); }
+const BG_PRESETS=[
+  ['#eceff5','浅灰蓝'],['#f6f2ea','米白'],['#e7f0ea','淡青'],['#f3e8dc','暖沙'],
+  ['#efeafa','淡紫'],['#f8ecec','淡粉'],['#e1ecf7','天蓝'],['#e3f2ec','薄荷'],
+  ['#101317','墨黑'],['#101826','深海'],['#1c1a17','暖黑'],['#121216','石墨'],
+];
 function renderBgPick(){
+  let cur=''; try{ cur=localStorage.getItem('wapi_custom_bg')||''; }catch(e){}
   const el=document.getElementById('bgPick');
-  if(el){ let v='#eceff5'; try{ v=localStorage.getItem('wapi_custom_bg')||v; }catch(e){} el.value=v; }
+  if(el && !cur) el.value='#eceff5';
+  const host=document.getElementById('bgDots');
+  if(host) host.innerHTML=BG_PRESETS.map(([v,n])=>
+    `<button type="button" class="bg-dot${cur===v?' on':''}" style="background:${v}" onclick="applyCustomBg('${v}')" title="${n}"></button>`).join('');
 }
 function currentPattern(){try{return localStorage.getItem('wapi_pattern')||''}catch(e){return ''}}
 function applyPattern(id){
@@ -2509,7 +2521,7 @@ ${lines.join(',\n')}
     const sel=document.getElementById('ocKeySel'); if(!sel) return;
     const opts=getOcKeyOptions();
     const prev=sel.value;
-    sel.innerHTML=opts.length?opts.map((k,i)=>`<option value="${esc(k.id)}" ${(prev?k.id===prev:i===0)?'selected':''}>${esc(k.name)} ${maskKey(k)}</option>`).join(''):'<option value="">无可用 Key</option>';
+    sel.innerHTML=opts.length?opts.map((k,i)=>`<option value="${esc(k.id)}" ${(prev?k.id===prev:i===0)?'selected':''}>${esc(k.name)}</option>`).join(''):'<option value="">无可用 Key</option>';
     OC_SELECTED_KEY=sel.value;
     if(typeof selBuild==='function') selBuild('ocKeySel');
     const gh=document.getElementById('guideKeyHint');
@@ -2529,6 +2541,15 @@ ${lines.join(',\n')}
     const gm=document.getElementById('guideModels');
     if(gm) gm.innerHTML=models.map(m=>
       `<div class="guide-model"><code>${esc(m)}</code><button class="btn gray sm" onclick="copyText('${esc(m)}')">复制 ID</button></div>`).join('');
+    // WorkBuddy 卡：接口地址是完整 chat/completions 路径，模型逐条添加
+    const wbB=document.getElementById('wbBase');
+    if(wbB) wbB.textContent=location.origin+'/v1/chat/completions';
+    const wbK=document.getElementById('wbKeyHint');
+    if(wbK) wbK.textContent=k?maskKey(k):'在上方列表中选择或生成';
+    window.__wbKey=k?k.key:'';
+    const wm=document.getElementById('wbModels');
+    if(wm) wm.innerHTML=models.map(m=>
+      `<div class="guide-model"><code>${esc(m)}</code><span class="muted" style="font-size:12px">单独添加</span><button class="btn gray sm" onclick="copyText('${esc(m)}')">复制</button></div>`).join('');
   }
   function buildClaudeSnippet(keyVal){
     const base=location.origin;

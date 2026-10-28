@@ -1347,3 +1347,10 @@ html[data-theme=dark],html[data-theme=mono-dark]{
 html[data-theme=mono-light] .donut-seg,html[data-theme=mono-dark] .donut-seg,
 html[data-theme=mono-light] .bar-fill,html[data-theme=mono-dark] .bar-fill,
 html[data-theme=mono-light] .m-dot,html[data-theme=mono-dark] .m-dot{filter:grayscale(.85)}
+
+/* ── 验收反馈五连修：loading 孤字 / 行菜单层级 / 背景调色盘圆点 ── */
+body.loading .stat .num small{color:transparent}
+.row-menu{z-index:60}
+.bg-dot{width:26px;height:26px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:transform .15s}
+.bg-dot:hover{transform:scale(1.12)}
+.bg-dot.on{border-color:var(--text);box-shadow:0 0 0 2px var(--bg)}
