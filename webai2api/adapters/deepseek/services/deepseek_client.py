@@ -3,7 +3,9 @@ DeepSeek Web API 客户端。
 
 修复要点：
 - 上游错误 → 正确的 HTTP 状态码
-- usage 使用 DeepSeek 返回的 accumulated_token_usage
+- usage 本地估算（正文+思考）。上游 accumulated_token_usage 是**会话
+  累计值**（含历史各轮 prompt+completion），只用作会话满量轮换信号，
+  绝不能当单轮 completion——2026-10-28 实测第 12 轮虚报 9.7 万 token
 - cache key 包含 system + model + tool_calls 完整结构
 - 每个请求独立 StreamState
 - reasoning_content 输出
@@ -745,7 +747,12 @@ class DeepSeekWebClient:
 
     @staticmethod
     def _extract_batch_token_usage(event: dict) -> int | None:
-        """BATCH 事件 → accumulated_token_usage；非 BATCH 事件返回 None。"""
+        """BATCH 事件 → accumulated_token_usage；非 BATCH 事件返回 None。
+
+        ⚠ 语义：这是**会话累计**消耗（含历史各轮 prompt+completion），
+        随轮次单调增长——只可作会话满量轮换信号（upstream_total），
+        不可当单轮 completion 用量。
+        """
         if isinstance(event, dict) and event.get("o") == "BATCH":
             batch_v = event.get("v")
             if isinstance(batch_v, list):
@@ -892,7 +899,13 @@ class DeepSeekWebClient:
         request_message_id: str | None = None,
         tool_calls: list[ParsedToolCall] | None = None,
         used_tokens: int = 0,
+        upstream_total: int = 0,
     ) -> None:
+        """used_tokens：本轮**本地估算**的输出消耗（正文+思考），累加进会话；
+        upstream_total：上游 BATCH 的 accumulated_token_usage。那是**会话累计
+        值**（含历史各轮 prompt+completion），到货时直接整体替换 used_tokens
+        作为「快满了就换」的满量信号——绝不能与 prev 相加（2026-10-28 实测
+        二次累加让轮换提前触发、且被当成单轮 completion 报出 9.7 万 token）。"""
         if not self.cache_enabled:
             if session_id:
                 with self._proxy_sessions_lock:
@@ -931,6 +944,11 @@ class DeepSeekWebClient:
         prev_tokens = (
             int(getattr(prev_state, "used_tokens", 0) or 0) if prev_state else 0
         )
+        if upstream_total and upstream_total > 0:
+            # 上游给出会话累计值：整体替换（真实满量），不再累加
+            total_tokens = int(upstream_total)
+        else:
+            total_tokens = prev_tokens + max(0, int(used_tokens or 0))
         self.session_cache.put(
             resolved["cache_key"],
             SessionState(
@@ -939,7 +957,7 @@ class DeepSeekWebClient:
                 last_message_id=request_message_id,
                 msg_count=int(resolved.get("msg_count", 0) or 0),
                 history_hash=new_hash,
-                used_tokens=prev_tokens + max(0, int(used_tokens or 0)),
+                used_tokens=total_tokens,
             ),
         )
 
@@ -1143,8 +1161,9 @@ class DeepSeekWebClient:
                             parsed.clean_text,
                             last_response_message_id,
                             tool_calls=parsed.calls,
-                            used_tokens=accumulated_tokens
-                            or _estimate_tokens(parsed.clean_text),
+                            used_tokens=_estimate_tokens(parsed.clean_text)
+                            + _estimate_tokens(full_reasoning),
+                            upstream_total=accumulated_tokens,
                         )
                         if (
                             self.config.delete_conversation
@@ -1156,7 +1175,7 @@ class DeepSeekWebClient:
                             payload,
                             resolved,
                             parsed.calls,
-                            accumulated_tokens,
+                            full_reasoning,
                             completion_id,
                         )
 
@@ -1187,8 +1206,9 @@ class DeepSeekWebClient:
                         session_id,
                         full_text,
                         last_response_message_id,
-                        used_tokens=accumulated_tokens
-                        or _estimate_tokens(full_text) + _estimate_tokens(full_reasoning),
+                        used_tokens=_estimate_tokens(full_text)
+                        + _estimate_tokens(full_reasoning),
+                        upstream_total=accumulated_tokens,
                     )
 
                     if (
@@ -1203,7 +1223,6 @@ class DeepSeekWebClient:
                         resolved,
                         full_text,
                         full_reasoning,
-                        accumulated_tokens,
                         completion_id,
                         finish_reason="length" if not saw_upstream_finish else "stop",
                     )
@@ -1617,8 +1636,16 @@ class DeepSeekWebClient:
                                 if prompt_text
                                 else 0
                             )
-                            completion_tokens = accumulated_tokens or max(
-                                1, _estimate_tokens(full_text)
+                            # ★ 不能用上游 accumulated_token_usage 当本轮
+                            #   completion：那是**会话累计值**（含历史各轮的
+                            #   prompt+completion），随轮次单调增长，实测第 12
+                            #   轮报出 9.7 万 completion（2026-10-28 面板
+                            #   「十几秒产出几万 token」的真正毒源）。本轮
+                            #   completion 一律本地估算：正文 + 思考都是输出。
+                            completion_tokens = max(
+                                1,
+                                _estimate_tokens(full_text)
+                                + _estimate_tokens(full_reasoning),
                             )
                             usage_chunk = {
                                 "id": completion_id,
@@ -1671,8 +1698,9 @@ class DeepSeekWebClient:
                                 stored_text,
                                 last_response_message_id,
                                 tool_calls=emitted_calls or None,
-                                used_tokens=accumulated_tokens
-                                or _estimate_tokens(stored_text) + _estimate_tokens(full_reasoning),
+                                used_tokens=_estimate_tokens(stored_text)
+                                + _estimate_tokens(full_reasoning),
+                                upstream_total=accumulated_tokens,
                             )
 
                         if (
@@ -2134,13 +2162,14 @@ class DeepSeekWebClient:
         resolved: dict,
         full_text: str,
         full_reasoning: str,
-        accumulated_tokens: int,
         completion_id: str,
         finish_reason: str = "stop",
     ) -> dict:
         prompt_text = resolved["ds_payload"].get("prompt", "")
         prompt_tokens = max(1, _estimate_tokens(prompt_text)) if prompt_text else 0
-        completion_tokens = accumulated_tokens or max(1, _estimate_tokens(full_text))
+        completion_tokens = max(
+            1, _estimate_tokens(full_text) + _estimate_tokens(full_reasoning)
+        )
 
         message: dict = {
             "role": "assistant",
@@ -2174,13 +2203,15 @@ class DeepSeekWebClient:
         payload: dict,
         resolved: dict,
         calls: list[ParsedToolCall],
-        accumulated_tokens: int,
+        full_reasoning: str,
         completion_id: str,
     ) -> dict:
         prompt_text = resolved["ds_payload"].get("prompt", "")
         prompt_tokens = max(1, _estimate_tokens(prompt_text)) if prompt_text else 0
-        completion_tokens = accumulated_tokens or max(
-            1, sum(len(c.arguments) for c in calls) // 4
+        completion_tokens = max(
+            1,
+            sum(len(c.arguments) for c in calls) // 4
+            + _estimate_tokens(full_reasoning),
         )
 
         return {

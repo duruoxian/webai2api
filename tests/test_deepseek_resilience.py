@@ -125,9 +125,8 @@ def _stub_client(rounds) -> DeepSeekWebClient:
     c._open_chat_stream = _open
     c._iter_sse_events = _iter
     c._store_after_response = (
-        lambda resolved, sid, text, msg_id, tool_calls=None, used_tokens=0: (
-            c.stored.append((text, tool_calls))
-        )
+        lambda resolved, sid, text, msg_id, tool_calls=None, used_tokens=0,
+               upstream_total=0: c.stored.append((text, tool_calls))
     )
     return c
 
