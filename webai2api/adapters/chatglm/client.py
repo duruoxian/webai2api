@@ -180,8 +180,12 @@ TOOL_INSTRUCTION = """你可以调用以下工具来完成任务：
 3. 如果不需要工具，直接用自然语言回答，不要输出 {marker}。
 4. 你运行在用户的本地电脑上，工具就是你唯一能操作本地文件的方式；
    不要说「我不能访问你的系统盘」，需要写文件时直接调用对应工具。
+   用户要求创建/写入/生成文件时，必须调用对应的写文件工具完成，
+   不要把文件内容整段贴在回答里就当作已经完成。
 5. 收到 <tool_result> 包裹的工具执行结果后，基于真实结果继续：
    需要更多信息就再调用工具，信息够了就给出最终回答（不要再输出标记）。
+6. 编辑文件时，old_string 必须逐字复制自最近一次读到的文件内容，
+   禁止凭记忆改写；不确定或上次编辑失败时，先重新读取文件再编辑。
 """
 
 
@@ -228,27 +232,36 @@ def _inject_tools(messages: list, tools: list) -> list:
 
 
 def _collapse_cached_text(content: str, messages: list) -> str:
-    """上游会话被复用、但本轮仍带工具历史时，给增量补一句「已执行」提示。
+    """上一轮就是工具调用轮时，给增量补一句「已执行」提示。
 
     模型在上游会话里看到自己刚发过工具调用，而会话里还没有结果（增量
     只发新的一轮）时，实测会原样重调同一个工具。这里在增量前面加一行
     明确的完成声明，把「调用 → 结果」闭合掉。
+
+    只看**最后一条** assistant 是否带 tool_calls：更早轮次的调用早已
+    闭合。此前对「历史里出现过任何工具调用」的每一轮增量都加
+    「…请基于结果直接给出最终回答」，agent 后续本该继续调工具的轮次
+    被这句带着直接文字作答——实测 GLM 因此「忘记」写文件，把文件内容
+    当最终回答贴出来（2026-10-28 用户报障）。
     """
     if not content:
         return content
-    names = []
+    last = None
     for m in messages or []:
         if isinstance(m, dict) and m.get("role") == "assistant":
-            for c in m.get("tool_calls") or []:
-                fn = (c or {}).get("function") or {}
-                if fn.get("name"):
-                    names.append(fn["name"])
+            last = m
+    names = []
+    for c in (last or {}).get("tool_calls") or []:
+        fn = (c or {}).get("function") or {}
+        if fn.get("name"):
+            names.append(fn["name"])
     if not names:
         return content
     head = (
-        "[已完成] 上文工具调用（"
+        "[已执行] 上一轮发起的工具调用（"
         + ", ".join(dict.fromkeys(names))
-        + "）均已执行并返回结果，无需再次调用同一工具，请基于结果直接给出最终回答。\n"
+        + "）均已执行完毕，下方 <tool_result> 就是执行结果。请基于结果继续："
+        "还需要其他信息或操作就再调用工具，全部完成后再给出最终回答。\n"
     )
     return head + content
 
@@ -1259,6 +1272,8 @@ class ChatGlmWebClient:
         rs = reasoning_bridge.ReasoningStream(
             legacy=self.config.legacy_reasoning_in_content
         )
+        content_streamed = False
+        dropped_post_thinking = 0
         try:
             for ev in self._stream_events(payload):
                 native = ev.get("tool_calls") or native
@@ -1270,10 +1285,17 @@ class ChatGlmWebClient:
                 d_text = ev["text"][len(sent_text) :]
                 sent_text = ev["text"]
                 d_out = buf.feed_delta(d_text) if buf is not None else d_text
+                # GLM 多阶段思考：正文开流后还会冒出后续思考段（答后思考），
+                # 透传会让客户端在「答案」后面再渲染思考块（2026-10-28 用户
+                # 报障）。答案既已开始，后续思考对 agent 是纯噪音，丢弃。
+                if content_streamed and d_reason:
+                    dropped_post_thinking += len(d_reason)
+                    d_reason = ""
                 out_r, out_c = rs.feed(d_reason, d_out)
                 if out_r:
                     yield chunk({"reasoning_content": out_r})
                 if out_c:
+                    content_streamed = True
                     yield chunk({"content": out_c})
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("智谱流式请求失败: %s", exc)
@@ -1281,6 +1303,11 @@ class ChatGlmWebClient:
             yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
             return
+        if dropped_post_thinking:
+            self.logger.debug(
+                "已丢弃答后思考 %d 字（答案开始后的多阶段思考）",
+                dropped_post_thinking,
+            )
 
         if has_tools:
             calls = native or _parse_tool_calls(buf.text, payload.get("tools"))
@@ -1306,7 +1333,17 @@ class ChatGlmWebClient:
                 yield "data: [DONE]\n\n"
                 return
             # 没解析出工具调用：只放缓冲器扣住的未发尾巴（剥掉标记残迹）
-            rel_tail = _strip_tool_block(buf.flush())
+            tail = buf.flush()
+            if buf.opener_found:
+                # 模型输出了调用标记但没解析成调用（名字不在声明清单 /
+                # JSON 残缺）。静默剥掉会造成「模型以为调用了、客户端什么
+                # 都没收到」的无头案，留一条带片段的 warning 便于排查。
+                self.logger.warning(
+                    "GLM 输出了工具调用标记但未解析成调用（工具名不在声明清单"
+                    "或 JSON 残缺），已按普通文本剥离。片段: %r",
+                    _strip_tool_block(tail)[:200] or tail[:200],
+                )
+            rel_tail = _strip_tool_block(tail)
         else:
             rel_tail = ""
 

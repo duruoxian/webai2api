@@ -308,6 +308,13 @@ def _build_tool_prompt_impl(tools, tool_choice="auto"):
         f"  - A tool call MISSING any required argument is INVALID and will be DISCARDED.",
         f"    Write every required parameter BEFORE closing the invoke; never emit an empty",
         f"    invoke and try to fill it in later — you get one shot per response.",
+        f"  - When the user asks you to create/write a file, you MUST call the",
+        f"    file-writing tool. Do NOT paste the file content into your reply",
+        f"    and consider the task done.",
+        f"  - For edit tools with an old-text argument (old_string etc.): copy the",
+        f"    old text VERBATIM from the most recent read of that file. Never",
+        f"    reconstruct it from memory; if unsure or the previous edit failed,",
+        f"    read the file section again first.",
         "  - Use EXACT tool names: "
         + ", ".join(_tool_name(t) for t in tools if isinstance(t, dict)),
         "",
