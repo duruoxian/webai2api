@@ -390,18 +390,29 @@ class _GlmParts:
     """
 
     def __init__(
-        self, is_silent: bool = False, allowed_tools: set | None = None
+        self,
+        is_silent: bool = False,
+        allowed_tools: set | None = None,
+        seen_call_keys: set | None = None,
     ) -> None:
         self._is_silent = is_silent
         self._allowed_tools = allowed_tools
         self._order: list[str] = []  # lid 首见序
         self._text: dict[str, str] = {}  # lid -> 正文累计
         self._think: dict[str, str] = {}  # lid -> 思考累计
-        self._extra: dict[str, str] = {}  # lid -> code/image 等一次性渲染
-        self._call_ids: set[str] = set()
+        self._code: dict[str, str] = {}  # lid -> 代码累计（finish 全量校准）
+        self._extra: dict[str, str] = {}  # lid -> image 等一次性渲染
+        # 去重键跨轮携带：续写轮新累积器也要认得上一轮已收录的调用，
+        # 否则断流跨轮重发的同一调用会被按新 id 再收一次（双重执行）
+        self._call_ids: set[str] = set(seen_call_keys or ())
         self.tool_calls: list[dict] = []  # 服务端原生 tool_calls
         self.text = ""  # 全量正文
         self.reasoning = ""  # 全量思考
+
+    @staticmethod
+    def _call_sig(name: str, args: str) -> str:
+        """调用去重签名：name + 参数内容。无 id 的调用也能跨帧/跨轮去重。"""
+        return f"{name}:{hashlib.md5((args or '').encode('utf-8')).hexdigest()}"
 
     @staticmethod
     def _calibrate(buf: str, piece: str, status) -> str:
@@ -411,7 +422,7 @@ class _GlmParts:
         return buf + piece
 
     def _native_call(self, data) -> None:
-        """收集服务端原生 tool_calls（同一 id 只记一次，finish 帧会重发）。"""
+        """收集服务端原生 tool_calls（同一调用只记一次，finish 帧会重发）。"""
         if isinstance(data, list):
             for one in data:
                 self._native_call(one)
@@ -426,12 +437,15 @@ class _GlmParts:
         # 混进 tool_calls 会让客户端收到无法执行的调用
         if not self._allowed_tools or name not in self._allowed_tools:
             return
-        key = cid or f"{name}:{len(self.tool_calls)}"
-        if key in self._call_ids:
-            return
         args = data.get("arguments", {})
         if not isinstance(args, str):
             args = json.dumps(args or {}, ensure_ascii=False)
+        # 去重键用「名字+参数签名」而非自增序号：无 id 调用的旧键
+        # f"{name}:{len(...)}" 在首次 append 后就变了，finish 帧重发
+        # 同一调用去不了重（客户端双重执行，2026-10-30 审计 GLM-P2-4）
+        key = cid or self._call_sig(name, args)
+        if key in self._call_ids:
+            return
         self._call_ids.add(key)
         self.tool_calls.append(
             {
@@ -457,6 +471,7 @@ class _GlmParts:
                 self._text[lid] = ""
                 self._think[lid] = ""
                 self._extra[lid] = ""
+                self._code[lid] = ""
             status = part.get("status")
             for item in content:
                 if not isinstance(item, dict):
@@ -475,6 +490,15 @@ class _GlmParts:
                         self._think[lid], item.get("think") or "", status
                     )
                     dirty = True
+                elif t == "code":
+                    # code part 与 text/think 同为 delta 帧语义：按 logic_id
+                    # 累积 + finish 全量校准，装配时只渲染一次围栏。此前走
+                    # _render_part 逐帧包 ```python 围栏、finish 快照再追加
+                    # 一遍（内容重复+围栏错乱，2026-10-30 审计 GLM-1）。
+                    self._code[lid] = self._calibrate(
+                        self._code[lid], item.get("code") or "", status
+                    )
+                    dirty = True
                 else:
                     rendered, _ = _render_part(
                         {"content": [item], "status": status}, self._is_silent
@@ -483,8 +507,14 @@ class _GlmParts:
                         self._extra[lid] += rendered
                         dirty = True
         if dirty:
+            def _render_code(code: str) -> str:
+                return "```python\n" + code + "\n```\n" if code else ""
+
             self.text = "".join(
-                self._text[lid] + self._extra[lid] for lid in self._order
+                self._text[lid]
+                + (_render_code(self._code[lid]) if self._code.get(lid) else "")
+                + self._extra[lid]
+                for lid in self._order
             )
             self.reasoning = "".join(self._think[lid] for lid in self._order)
 
@@ -1020,7 +1050,16 @@ class ChatGlmWebClient:
                     base_text += round_text_shown
                     base_reasoning += round_reason_shown
                 all_calls.extend(acc.tool_calls)
-                acc = _GlmParts(is_silent, allowed_tools=allowed)
+                acc = _GlmParts(
+                    is_silent,
+                    allowed_tools=allowed,
+                    seen_call_keys={
+                        _GlmParts._call_sig(
+                            c["function"]["name"], c["function"]["arguments"]
+                        )
+                        for c in all_calls
+                    },
+                )
                 seam_text = tool_bridge.SeamTrimmer(
                     base_text[-tool_bridge.SEAM_WINDOW :]
                 )
@@ -1468,6 +1507,12 @@ class ChatGlmWebClient:
         if has_tools:
             calls = native or _parse_tool_calls(buf.text, payload.get("tools"))
             if calls:
+                # 扣留器在无 opener 时保守扣住末尾 max(opener) 字节；
+                # native tool_calls 场景正文里没有标记，这 18 字节是纯正文
+                # 尾巴，先放行再发调用（2026-10-30 审计 GLM-2）
+                held = buf.flush_prefix()
+                if held:
+                    yield chunk({"content": held})
                 tail = rs.close_think()
                 if tail:
                     yield chunk({"content": tail})

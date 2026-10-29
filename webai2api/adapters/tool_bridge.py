@@ -925,6 +925,22 @@ class _ToolHoldBuffer:
                 out = out[: len(out) - cut]
         return out
 
+    def flush_prefix(self) -> str:
+        """calls 成立时取走「opener 之前被保守扣住的正文尾巴」。
+
+        无 opener（native 调用场景）：返回全部未放行的正文并清空水位；
+        有 opener：返回 _emitted 到 _open_at 之间未放行的部分（正常流式
+        下为空串），水位推进到 opener——opener 之后的标记/JSON 区域
+        不放行（已解析成 tool_calls）。
+        """
+        if self._open_at < 0:
+            out = self._full[self._emitted :]
+            self._emitted = len(self._full)
+            return out
+        out = self._full[self._emitted : self._open_at]
+        self._emitted = self._open_at
+        return out
+
     @property
     def opener_found(self) -> bool:
         return self._open_at >= 0
