@@ -892,13 +892,11 @@ class ChatGlmWebClient:
         # 消息的新图（上游会话里已有历史图片）。任一张失败跳过，纯文本继续。
         try:
             if cached_conv:
+                # 只看最后一条 user 消息（不要求 content 是 list）：若最新
+                # 一轮是纯文本而取「最后一条带 list 的 user」，会把历史旧图
+                # 重新挂到本轮，上游会话里同一张图逐轮膨胀（审计 GLM-P2-8）
                 last_user = next(
-                    (
-                        m
-                        for m in reversed(messages)
-                        if m.get("role") == "user"
-                        and isinstance(m.get("content"), list)
-                    ),
+                    (m for m in reversed(messages) if m.get("role") == "user"),
                     None,
                 )
                 image_items = (
@@ -1185,15 +1183,22 @@ class ChatGlmWebClient:
                 f"{self.config.base_url}/chatglm/backend-api/assistant/conversation/list"
                 f"?assistant_id={self.config.assistant_id}&page={page}&page_size=50"
             )
+            conn = None
             try:
                 conn = self._conn(url, min(self.config.request_timeout, 20))
                 conn.request("GET", self._split(url)[1], headers=headers)
                 resp = conn.getresponse()
                 raw = resp.read()
-                conn.close()
                 payload = json.loads(raw or b"{}")
             except Exception as exc:  # noqa: BLE001
                 raise GlmError(f"拉取智谱会话列表失败: {exc}", 502) from exc
+            finally:
+                # 异常路径也要关连接（此前只在成功路径 close，审计 GLM-P2-9）
+                try:
+                    if conn is not None:
+                        conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
             result = payload.get("result") or {}
             items = result.get("conversation_list") or []
@@ -1489,8 +1494,13 @@ class ChatGlmWebClient:
                 out_r, out_c = rs.feed(d_reason, d_out)
                 if out_r:
                     yield chunk({"reasoning_content": out_r})
-                if out_c:
+                # content_streamed 只由真实正文增量（d_out）置位：legacy 模式
+                # 下思考经 rs.feed 包成 <think> 也走 out_c，若据此判定「答案
+                # 已开流」，多事件思考的第 2 段起会被当答后思考丢弃
+                # （2026-10-30 审计 GLM-P2-6）
+                if d_out:
                     content_streamed = True
+                if out_c:
                     yield chunk({"content": out_c})
         except Exception as exc:  # noqa: BLE001
             self.logger.warning("智谱流式请求失败: %s", exc)

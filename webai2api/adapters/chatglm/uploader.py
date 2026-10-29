@@ -136,7 +136,25 @@ class GlmImageUploader:
             _, path = self._client._split(url)
             conn.request("GET", path, headers={"Accept": "image/*"})
             resp = conn.getresponse()
-            raw = resp.read()
+            # 分块读取 + 上限校验：Content-Length 超限或累计超限即中止，
+            # 避免指向超大文件的 image_url 无界进内存（审计 GLM-P2-10）
+            try:
+                total = int(resp.getheader("Content-Length") or 0)
+            except (TypeError, ValueError):
+                total = 0
+            if total > _MAX_IMAGE_BYTES:
+                raise RuntimeError(f"图片过大 Content-Length={total}")
+            chunks = []
+            got = 0
+            while True:
+                piece = resp.read(65536)
+                if not piece:
+                    break
+                got += len(piece)
+                if got > _MAX_IMAGE_BYTES:
+                    raise RuntimeError(f"图片过大（>{_MAX_IMAGE_BYTES} 字节）")
+                chunks.append(piece)
+            raw = b"".join(chunks)
             if resp.status >= 400:
                 raise RuntimeError(f"HTTP {resp.status}")
             mime = (resp.getheader("Content-Type") or "image/png").split(";")[0]
