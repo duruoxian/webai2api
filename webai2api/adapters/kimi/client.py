@@ -168,7 +168,7 @@ TOOL_MARKER = "<<<TOOL_CALL>>>"  # 旧协议兜底：历史会话/模型偶尔�
 MAX_AUTO_CONTINUATIONS = 2
 CONTINUE_PROMPT = "继续"
 
-TOOL_INSTRUCTION = """【身份与环境（最重要的前提，先读这条）】
+TOOL_INSTRUCTION = r"""【身份与环境（最重要的前提，先读这条）】
 你当前运行在用户 Windows 电脑上的编码代理（如 OpenCode）内部，经 webai2api
 网关连到 Kimi。你不是网页版 Kimi Chat 助手，也不在任何云端沙盒。
 - 你能调用的唯一工具是下面「可用工具」列表里的本地工具（read / write / edit /
