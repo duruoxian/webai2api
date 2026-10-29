@@ -1343,7 +1343,10 @@ class DeepSeekWebClient:
                         exc,
                     )
                     self._invalidate_and_delete_session(resolved)
-                    if file_retries >= MAX_FILE_PARSE_RETRIES:
+                    # 计数语义：file_retries 在 except 入口已自增，>= 会让
+                    # 首次失败（1>=1）立即 raise，「去附件重试」成死代码
+                    # （2026-10-30 审计 DS-1）；> 才是允许 MAX 次重试
+                    if file_retries > MAX_FILE_PARSE_RETRIES:
                         raise UpstreamAPIError(
                             status_code=502,
                             message=f"上游文件解析失败: {exc}",
@@ -1574,7 +1577,7 @@ class DeepSeekWebClient:
                             """流收尾：检测器残余 → citation 尾巴 → P0 思考扫
                             调用 → 空正文兜底。空响应重试轮会换新检测器后再调
                             一次，所以收成闭包而不是内联代码。"""
-                            nonlocal full_text
+                            nonlocal full_text, full_reasoning
                             # 1. 检测器残余
                             for action in detector.finalize():
                                 if action.kind == "text" and action.text:
@@ -1627,6 +1630,9 @@ class DeepSeekWebClient:
                                 yield from _emit_content(full_reasoning)
                                 if not full_text:
                                     full_text = full_reasoning
+                                # 非流式同款兜底会清空 reasoning：不清则 usage
+                                # 与 used_tokens 把同一段文本算两遍（审计 DS-P2）
+                                full_reasoning = ""
 
                         def _consume(resp, *, skip_role: bool) -> bool:
                             """消费一个上游 SSE 流直到 finish/断流，返回是否见到 finish 帧。
@@ -1981,7 +1987,9 @@ class DeepSeekWebClient:
                             exc,
                         )
                         self._invalidate_and_delete_session(current_resolved)
-                        if anything_yielded or file_retries >= MAX_FILE_PARSE_RETRIES:
+                        # >= → >（同非流式）：首次失败允许去附件重试一次；
+                        # anything_yielded（已向客户端发过内容）仍必须放弃重试
+                        if anything_yielded or file_retries > MAX_FILE_PARSE_RETRIES:
                             raise UpstreamAPIError(
                                 status_code=502,
                                 message=f"上游文件解析失败: {exc}",

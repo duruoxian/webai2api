@@ -430,8 +430,10 @@ def _parse_attrs(s: str) -> dict[str, str]:
     return result
 
 
-def _decode_dsml_value(raw: str, is_string: bool):
-    if is_string:
+def _decode_dsml_value(raw: str, is_string: bool | None):
+    """is_string 三态：True=强制字符串；False=强制 JSON 解析；None=省略
+    （协议教模型数字/对象/数组省略本属性）→ 先试 JSON、失败回退字符串。"""
+    if is_string is True:
         return _strip_marker_residue(raw)
     stripped = raw.strip()
     if not stripped:
@@ -439,7 +441,9 @@ def _decode_dsml_value(raw: str, is_string: bool):
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
-        return raw
+        if is_string is False:
+            return raw
+        return _strip_marker_residue(raw)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -675,9 +679,13 @@ def _missing_required(name: str, args_str: str, tools: list[dict]) -> list[str]:
     宽容原则：找不到该工具定义、或定义里没写 required，一律放行，
     避免把本来能跑通的调用误杀。
     """
+    # 用与 _normalize_call 放行相同的模糊匹配（lower + -/_ 归一）找定义：
+    # 此前精确比对，模型输出 `Bash`、声明 `bash` 时放行了调用却找不到定义
+    # → 必填校验被整体绕过，空 arguments={} 透传（Missing key {} 回归口子，
+    # 2026-10-30 审计 DS-2）
     tool = None
     for t in tools:
-        if isinstance(t, dict) and _tool_name(t) == name:
+        if isinstance(t, dict) and _match_tool_name(name, {_tool_name(t)}):
             tool = t
             break
     if tool is None:
@@ -794,12 +802,15 @@ def _parse_dsml_body(
 
             p_attrs = _parse_attrs(pm.group(1))
             p_name = p_attrs.get("name", "")
-            p_is_string = str(p_attrs.get("string", "")).lower() in (
-                "true",
-                "1",
-                "yes",
-                "",
-            )
+            # string 属性省略 ≠ 字符串：协议提示词教的是「数字/对象/数组
+            # 省略本属性」（tool_calling.py:496），此前把省略当 true 导致
+            # <parameter name="limit">42</parameter> 解析成 "42"（审计 DS-P2）。
+            # None=省略：由 _decode_dsml_value 先试 JSON 再回退字符串
+            raw_attr = str(p_attrs.get("string", "")).strip().lower()
+            if raw_attr == "":
+                p_is_string = None
+            else:
+                p_is_string = raw_attr in ("true", "1", "yes")
 
             p_close = _PARAM_CLOSE_RE.search(invoke_inner, pm.end())
             if p_close:
