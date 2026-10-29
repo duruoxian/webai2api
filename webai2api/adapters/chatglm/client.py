@@ -274,7 +274,10 @@ def _strip_tool_block(text: str) -> str:
     """
     text = tool_bridge.normalize_tool_marker(text or "", TOOL_MARKER)
     out = tool_bridge.strip_tool_markup(text, marker=TOOL_MARKER, dsml=True)
-    return tool_bridge.scrub_marker_fragments(out).strip()
+    out = tool_bridge.scrub_marker_fragments(out)
+    return tool_bridge.strip_truncated_marker_tail(
+        out, [tool_bridge.DSML_TOOL_CALLS_OPEN, TOOL_MARKER]
+    ).strip()
 
 
 def _parse_tool_calls(text: str, tools: list) -> list:

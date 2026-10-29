@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import re
+
 import json
 import random
 import threading
@@ -90,6 +92,40 @@ def _text_of(msg: dict) -> str:
 QWEN_TOOL_TAG = "tool_call"
 QWEN_RESULT_TAG = "tool_response"
 QWEN_TOOL_MARKER = "<<<TOOL_CALL>>>"  # 兜底标记：模型偶尔不按标签输出时仍可解析
+
+# 降级标记形态（对齐 deepseek/GLM 的零残留加固，2026-10-30）：
+# - 清洗用：允许括号全缺，任何 <tool_call>/<<<TOOL_CALL>>> 残迹都剥
+# - 锚点兜底用：必须还剩 <，防正文误当 opener
+_QWEN_TAG_FRAGMENT_RE = re.compile(r"(?<![A-Za-z0-9])<?/?tool_call\s*>")
+_QWEN_FRAGMENT_RE = re.compile(
+    r"(?:<{0,3}\s*TOOL_CALL\s*>{1,3}|<?/?tool_call\s*>(?!\w)"
+    r"|(?:</?)?\|?DSML\|?tool_calls\s*>{0,3})"
+)
+_QWEN_OPEN_LOOSE_RE = re.compile(
+    r"(?:<{1,3}\s*TOOL_CALL\s*>{1,3}|<{1,2}tool_call\s*>)"
+)
+
+
+def _strip_tool_block(text: str) -> str:
+    """剥工具标记：归一角括号 → 精确剥除 → 扫标签/标记残迹。"""
+    text = tool_bridge.normalize_tool_marker(text or "", QWEN_TOOL_MARKER)
+    out = tool_bridge.strip_tool_markup(
+        text, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
+    )
+    out = tool_bridge.scrub_marker_fragments(_QWEN_TAG_FRAGMENT_RE.sub("", out))
+    return tool_bridge.strip_truncated_marker_tail(
+        out, [f"<{QWEN_TOOL_TAG}>", QWEN_TOOL_MARKER]
+    ).strip()
+
+
+def _parse_tool_calls(text: str, tools: list) -> list:
+    return tool_bridge.parse_tool_calls(
+        tool_bridge.normalize_tool_marker(text or "", QWEN_TOOL_MARKER),
+        tools,
+        tag=QWEN_TOOL_TAG,
+        marker=QWEN_TOOL_MARKER,
+    )
+
 
 # ── 断流自动续写（中继路径）─────────────────────────
 # 上游偶尔在长回答中途掐流且中继不发 done 事件。检测到断流后，向同一
@@ -990,9 +1026,7 @@ class QwenWebClient:
         text = reasoning = ""
         for ev in self._stream_events(retry):
             text, reasoning = ev["text"], ev["reasoning"]
-        calls = tool_bridge.parse_tool_calls(
-            text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
-        )
+        calls = _parse_tool_calls(text, tools)
         if not calls:
             raise QwenError(
                 "工具调用强校验失败：重试一次后模型仍未按要求调用工具"
@@ -1022,16 +1056,12 @@ class QwenWebClient:
                     finish_seen = bool(ev.get("finish_seen", True))
 
             calls = (
-                tool_bridge.parse_tool_calls(
-                    text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
-                )
+                _parse_tool_calls(text, tools)
                 if tools
                 else []
             )
             visible = (
-                tool_bridge.strip_tool_markup(
-                    text, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
-                )
+                _strip_tool_block(text)
                 if tools and not calls
                 else text
             )
@@ -1051,15 +1081,11 @@ class QwenWebClient:
         if not calls and tools and not text.strip() and reasoning.strip():
             # P0 思考双通道：正文可见输出为空时才扫 reasoning 里的完整
             # <tool_call> 块——思考里的草稿调用绝不提取（shell 级误执行风险）
-            rcalls = tool_bridge.parse_tool_calls(
-                reasoning, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
-            )
+            rcalls = _parse_tool_calls(reasoning, tools)
             if rcalls:
                 self.logger.warning("思考里发现完整工具调用（正文为空），已提取下发")
                 calls = rcalls
-                reasoning = tool_bridge.strip_tool_markup(
-                    reasoning, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
-                )
+                reasoning = _strip_tool_block(reasoning)
         if calls:
             return {
                 "id": completion_id,
@@ -1084,9 +1110,7 @@ class QwenWebClient:
         # 带工具但没解析出调用：剥掉可能残留的标记再下发；
         # 空正文兜底——思考里就是答案时顶上来
         content = (
-            tool_bridge.strip_tool_markup(
-                text, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
-            )
+            _strip_tool_block(text)
             if tools
             else text
         )
@@ -1153,9 +1177,7 @@ class QwenWebClient:
                 yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
-            calls = tool_bridge.parse_tool_calls(
-                text, tools, tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
-            )
+            calls = _parse_tool_calls(text, tools)
             if not calls:
                 try:
                     text, reasoning, calls = self._forced_retry(payload, tools)
@@ -1207,7 +1229,11 @@ class QwenWebClient:
         chat_id = ""
         for attempt in range(2):
             buf = (
-                tool_bridge.DeltaToolBuffer([f"<{QWEN_TOOL_TAG}>", QWEN_TOOL_MARKER])
+                tool_bridge.DeltaToolBuffer(
+                [f"<{QWEN_TOOL_TAG}>", QWEN_TOOL_MARKER],
+                fragment_re=_QWEN_FRAGMENT_RE,
+                open_re=_QWEN_OPEN_LOOSE_RE,
+            )
                 if tools
                 else None
             )

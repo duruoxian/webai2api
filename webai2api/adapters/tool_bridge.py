@@ -756,6 +756,11 @@ def strip_tool_markup(
     if tag:
         # 连同行尾换行一起移除，避免剥完留下一串空行
         out = re.sub(rf"<{tag}>.*?</{tag}>\n?", "", out, flags=re.S)
+        # 漏写闭合标签的残块：从 opener 截断（与 dsml 分支同策略），
+        # 否则 opener + 半截 JSON 会漏给客户端
+        m = re.search(rf"<{tag}>", out)
+        if m:
+            out = out[: m.start()]
     if marker:
         while True:
             idx = out.find(marker)
@@ -936,6 +941,28 @@ def scrub_marker_fragments(text: str) -> str:
     if not text:
         return text or ""
     return MARKER_FRAGMENT_RE.sub("", text)
+
+
+def strip_truncated_marker_tail(text: str, openers: list) -> str:
+    """剥掉文本末尾「有标记气味的半截 opener」。
+
+    上游掐断/模型写一半时，非流式终态文本可能停在 <<<TOOL_CA 这类
+    半截上。只认以 < 或 | 开头、且剩余部分是某 opener 核心词前缀的
+    尾巴（正文单独的 < / << 不动——deepseek「单个 | 不丢」同规则）。
+    """
+    if not text or not openers:
+        return text or ""
+    limit = max((len(op) for op in openers if op), default=0)
+    for cut in range(min(len(text), limit), 1, -1):
+        s = text[len(text) - cut :]
+        if not s.startswith(("<", "|")):
+            continue
+        s2 = s.lstrip("<")
+        if not s2:
+            continue  # 纯尖括号尾巴可能是正文，不吞
+        if any(op.strip("<>").startswith(s2) for op in openers if op):
+            return text[: len(text) - cut]
+    return text
 
 
 def normalize_tool_marker(text: str, marker: str) -> str:

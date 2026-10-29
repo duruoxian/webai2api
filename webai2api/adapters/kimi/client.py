@@ -257,11 +257,22 @@ def _inject_tools(messages: list, tools: list) -> list:
 
 
 def _strip_tool_block(text: str) -> str:
-    return tool_bridge.strip_tool_markup(text, marker=TOOL_MARKER, dsml=True)
+    """剥工具标记：归一降级角括号形态，剥完再扫残余碎片（对齐 GLM/deepseek）。"""
+    text = tool_bridge.normalize_tool_marker(text or "", TOOL_MARKER)
+    out = tool_bridge.strip_tool_markup(text, marker=TOOL_MARKER, dsml=True)
+    out = tool_bridge.scrub_marker_fragments(out)
+    return tool_bridge.strip_truncated_marker_tail(
+        out, [tool_bridge.DSML_TOOL_CALLS_OPEN, TOOL_MARKER]
+    ).strip()
 
 
 def _parse_tool_calls(text: str, tools: list) -> list:
-    return tool_bridge.parse_tool_calls(text, tools, marker=TOOL_MARKER, dsml=True)
+    return tool_bridge.parse_tool_calls(
+        tool_bridge.normalize_tool_marker(text or "", TOOL_MARKER),
+        tools,
+        marker=TOOL_MARKER,
+        dsml=True,
+    )
 
 
 def _tier_for(effort: str, model: str) -> str:
@@ -1327,7 +1338,9 @@ class KimiWebClient:
         for attempt in range(2):
             buf = (
                 tool_bridge.DeltaToolBuffer(
-                    [tool_bridge.DSML_TOOL_CALLS_OPEN, TOOL_MARKER]
+                    [tool_bridge.DSML_TOOL_CALLS_OPEN, TOOL_MARKER],
+                    fragment_re=tool_bridge.MARKER_FRAGMENT_RE,
+                    open_re=tool_bridge.MARKER_OPEN_LOOSE_RE,
                 )
                 if tools
                 else None
