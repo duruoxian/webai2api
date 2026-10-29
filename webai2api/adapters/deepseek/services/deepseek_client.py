@@ -1751,9 +1751,20 @@ class DeepSeekWebClient:
                             _cont_rounds += 1
                             self._bump("auto_continued")
                             if detector.pending_markup:
-                                self.logger.warning(
-                                    "上游断流且工具标记被截断，丢弃残块（续写轮会重发完整调用）"
-                                )
+                                # SCAN/JSON 态扣住的是普通正文，换检测器前
+                                # 释放（去掉半截标记）；DSML/SENTINEL 态是
+                                # 半截工具调用，丢弃（续写轮会重发完整调用）
+                                recovered = detector.recover_text_on_cut()
+                                if recovered:
+                                    self.logger.warning(
+                                        "断流时释放检测器扣住的正文 %d 字（跳过半截标记）",
+                                        len(recovered),
+                                    )
+                                    yield from _emit_content(recovered)
+                                else:
+                                    self.logger.warning(
+                                        "上游断流且工具标记被截断，丢弃残块（续写轮会重发完整调用）"
+                                    )
                                 detector = StreamingToolDetector(
                                     payload.get("tools"),
                                     require_marker=not has_tools,

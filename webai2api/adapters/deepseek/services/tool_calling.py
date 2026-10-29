@@ -1123,6 +1123,26 @@ class StreamingToolDetector:
         """
         return (not self._closed) and (self._state != "SCAN" or bool(self._buf))
 
+    def recover_text_on_cut(self) -> str:
+        """断流换新检测器前回收扣住的缓冲。
+
+        SCAN/JSON 态的 _buf 是被保守扣住的普通正文（_safe_prefix_len 对
+        未闭合 `<` 之后的文本也扣），直接换检测器会把最多 64 字正文一起
+        丢掉（2026-10-30 审计）——去掉末尾标记碎片后放行。DSML/SENTINEL
+        态是半截工具调用：丢弃，续写轮会重发完整调用。
+        """
+        held = self._buf or ""
+        state = self._state
+        self._buf = ""
+        self._state = "SCAN"
+        self._closed = True
+        if state in ("DSML", "SENTINEL") or not held:
+            return ""
+        idx = _marker_partial_start(held)
+        if idx >= 0 and _looks_like_marker_prefix(held[idx:]):
+            held = held[:idx]
+        return held
+
     # ── 主入口 ────────────────────────────────────────────
 
     def feed(self, delta: str) -> list[StreamAction]:
