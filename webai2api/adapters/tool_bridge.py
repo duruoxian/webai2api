@@ -818,11 +818,21 @@ class _ToolHoldBuffer:
     防止标记被拆在两次 delta 之间漏出去。
     """
 
-    def __init__(self, openers: list) -> None:
+    def __init__(
+        self,
+        openers: list,
+        fragment_re: "re.Pattern | None" = None,
+        open_re: "re.Pattern | None" = None,
+    ) -> None:
         self._openers = [o for o in (openers or []) if o]
         self._full = ""
         self._emitted = 0
         self._open_at = -1
+        # 降级标记形态（上游吃字符/换写法）：提供给 GLM 这类「模型手写标记」
+        # 的链路——fragment_re 负责清洗放行段/收尾残迹；open_re（更严，必须
+        # 还剩 <）在精确 opener 找不到时兜底认 opener。kimi/qwen 不传，行为不变。
+        self._fragment_re = fragment_re
+        self._open_re = open_re
 
     def _advance(self) -> str:
         """基于当前 _full 放行「可以安全下发的前缀」，推进 _emitted。"""
@@ -831,19 +841,68 @@ class _ToolHoldBuffer:
                 i = self._full.find(op)
                 if 0 <= i and (self._open_at < 0 or i < self._open_at):
                     self._open_at = i
+            if self._open_at < 0:
+                # 降级形态兜底：模型把 opener 写缺了角括号（如 <<TOOL_CALL>>），
+                # 精确 find 认不出会连标记带 JSON 漏进正文；按宽松锚认 opener。
+                pat = self._open_re or self._fragment_re
+                if pat:
+                    m = pat.search(self._full, self._emitted)
+                    if m:
+                        self._open_at = m.start()
         if self._open_at >= 0:
             out = self._full[self._emitted : self._open_at]
+            if self._fragment_re:
+                # 放行段里的标记残迹：完整降级形态正则剥，半截 opener
+                # （断流续写重启标记时被扣住的 <<<TOOL_CA）按前缀判定剥
+                out = self._fragment_re.sub("", out)
+                cut = self._partial_prefix_len(out)
+                if cut:
+                    out = out[: len(out) - cut]
             self._emitted = self._open_at
             return out
         hold = max((len(op) for op in self._openers), default=1)
+        if self._fragment_re:
+            # 半截 opener 也扣住：续写可能把它接完，末尾才 flush 丢弃
+            extra = self._partial_prefix_len(self._full[self._emitted :])
+            if extra > hold:
+                hold = extra
         safe_end = max(self._emitted, len(self._full) - hold)
         out = self._full[self._emitted : safe_end]
         self._emitted = safe_end
         return out
 
+    def _partial_prefix_len(self, tail: str) -> int:
+        """tail 的最长后缀中构成某 opener「括号弹性前缀」的长度。
+
+        只认有标记气味的开头（< 或 |）：正文恰以 TOOL_CA 结尾这类
+        无害情形不误吞。fragment_re 未启用时恒 0（kimi/qwen 行为不变）。
+        """
+        if not self._fragment_re:
+            return 0
+        limit = max((len(op) for op in self._openers), default=0)
+        best = 0
+        for op in self._openers:
+            core = op.strip("<>")
+            if not core:
+                continue
+            for cut in range(min(len(tail), limit), best, -1):
+                s = tail[len(tail) - cut :]
+                if not s.startswith(("<", "|")):
+                    continue
+                s2 = s.lstrip("<")
+                if core.startswith(s2):
+                    best = cut
+                    break
+        return best
+
     def flush(self) -> str:
         out = self._full[self._emitted :]
         self._emitted = len(self._full)
+        if self._fragment_re:
+            # 收尾仍扣着的半截 opener 必然是被掐断的残迹，丢弃
+            cut = self._partial_prefix_len(out)
+            if cut:
+                out = out[: len(out) - cut]
         return out
 
     @property
@@ -853,6 +912,47 @@ class _ToolHoldBuffer:
     @property
     def text(self) -> str:
         return self._full
+
+
+# ── 降级标记形态识别（2026-10-30，对齐 deepseek DSML 零残留）──────────
+# GLM/Kimi 的工具标记全靠 < 尖括号，上游会吃字符、流会被切碎、模型会写缺
+# 角括号——精确匹配认不出时标记/碎片整段漏进正文（deepseek 2026-10-30 同
+# 族报障的 GLM 版）。两个正则分工：
+# - MARKER_FRAGMENT_RE（清洗用）：允许括号全缺，任何残迹都剥；
+# - MARKER_OPEN_LOOSE_RE（锚点兜底）：必须还剩 <，防止正文里的
+#   「TOOL_CALL>」字样被误当 opener 吞掉后续内容。
+MARKER_FRAGMENT_RE = re.compile(
+    r"(?:<{0,3}\s*TOOL_CALL\s*>{1,3}"            # <<<TOOL_CALL>>> 缺角括号形态
+    r"|(?:</?)?\|?DSML\|?tool_calls\s*>{0,3}"    # <|DSML|tool_calls> 残缺/孤立闭合
+    r")"
+)
+MARKER_OPEN_LOOSE_RE = re.compile(
+    r"(?:<{1,3}\s*TOOL_CALL\s*>{1,3}|<\|?DSML\|?tool_calls\s*>)"
+)
+
+
+def scrub_marker_fragments(text: str) -> str:
+    """剥掉降级/残缺/孤立的标记碎片，防止漏给客户端。"""
+    if not text:
+        return text or ""
+    return MARKER_FRAGMENT_RE.sub("", text)
+
+
+def normalize_tool_marker(text: str, marker: str) -> str:
+    """把「标记词对但角括号缺数」的写法归一到精确形态（供精确剥除/解析）。
+
+    只动角括号数量（<<<TOOL_CALL>> → <<<TOOL_CALL>>>），不碰正文。
+    """
+    if not text or not marker:
+        return text or ""
+    core = marker.strip("<>")
+    left = len(marker) - len(marker.lstrip("<"))
+    right = len(marker) - len(marker.rstrip(">"))
+    if not core or left == 0 or right == 0:
+        return text or ""
+    return re.sub(
+        rf"<{{1,{left}}}\s*{re.escape(core)}\s*>{{1,{right}}}", marker, text
+    )
 
 
 class ToolStreamBuffer(_ToolHoldBuffer):

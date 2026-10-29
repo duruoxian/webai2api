@@ -267,13 +267,28 @@ def _collapse_cached_text(content: str, messages: list) -> str:
 
 
 def _strip_tool_block(text: str) -> str:
-    """去掉文本里的工具调用标记（标记 + 其 JSON / DSML 块，跨行也一并删）。"""
-    return tool_bridge.strip_tool_markup(text, marker=TOOL_MARKER, dsml=True)
+    """去掉文本里的工具调用标记（标记 + 其 JSON / DSML 块，跨行也一并删）。
+
+    上游会吃 `<`、流会被切碎，标记常以缺角括号/孤立闭合的降级形态出现，
+    精确剥除前先归一形态，剥完再扫一遍残余碎片（对齐 deepseek 零残留）。
+    """
+    text = tool_bridge.normalize_tool_marker(text or "", TOOL_MARKER)
+    out = tool_bridge.strip_tool_markup(text, marker=TOOL_MARKER, dsml=True)
+    return tool_bridge.scrub_marker_fragments(out).strip()
 
 
 def _parse_tool_calls(text: str, tools: list) -> list:
-    """从模型回复里解析工具调用（DSML 优先，再走标记 + 裸 JSON 兜底）。"""
-    return tool_bridge.parse_tool_calls(text, tools, marker=TOOL_MARKER, dsml=True)
+    """从模型回复里解析工具调用（DSML 优先，再走标记 + 裸 JSON 兜底）。
+
+    先归一降级角括号形态——上游吃 `<` 后标记词还在但括号缺数，
+    归一后 DSML/标记路径才能命中。
+    """
+    return tool_bridge.parse_tool_calls(
+        tool_bridge.normalize_tool_marker(text or "", TOOL_MARKER),
+        tools,
+        marker=TOOL_MARKER,
+        dsml=True,
+    )
 
 
 # ── 重复输出去重（问题 3：GLM 回复重复两遍）────────────────
@@ -1383,9 +1398,14 @@ class ChatGlmWebClient:
 
         # 有工具时扣住标记文本。链路纪律：**前缀差只对单调全量做**，
         # 扣留器用增量口径（DeltaToolBuffer）——快照口径的 buf 会回扣
-        # 尾部使输出非单调，嵌套在前缀差链里会错位咬字（GLM 实测）
+        # 尾部使输出非单调，嵌套在前缀差链里会错位咬字（GLM 实测）。
+        # fragment_re/open_re：降级标记形态兜底（吃字符/续写重启的碎片不漏）
         buf = (
-            tool_bridge.DeltaToolBuffer([TOOL_MARKER, tool_bridge.DSML_TOOL_CALLS_OPEN])
+            tool_bridge.DeltaToolBuffer(
+                [TOOL_MARKER, tool_bridge.DSML_TOOL_CALLS_OPEN],
+                fragment_re=tool_bridge.MARKER_FRAGMENT_RE,
+                open_re=tool_bridge.MARKER_OPEN_LOOSE_RE,
+            )
             if has_tools
             else None
         )
@@ -1467,7 +1487,7 @@ class ChatGlmWebClient:
                     "或 JSON 残缺），已按普通文本剥离。片段: %r",
                     _strip_tool_block(tail)[:200] or tail[:200],
                 )
-            rel_tail = _strip_tool_block(tail)
+            rel_tail = tool_bridge.scrub_marker_fragments(_strip_tool_block(tail))
         else:
             rel_tail = ""
 
