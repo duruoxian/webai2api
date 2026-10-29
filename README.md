@@ -34,6 +34,11 @@ OpenAI 兼容 API**，自带中文管理面板 😃
 
 不想折腾环境？直接到 **[Releases](https://github.com/duruoxian/webai2api/releases)** 下载 `webai2api-win64.zip`，解压后双击 `webai2api.exe` 即可（无需安装 Python）。详见下方「打包成 exe」。
 
+> ⚠️ **首次运行提示**：本 exe 未做商业签名，Windows SmartScreen 可能弹出
+> 「Windows 已保护你的电脑」——这是系统对**未签名程序**的默认提醒，
+> **不是病毒、不是文件损坏**。点「更多信息」→「仍要运行」即可正常使用。
+> 解压后如提示「已从 Internet 下载」，可右键 exe → 属性 → 勾选「解除锁定」再双击。
+
 ## 特点
 
 | 功能 | 说明 |
