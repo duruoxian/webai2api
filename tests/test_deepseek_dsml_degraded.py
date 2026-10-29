@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from webai2api.adapters.deepseek.services.tool_calling import (
@@ -206,3 +208,59 @@ def test_normal_dsml_still_parsed():
     text, calls = _drive([CALL_BLOCK])
     assert "DSML" not in text
     assert [c.name for c in calls] == ["glob"]
+
+
+# ── 5. 残片污染参数值（用户报障：`Working directory does not exist: D:\study<…DSML…>`）──
+
+
+def test_parameter_missing_closer_does_not_swallow_tags():
+    """缺 `</parameter>` 时吃到下一条 DSML 标签为止，不把标签吃进值里。"""
+    block = (
+        f"\n\n<{D} calls>\n"
+        f'<{D} invoke name="shell">\n'
+        f'<{D} parameter name="command" string="true">python -c "print(1)"</{D} parameter>\n'
+        f'<{D} parameter name="workdir" string="true">D:\\study<\\{D}>\n'
+        f"</{D} invoke>\n"
+        f"</{D} calls>\n"
+    )
+    parsed = parse_tool_calls(
+        block,
+        TOOLS + [{"type": "function", "function": {"name": "shell", "parameters": {}}}],
+    )
+    assert [c.name for c in parsed.calls] == ["shell"]
+    args = json.loads(parsed.calls[0].arguments)
+    assert args["workdir"] == "D:\\study"
+    assert "DSML" not in parsed.calls[0].arguments
+
+
+def test_residue_inside_value_is_scrubbed():
+    """值里直接粘着残片（有闭合）也要清掉。"""
+    block = (
+        f"\n\n<{D} calls>\n"
+        f'<{D} invoke name="shell">\n'
+        f'<{D} parameter name="workdir" string="true">D:\\study<\\{D}></{D} parameter>\n'
+        f"</{D} invoke>\n"
+        f"</{D} calls>\n"
+    )
+    parsed = parse_tool_calls(
+        block,
+        TOOLS + [{"type": "function", "function": {"name": "shell", "parameters": {}}}],
+    )
+    assert json.loads(parsed.calls[0].arguments)["workdir"] == "D:\\study"
+
+
+def test_plain_angle_bracket_value_kept():
+    """普通参数值里的 `<` 不能被误删（没有 DSML 字样就原样保留）。"""
+    block = (
+        f"\n\n<{D} calls>\n"
+        f'<{D} invoke name="shell">\n'
+        f'<{D} parameter name="command" string="true">if a < b; then echo ok</{D} parameter>\n'
+        f"</{D} invoke>\n"
+        f"</{D} calls>\n"
+    )
+    parsed = parse_tool_calls(
+        block,
+        TOOLS + [{"type": "function", "function": {"name": "shell", "parameters": {}}}],
+    )
+    assert json.loads(parsed.calls[0].arguments)["command"] == "if a < b; then echo ok"
+

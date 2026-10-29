@@ -210,6 +210,33 @@ def _fix_malformed_openers(text: str) -> str:
     return _MALFORMED_OPEN_RE.sub(r"<\1", text)
 
 
+# 任意 DSML 标签起点（不含标签名限制）：用来在「参数缺闭合」时截断值。
+_ANY_DSML_TAG_RE = re.compile(rf"</?\\?\s*{_DSML_MARKER}", re.IGNORECASE)
+
+# 参数值里的残片：`D:\study<｜｜DSML｜｜>` / `D:\study<\｜｜DSML｜｜>` → 整段删。
+_TAG_RESIDUE_RE = re.compile(
+    rf"(?:</?)?\\?\s*{_DSML_MARKER}[^<>\n]{{0,300}}>",
+    re.IGNORECASE,
+)
+
+
+def _strip_marker_residue(value: str) -> str:
+    """从参数值里清掉 DSML 残片。
+
+    上游漏写 `</parameter>` 时，后一个标签会被吃进值里，实测把
+    `workdir` 污染成 `D:\\study<｜｜DSML｜｜>`（agent 报
+    "Working directory does not exist"）。这里做最后一道闸。
+    """
+    if not value or "DSML" not in value.upper():
+        return value
+    out = _TAG_RESIDUE_RE.sub("", value)
+    if out == value:
+        return value
+    # 去掉残片留下的裸尖括号尾巴（`D:\study<\…` → `D:\study<` → `D:\study`），
+    # 以及块内换行带来的尾随空白
+    return re.sub(r"<\\?\s*$", "", out).rstrip()
+
+
 def _marker_partial_start(buf: str) -> int:
     """返回 buf 末尾「可能正在拼 DSML 标记」的起点；没有则 -1。"""
     n = len(buf)
@@ -405,7 +432,7 @@ def _parse_attrs(s: str) -> dict[str, str]:
 
 def _decode_dsml_value(raw: str, is_string: bool):
     if is_string:
-        return raw
+        return _strip_marker_residue(raw)
     stripped = raw.strip()
     if not stripped:
         return ""
@@ -616,6 +643,8 @@ def _normalize_call(data: Any, tools: Optional[list[dict]]) -> Optional[ParsedTo
         fn = data.get("function")
         if isinstance(fn, dict):
             args = fn.get("arguments")
+    # 参数值里的 DSML 残片最后清一遍（防止污染路径/命令）
+    args = _scrub_args(args)
     args_str = _coerce_arguments(args)
 
     # ★ 必填参数校验：模型常先吐 invoke 骨架、参数还没写完就被截断，
@@ -678,6 +707,17 @@ def _missing_required(name: str, args_str: str, tools: list[dict]) -> list[str]:
         elif isinstance(val, (list, dict)) and not val:
             missing.append(key)
     return missing
+
+
+def _scrub_args(value: Any) -> Any:
+    """递归清理参数值里的 DSML 残片（字符串才动，数字/布尔原样）。"""
+    if isinstance(value, str):
+        return _strip_marker_residue(value)
+    if isinstance(value, dict):
+        return {k: _scrub_args(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_args(v) for v in value]
+    return value
 
 
 def _coerce_arguments(args: Any) -> str:
@@ -766,9 +806,15 @@ def _parse_dsml_body(
                 raw_value = invoke_inner[pm.end() : p_close.start()]
                 ppos = p_close.end()
             else:
-                # 缺 </parameter>：吃到 invoke 末尾
-                raw_value = invoke_inner[pm.end() :]
-                ppos = len(invoke_inner)
+                # 缺 </parameter>：吃到下一条 DSML 标签为止（原来是吃到
+                # invoke 末尾——上游漏闭合时会把后续标签吃进参数值，
+                # 实测 workdir 变成 `D:\study<｜｜DSML｜｜>`）
+                nxt = _ANY_DSML_TAG_RE.search(invoke_inner, pm.end())
+                end = nxt.start() if nxt else len(invoke_inner)
+                raw_value = invoke_inner[pm.end() : end]
+                # 标签前遗留的裸 `<` / `<\` 不属于参数值
+                raw_value = re.sub(r"<\\?\s*$", "", raw_value)
+                ppos = end
 
             if p_name:
                 arguments[p_name] = _decode_dsml_value(raw_value, p_is_string)
