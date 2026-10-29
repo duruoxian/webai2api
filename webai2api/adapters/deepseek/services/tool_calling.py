@@ -150,8 +150,12 @@ _ATTR_PAIR_RE = re.compile(
 )
 
 # 任意 DSML 起始标签（SCAN 状态检测用）
+# ★ `(?:</?)?` 是给「降级形态」留的后门 ★
+# DeepSeek 网页端会把标记前的 `<` 吃掉（实测上游直接下发 `｜｜DSML｜｜ calls>`，
+# 客户端渲染成 `| | DSML | | calls>`）；断流续写轮也只能看到后半截。
+# 不认这种形态 → 残片当普通文本吐进正文。
 _ANY_DSML_OPEN_RE = re.compile(
-    rf"<\s*{_DSML_MARKER}\s*(?:calls|invoke)\b",
+    rf"(?:</?)?\s*{_DSML_MARKER}\s*(?:calls|invoke)\b",
     re.IGNORECASE,
 )
 
@@ -160,6 +164,75 @@ _NOISE_RE = re.compile(
     rf"</\s*{_DSML_MARKER}\s*(?:calls|invoke|parameter)\s*>",
     re.IGNORECASE,
 )
+
+# 降级碎片兜底：`｜｜DSML｜｜ calls>`、`</｜｜DSML｜｜ calls>` 等
+# 「标记 + calls 标签名 + 属性 + >」的残片（无论有没有 `<`）。
+# 只扫 calls 层：invoke/parameter 开标签保留（残缺块「保守不剥」是既有契约，
+# 完整块在剥块循环里已经处理）。
+_ORPHAN_TAG_RE = re.compile(
+    rf"(?:</?)?\s*{_DSML_MARKER}\s*(?:calls|tool_calls)\b[^<>\n]{{0,300}}>",
+    re.IGNORECASE,
+)
+
+# 降级开标签：`</｜｜DSML｜｜ invoke name="read">` —— 开标签位置写成了 `</`。
+# 只在「带 name= 属性」时纠正，真正的闭合标签 `</...invoke>` 不受影响。
+_MALFORMED_OPEN_RE = re.compile(
+    rf"</(\s*{_DSML_MARKER}\s*(?:calls|invoke|parameter)\b[^<>]*\bname\s*=)",
+    re.IGNORECASE,
+)
+
+# 尾部可能是标记前缀的形态：`<` / `</` / `｜` / `｜｜DS` / `<｜｜DSM` / `｜｜DSML｜｜ cal` …
+# 上游按 token 切片，标记会碎成多块；不扣住就会先吐半截、整体再也认不出。
+# 注意：竖线之间只允许空格/制表符、且用 \Z 收尾（`$` 会放过行尾换行，
+# 把普通表格行的 `|\n` 误扣成标记前缀，正文尾巴就被吞了）。
+_TAG_WORDS = ("calls", "invoke", "tool_calls", "parameter")
+_TAG_PREFIXES = sorted(
+    {w[:k] for w in _TAG_WORDS for k in range(1, len(w) + 1)},
+    key=len,
+    reverse=True,
+)
+_MARKER_PARTIAL_RE = re.compile(
+    r"^(?:"
+    r"</?"
+    r"|(?:</?)?[ \t]*(?:[|\uff5c][ \t]*)+"
+    r"(?:D|DS|DSM|DSML)?[ \t]*(?:[|\uff5c][ \t]*)*"
+    rf"(?:{'|'.join(_TAG_PREFIXES)})?"
+    r")\Z",
+    re.IGNORECASE,
+)
+_MARKER_PARTIAL_MAX = 24
+
+
+def _fix_malformed_openers(text: str) -> str:
+    """把 `</…invoke name=` 这类降级开标签纠回 `<…invoke name=`。"""
+    if not text or "</" not in text:
+        return text
+    return _MALFORMED_OPEN_RE.sub(r"<\1", text)
+
+
+def _marker_partial_start(buf: str) -> int:
+    """返回 buf 末尾「可能正在拼 DSML 标记」的起点；没有则 -1。"""
+    n = len(buf)
+    start = max(0, n - _MARKER_PARTIAL_MAX)
+    for i in range(start, n):
+        seg = buf[i:]
+        if "<" not in seg and "|" not in seg and "\uff5c" not in seg:
+            continue
+        if _MARKER_PARTIAL_RE.match(seg):
+            return i
+    return -1
+
+
+def _looks_like_marker_prefix(seg: str) -> bool:
+    """收尾判断：这段碎片「像不像」DSML 标记的开头。
+
+    只扣住真正有 DSML 气味（尖括号 / DSML 字样 / ≥2 根竖线）的尾巴；
+    单个 `|` 可能是 Markdown 表格行的最后一个字符，误丢就是吞正文。
+    """
+    return (
+        "<" in seg or "DSML" in seg.upper() or seg.count("|") + seg.count("\uff5c") >= 2
+    )
+
 
 # 提示词里仍用全角，因为这是 DeepSeek 原生先验
 _DSML = "\uff5c\uff5cDSML\uff5c\uff5c"
@@ -234,7 +307,7 @@ def strip_dsml_residue(text: str) -> str:
     """
     if not text:
         return text
-    out = text
+    out = _fix_malformed_openers(text)
 
     # 完整 DSML calls 块（含缺 invoke 的空壳块）
     while True:
@@ -271,6 +344,13 @@ def strip_dsml_residue(text: str) -> str:
             if closed is None:
                 break
             out = out[:i] + out[closed[1] + len(closed[0]) :]
+
+    # 降级碎片兜底：`｜｜DSML｜｜ calls>` / `</｜｜DSML｜｜ calls>` 等
+    # 「标记 + calls + >」的残片（含没有 `<` 的形态）一律剥掉——
+    # 用户实测看到的就是这行 `| | DSML | | calls>`。
+    out = _ORPHAN_TAG_RE.sub("", out)
+    # 孤立闭合标签（invoke / parameter / calls）同样没有正文价值
+    out = _NOISE_RE.sub("", out)
     return out
 
 
@@ -295,7 +375,8 @@ def build_required_nudge(tool_name: str = "") -> str:
     )
     demand = f"这次必须调用 `{tool_name}`。" if tool_name else "这次必须调用一个工具。"
     return (
-        "上一次回复没有调用任何工具，这不符合要求。" + demand
+        "上一次回复没有调用任何工具，这不符合要求。"
+        + demand
         + "不要用文字回答，不要解释，只输出一次工具调用，"
         "它必须是回复的全部内容，格式严格为：\n" + example
     )
@@ -709,6 +790,9 @@ def _try_dsml(text: str, tools: Optional[list[dict]]) -> ToolParseResult:
     if not text:
         return ToolParseResult()
 
+    # 降级开标签（`</…invoke name=`）先纠正，否则整个块解析不出调用
+    text = _fix_malformed_openers(text)
+
     # ── 形态 ①：完整 <calls> ... </calls> ─────────────────
     m_open = _CALLS_OPEN_RE.search(text)
     if m_open:
@@ -1016,7 +1100,7 @@ class StreamingToolDetector:
             return actions
 
         if self._state == "DSML":
-            body = self._buf
+            body = _fix_malformed_openers(self._buf)
             m_open = _CALLS_OPEN_RE.match(body)
             if m_open:
                 body = body[m_open.end() :]
@@ -1056,8 +1140,21 @@ class StreamingToolDetector:
             return actions
 
         # JSON 或 SCAN：按文本吐出（可能是不完整的 JSON，客户端自行处理）
+        # 但末尾的标记碎片（上游把 `<` / `｜｜DSM` 单独留在流尾）必须丢掉，
+        # 不能把裸 `<` 交给客户端。
         if self._buf:
-            actions.append(StreamAction(kind="text", text=self._buf))
+            idx = _marker_partial_start(self._buf)
+            if idx >= 0 and _looks_like_marker_prefix(self._buf[idx:]):
+                # 只剩 DSML 标记碎片（上游把 `<` / `｜｜DSM` 单独留在流尾）→ 丢掉
+                logger.debug(
+                    "finalize: discarding partial DSML marker prefix len=%d",
+                    len(self._buf) - idx,
+                )
+                text = self._buf[:idx]
+            else:
+                text = self._buf
+            if text:
+                actions.append(StreamAction(kind="text", text=text))
         self._buf = ""
         self._state = "SCAN"
         self._closed = True
@@ -1120,8 +1217,10 @@ class StreamingToolDetector:
         if m and (best_idx == -1 or m.start() < best_idx):
             best_idx, best_kind = m.start(), "dsml_open"
 
-        # 孤立关闭标签：只有 tools 模式才剥；无 tools 时当普通文本
-        if not self._require_marker:
+        # 孤立关闭标签：tools 模式剥；无 tools 时当普通文本——
+        # 但本流里已经出现过 DSML 标记（说明模型确实在写调用）时，
+        # 残留的闭合标签没有任何正文价值，一并剥掉。
+        if (not self._require_marker) or self._saw_dsml:
             m = _NOISE_RE.search(self._buf)
             if m and (best_idx == -1 or m.start() < best_idx):
                 best_idx, best_kind = m.start(), "dsml_close"
@@ -1167,6 +1266,13 @@ class StreamingToolDetector:
                     return i
                 break
 
+        # ── 1.5 尾巴是 DSML 标记碎片（可能完全没有 `<`）──
+        # 降级形态 `｜｜DSML｜｜ calls>` 不含尖括号，上面的规则扣不住，
+        # 不扣就会先把 `｜｜DSM` 半截吐给客户端，整体锚点再也认不出来。
+        mstart = _marker_partial_start(buf)
+        if mstart != -1:
+            return mstart
+
         # ── 2. JSON 锚点的部分前缀 ──
         # 只在"调用方声明了 tools 且开启 json_fallback"时才会触发 JSON 检测；
         # 关闭时这里恒为 n，不影响纯文本。
@@ -1211,6 +1317,9 @@ class StreamingToolDetector:
 
         body = self._buf[:end_pos]
         rest = self._buf[end_pos + end_len :]
+
+        # 降级开标签先纠正，再按正常块解析
+        body = _fix_malformed_openers(body)
 
         # 若 body 以 <… calls> 开头，去掉外层 calls 开标签
         m_open = _CALLS_OPEN_RE.match(body)
