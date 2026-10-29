@@ -1842,6 +1842,10 @@ class DeepSeekWebClient:
                             current_session_id = (
                                 current_resolved.get("session_id") or ""
                             )
+                            # 新会话的 upstream_total 从零起算：旧会话的累计值
+                            # 若残留，会被当新会话的量入账导致提前轮换
+                            # （2026-10-30 审计 DS-P3）
+                            accumulated_tokens = 0
                             detector = StreamingToolDetector(
                                 payload.get("tools"),
                                 require_marker=not has_tools,

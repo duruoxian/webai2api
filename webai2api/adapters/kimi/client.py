@@ -1447,12 +1447,18 @@ class KimiWebClient:
             return
 
         # P0 思考双通道：正文可见输出为空时才扫 reasoning 里的完整 DSML 块
-        # ——思考里的草稿调用绝不提取（shell 级误执行风险）
+        # ——思考里的草稿调用绝不提取（shell 级误执行风险；require_marker
+        # 挡掉裸 JSON 草稿，2026-10-30 审计）
         if tools and not calls and not visible_all.strip() and sent_reasoning:
-            rcalls = _parse_tool_calls(sent_reasoning, tools)
+            rcalls = _parse_tool_calls(sent_reasoning, tools, require_marker=True)
             if rcalls:
                 self.logger.warning("思考里发现完整工具调用（正文为空），已提取下发")
                 calls = rcalls
+                # legacy 模式下思考已作为 <think> 流入 content：补闭合，
+                # 与 calls 分支一致（2026-10-30 审计 KIMI-F8）
+                tail = rs.close_think()
+                if tail:
+                    yield chunk({"content": tail})
                 yield chunk(
                     {
                         "tool_calls": [
