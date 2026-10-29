@@ -2862,6 +2862,11 @@ class DeepSeekWebClient:
                 self.logger.debug("忽略无法解析的 SSE 片段: %s", payload_str[:200])
                 return None
 
+        # CRLF 跨读边界滞留位：\r 落在 chunk 末尾、\n 在下一块开头时，
+        # 逐块 replace 会漏掉这一对，两个 SSE 事件粘成一个后静默丢弃
+        # （2026-10-30 审计 DS-P2）。块尾 \r 先扣下，等下一块拼接。
+        crlf_carry = ""
+
         while True:
             try:
                 # 用 read1：有多少读多少，立刻返回。
@@ -2873,7 +2878,12 @@ class DeepSeekWebClient:
                     "上游 SSE 连接提前断开(IncompleteRead) bytes=%s", len(raw_chunk)
                 )
                 if raw_chunk:
-                    pending += decoder.decode(raw_chunk, False).replace("\r\n", "\n")
+                    _txt = crlf_carry + decoder.decode(raw_chunk, False)
+                    crlf_carry = ""
+                    if _txt.endswith("\r"):
+                        crlf_carry = "\r"
+                        _txt = _txt[:-1]
+                    pending += _txt.replace("\r\n", "\n")
                     while "\n\n" in pending:
                         blk, pending = pending.split("\n\n", 1)
                         event = emit_block(blk.strip())
@@ -2899,7 +2909,12 @@ class DeepSeekWebClient:
             if not raw_chunk:
                 break
 
-            pending += decoder.decode(raw_chunk, False).replace("\r\n", "\n")
+            _txt = crlf_carry + decoder.decode(raw_chunk, False)
+            crlf_carry = ""
+            if _txt.endswith("\r"):
+                crlf_carry = "\r"
+                _txt = _txt[:-1]
+            pending += _txt.replace("\r\n", "\n")
 
             while "\n\n" in pending:
                 blk, pending = pending.split("\n\n", 1)
@@ -2910,6 +2925,9 @@ class DeepSeekWebClient:
         remaining = decoder.decode(b"", True)
         if remaining:
             pending += remaining
+        if crlf_carry:
+            pending += crlf_carry
+            crlf_carry = ""
 
         if pending.strip():
             for blk in pending.split("\n\n"):
