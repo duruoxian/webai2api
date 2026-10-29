@@ -1092,9 +1092,13 @@ class KimiWebClient:
                 # store key 必须与客户端多轮回传时的查询 key 一致：
                 # 把本轮 assistant（解析后的调用或文本）追加进历史再算指纹
                 calls = _parse_tool_calls(reply, payload.get("tools") or [])
+                # 思考顶正文对齐：正文为空时交付侧会把思考提升为 content，
+                # store 的 assistant 锚点必须用同一文本，否则多轮必 miss
+                # （2026-10-30 审计 KIMI-F2；空白/标记差异由指纹归一吸收）
+                reply_for_store = reply if reply.strip() else (reasoning or "")
                 asst = {
                     "role": "assistant",
-                    "content": None if calls else reply,
+                    "content": None if calls else reply_for_store,
                     "tool_calls": calls or None,
                 }
                 store_key = tool_bridge.conv_fingerprint(
@@ -1126,7 +1130,9 @@ class KimiWebClient:
         raise KimiError("没有可用的 Kimi 模型")
 
     # ── 对外接口 ───────────────────────────────────────
-    def _forced_retry(self, payload: dict, tools: list) -> tuple[str, str, list]:
+    def _forced_retry(
+        self, payload: dict, tools: list, first_reply: str = ""
+    ) -> tuple[str, str, list]:
         """tool_choice=required 强校验重试：加强指令再问一次（上限 1 次）。
 
         返回重试后的 (text, reasoning, calls)；仍解析不出调用则抛
@@ -1134,12 +1140,19 @@ class KimiWebClient:
         """
         self.logger.info("Kimi tool_choice=required 首轮未调用工具，加强指令重试一次")
         retry = dict(payload)
-        retry["messages"] = list(payload.get("messages") or []) + [
+        retry["messages"] = list(payload.get("messages") or [])
+        if first_reply:
+            # 把首轮真实回复作为 assistant 补进重试上下文：否则首轮场景
+            # is_first_turn → 新建上游会话、增量只发 nudge——模型看不到
+            # 原始任务，只能凭空编一个工具调用（2026-10-30 审计 KIMI-1/
+            # QWEN-2）。补上后指纹命中首轮会话，模型看到 任务+自己的回答+催促。
+            retry["messages"].append({"role": "assistant", "content": first_reply})
+        retry["messages"].append(
             {
                 "role": "user",
                 "content": tool_bridge.required_nudge(dsml=True),
             }
-        ]
+        )
         text = reasoning = ""
         for ev in self._stream_events(retry):
             text, reasoning = ev["text"], ev["reasoning"]
@@ -1186,7 +1199,7 @@ class KimiWebClient:
                     pass
 
         if not calls and tools and tool_bridge.is_forced_tool_choice(payload):
-            text, reasoning, calls = self._forced_retry(payload, tools)
+            text, reasoning, calls = self._forced_retry(payload, tools, first_reply=text)
         if not calls and tools and not text.strip() and reasoning.strip():
             # P0 思考双通道：正文可见输出为空时才扫 reasoning 里的完整
             # DSML 块——思考里的草稿调用绝不提取（shell 级误执行风险）
@@ -1289,7 +1302,7 @@ class KimiWebClient:
             calls = _parse_tool_calls(text, tools)
             if not calls:
                 try:
-                    text, reasoning, calls = self._forced_retry(payload, tools)
+                    text, reasoning, calls = self._forced_retry(payload, tools, first_reply=text)
                 except KimiError as exc:
                     err = {
                         "error": {"message": str(exc), "type": "tool_required_error"}

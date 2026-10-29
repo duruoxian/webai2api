@@ -1226,16 +1226,25 @@ class ChatGlmWebClient:
         return res
 
     # ── 对外接口 ───────────────────────────────────────
-    def _forced_retry(self, payload: dict, tools: list) -> tuple[str, str, list]:
+    def _forced_retry(
+        self, payload: dict, tools: list, first_reply: str = ""
+    ) -> tuple[str, str, list]:
         """tool_choice=required 强校验重试：加强指令再问一次（上限 1 次）。"""
         self.logger.info("GLM tool_choice=required 首轮未调用工具，加强指令重试一次")
         retry = dict(payload)
-        retry["messages"] = list(payload.get("messages") or []) + [
+        retry["messages"] = list(payload.get("messages") or [])
+        if first_reply:
+            # 把首轮真实回复作为 assistant 补进重试上下文：否则首轮场景
+            # is_first_turn → 新建上游会话、增量只发 nudge——模型看不到
+            # 原始任务，只能凭空编一个工具调用（2026-10-30 审计 KIMI-1/
+            # QWEN-2）。补上后指纹命中首轮会话，模型看到 任务+自己的回答+催促。
+            retry["messages"].append({"role": "assistant", "content": first_reply})
+        retry["messages"].append(
             {
                 "role": "user",
                 "content": tool_bridge.required_nudge(marker=TOOL_MARKER),
             }
-        ]
+        )
         text = reasoning = ""
         native: list = []
         for ev in self._stream_events(retry):
@@ -1265,7 +1274,7 @@ class ChatGlmWebClient:
         tools = payload.get("tools") or []
         calls = native or (_parse_tool_calls(text, tools) if tools else [])
         if not calls and tools and tool_bridge.is_forced_tool_choice(payload):
-            text, reasoning, calls = self._forced_retry(payload, tools)
+            text, reasoning, calls = self._forced_retry(payload, tools, first_reply=text)
         if calls:
             return {
                 "id": completion_id,
@@ -1361,7 +1370,7 @@ class ChatGlmWebClient:
             if not calls:
                 try:
                     text, reasoning, calls = self._forced_retry(
-                        payload, payload.get("tools") or []
+                        payload, payload.get("tools") or [], first_reply=text
                     )
                 except GlmError as exc:
                     err = {

@@ -908,9 +908,17 @@ class QwenWebClient:
         text = base_text + round_shown
         reasoning = base_reasoning + round_reasoning
         if chat_id and self.config.session_cache_enabled:
+            # assistant 塑形必须与客户端多轮回传形态一致（content=None +
+            # tool_calls），否则工具轮指纹必失配、中继会话上下文断链
+            # （2026-10-30 审计 QWEN-1，kimi/glm 早已是此形态）
+            calls = _parse_tool_calls(text, payload.get("tools") or [])
+            asst = {
+                "role": "assistant",
+                "content": None if calls else text,
+                "tool_calls": calls or None,
+            }
             store_key = tool_bridge.conv_fingerprint(
-                (payload.get("messages") or [])
-                + [{"role": "assistant", "content": text}],
+                (payload.get("messages") or []) + [asst],
                 payload.get("model") or "",
                 payload.get("_wapi_key_id") or "",
             )
@@ -996,9 +1004,14 @@ class QwenWebClient:
                 pass
 
         if chat_id and self.config.session_cache_enabled:
+            calls = _parse_tool_calls(text, payload.get("tools") or [])
+            asst = {
+                "role": "assistant",
+                "content": None if calls else text,
+                "tool_calls": calls or None,
+            }
             store_key = tool_bridge.conv_fingerprint(
-                (payload.get("messages") or [])
-                + [{"role": "assistant", "content": text}],
+                (payload.get("messages") or []) + [asst],
                 payload.get("model") or "",
                 payload.get("_wapi_key_id") or "",
             )
@@ -1011,18 +1024,27 @@ class QwenWebClient:
         }
 
     # ── 对外接口 ───────────────────────────────────────
-    def _forced_retry(self, payload: dict, tools: list) -> tuple[str, str, list]:
+    def _forced_retry(
+        self, payload: dict, tools: list, first_reply: str = ""
+    ) -> tuple[str, str, list]:
         """tool_choice=required 强校验重试：加强指令再问一次（上限 1 次）。"""
         self.logger.info("Qwen tool_choice=required 首轮未调用工具，加强指令重试一次")
         retry = dict(payload)
-        retry["messages"] = list(payload.get("messages") or []) + [
+        retry["messages"] = list(payload.get("messages") or [])
+        if first_reply:
+            # 把首轮真实回复作为 assistant 补进重试上下文：否则首轮场景
+            # is_first_turn → 新建上游会话、增量只发 nudge——模型看不到
+            # 原始任务，只能凭空编一个工具调用（2026-10-30 审计 KIMI-1/
+            # QWEN-2）。补上后指纹命中首轮会话，模型看到 任务+自己的回答+催促。
+            retry["messages"].append({"role": "assistant", "content": first_reply})
+        retry["messages"].append(
             {
                 "role": "user",
                 "content": tool_bridge.required_nudge(
                     tag=QWEN_TOOL_TAG, marker=QWEN_TOOL_MARKER
                 ),
             }
-        ]
+        )
         text = reasoning = ""
         for ev in self._stream_events(retry):
             text, reasoning = ev["text"], ev["reasoning"]
@@ -1077,7 +1099,7 @@ class QwenWebClient:
                     pass
 
         if not calls and tools and tool_bridge.is_forced_tool_choice(payload):
-            text, reasoning, calls = self._forced_retry(payload, tools)
+            text, reasoning, calls = self._forced_retry(payload, tools, first_reply=text)
         if not calls and tools and not text.strip() and reasoning.strip():
             # P0 思考双通道：正文可见输出为空时才扫 reasoning 里的完整
             # <tool_call> 块——思考里的草稿调用绝不提取（shell 级误执行风险）
@@ -1180,7 +1202,7 @@ class QwenWebClient:
             calls = _parse_tool_calls(text, tools)
             if not calls:
                 try:
-                    text, reasoning, calls = self._forced_retry(payload, tools)
+                    text, reasoning, calls = self._forced_retry(payload, tools, first_reply=text)
                 except QwenError as exc:
                     err = {
                         "error": {"message": str(exc), "type": "tool_required_error"}

@@ -81,7 +81,16 @@ def assistant_fingerprint(msg: dict) -> str:
             return json.dumps(norm, ensure_ascii=False, sort_keys=True)
         except Exception:
             pass
-    return text_of(msg)
+    # 文本分支归一：store 侧存的是原始累积文本（含工具标记），客户端历史
+    # 回传的是清洗/修剪后的交付文本——不归一则首个文本回复被清洗改动时
+    # 第 2 轮指纹必 miss（2026-10-30 审计 GLM P2-7/KIMI-F2）。剥标记 +
+    # 空白折叠后两侧收敛到同一规范形。
+    txt = text_of(msg)
+    try:
+        txt = strip_tool_markup(txt, dsml=True)
+    except Exception:
+        pass
+    return re.sub(r"\s+", " ", txt).strip()
 
 
 def conv_fingerprint(messages: list, model: str = "", key_id: str = "") -> str:
