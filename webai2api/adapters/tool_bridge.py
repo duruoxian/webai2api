@@ -703,6 +703,7 @@ def parse_tool_calls(
     marker: str | None = None,
     dsml: bool = False,
     limit: int = 1,
+    require_marker: bool = False,
 ) -> list:
     """从模型输出解析工具调用，返回标准 OpenAI tool_calls 结构。
 
@@ -732,6 +733,11 @@ def parse_tool_calls(
     calls = _build_calls(blobs, allowed, limit, tools)
     if calls:
         return calls
+    if require_marker:
+        # 思考双通道扫描专用：只认完整标记块（DSML/标签/标记行），
+        # 裸 JSON 一律不提取——思考里的「草稿调用」（模型自言自语的
+        # 合法 JSON）绝不能变成真实执行（2026-10-30 审计 KIMI-3/QWEN-3）
+        return []
     return _build_calls(_bare_blobs(text, allowed), allowed, limit, tools)
 
 

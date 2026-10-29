@@ -266,12 +266,13 @@ def _strip_tool_block(text: str) -> str:
     ).strip()
 
 
-def _parse_tool_calls(text: str, tools: list) -> list:
+def _parse_tool_calls(text: str, tools: list, require_marker: bool = False) -> list:
     return tool_bridge.parse_tool_calls(
         tool_bridge.normalize_tool_marker(text or "", TOOL_MARKER),
         tools,
         marker=TOOL_MARKER,
         dsml=True,
+        require_marker=require_marker,
     )
 
 
@@ -1203,7 +1204,7 @@ class KimiWebClient:
         if not calls and tools and not text.strip() and reasoning.strip():
             # P0 思考双通道：正文可见输出为空时才扫 reasoning 里的完整
             # DSML 块——思考里的草稿调用绝不提取（shell 级误执行风险）
-            rcalls = _parse_tool_calls(reasoning, tools)
+            rcalls = _parse_tool_calls(reasoning, tools, require_marker=True)
             if rcalls:
                 self.logger.warning("思考里发现完整工具调用（正文为空），已提取下发")
                 calls = rcalls
