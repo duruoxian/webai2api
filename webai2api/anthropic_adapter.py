@@ -268,6 +268,10 @@ class AnthropicStreamTranslator:
         self._in_tokens = 0
         self._out_tokens = 0
         self._text_parts: list[str] = []
+        # 当前 tool_use 块的调用 id（OpenAI 流式把 id 放在 tool_call 对象上；
+        # id 变化 = 新调用，必须切新 content_block，否则第 2 个起全部并进
+        # 第 1 块（2026-10-30 审计 GW-1）
+        self._tool_id = "" 
         self._errored = False
 
     # ── 内部：确保 message_start 已发 ──
@@ -375,10 +379,14 @@ class AnthropicStreamTranslator:
             events.append(self._delta({"type": "text_delta", "text": c}))
         for tc in d.get("tool_calls") or []:
             fn = tc.get("function") or {}
-            if fn.get("id") or fn.get("name"):
-                events += self._switch(
-                    "tool_use", {"id": fn.get("id"), "name": fn.get("name")}
-                )
+            tid = str(tc.get("id") or fn.get("id") or "")
+            name = str(fn.get("name") or "")
+            if tid and tid != self._tool_id:
+                events += self._switch("tool_use", {"id": tid, "name": name})
+                self._tool_id = tid
+            elif not tid and name and self._type != "tool_use":
+                # 无 id 带 name：按新调用开块（每轮单调用形态）
+                events += self._switch("tool_use", {"id": "", "name": name})
             args = fn.get("arguments")
             if args:
                 if self._type != "tool_use":

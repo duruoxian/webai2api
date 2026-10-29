@@ -665,6 +665,17 @@ def create_gateway_router(
         ttft_ms = int((time.perf_counter() - t_pick) * 1000)
         if first_chunk is None:
             _quota_release(key_row["id"], reserve)
+            # 对齐非流式路径：全部账号失败也要记 usage_log，否则面板的
+            # 流式失败统计整段缺失（2026-10-30 审计 P2-4）
+            await run_in_threadpool(
+                store.log_usage,
+                status=f"error:{type(last_exc).__name__}"
+                if last_exc
+                else "error:RuntimeError",
+                **base,
+                latency_ms=int((time.perf_counter() - t_pick) * 1000),
+                error_code=_err_code(last_exc) if last_exc else "all_accounts_failed",
+            )
             return _error(502, "所有可用账号均请求失败，请稍后重试", "upstream_error")
 
         async def gen():
@@ -672,6 +683,7 @@ def create_gateway_router(
             status = "ok"
             out_parts: list[str] = []
             last_finish = ""
+            stream_err = ""  # 流内错误块（前缀成功后无法重试，只记账）
             aq: "asyncio.Queue" = asyncio.Queue()
             loop = asyncio.get_event_loop()
             _DONE = object()
@@ -737,19 +749,40 @@ def create_gateway_router(
                         if body and body != "[DONE]" and len(out_parts) < 200000:
                             try:
                                 obj = json.loads(body)
-                                for ch in obj.get("choices") or []:
-                                    d = ch.get("delta") or {}
-                                    piece = (
-                                        d.get("content")
-                                        or d.get("reasoning_content")
-                                        or ""
-                                    )
-                                    if piece:
-                                        out_parts.append(str(piece))
-                                    if ch.get("finish_reason"):
-                                        last_finish = str(ch["finish_reason"])
                             except Exception:
-                                pass
+                                obj = None
+                            if isinstance(obj, dict):
+                                # 流内（前缀成功之后）的错误块：不可重试（已在
+                                # 下发），但必须记账并给账号冷却，不能当成功
+                                if obj.get("error"):
+                                    emsg = str(
+                                        (obj["error"] or {}).get("message")
+                                        or "上游流内错误"
+                                    )
+                                    status = "error:upstream_stream"
+                                    logger.warning("流内上游错误块: %s", emsg)
+                                u = obj.get("usage")
+                                if isinstance(u, dict) and u:
+                                    prompt_t = int(
+                                        u.get("prompt_tokens") or prompt_t
+                                    )
+                                    completion_t = int(
+                                        u.get("completion_tokens")
+                                        or completion_t
+                                    )
+                                    total_t = int(u.get("total_tokens") or total_t)
+                                else:
+                                    for ch in obj.get("choices") or []:
+                                        d = ch.get("delta") or {}
+                                        piece = (
+                                            d.get("content")
+                                            or d.get("reasoning_content")
+                                            or ""
+                                        )
+                                        if piece:
+                                            out_parts.append(str(piece))
+                                        if ch.get("finish_reason"):
+                                            last_finish = str(ch["finish_reason"])
                     yield line
             except asyncio.CancelledError:
                 # 客户端断开：通知上游线程停止拉取，避免继续消耗额度
@@ -768,7 +801,9 @@ def create_gateway_router(
                 # P0 埋点：finish=stop 且全文/思考零字节 → empty_response
                 # （工具调用轮 finish=tool_calls 不算空；客户端层已带重试，
                 # 这里记的是「重试后仍空」）
-                if status == "ok":
+                if status == "error:upstream_stream":
+                    err = stream_err[:120] or "upstream_stream"
+                elif status == "ok":
                     err = (
                         "empty_response"
                         if (not out_parts and last_finish == "stop")
@@ -1038,14 +1073,42 @@ def _event_has_payload(line: str) -> bool:
     return False
 
 
+def _error_of_event(line: str) -> str | None:
+    """提取 SSE 片段里适配器下发的带内上游错误（adapters 把上游异常转成
+    data: {"error": ...} 块而非抛出，见各 client 的异常包装）。"""
+    if not isinstance(line, str) or not line.startswith("data:"):
+        return None
+    body = line[5:].strip()
+    if not body or body == "[DONE]":
+        return None
+    try:
+        obj = json.loads(body)
+    except Exception:
+        return None
+    err = obj.get("error")
+    if isinstance(err, dict) and err.get("message"):
+        return str(err["message"])
+    if isinstance(err, str) and err:
+        return err
+    return None
+
+
 def _take_until_content(it, limit: int = 200):
-    """消费生成器直到出现有内容的块，返回已消费的块列表。"""
+    """消费生成器直到出现有内容的块，返回已消费的块列表。
+
+    带内错误块（上游凭证失效/风控/限流等）直接抛出——2026-10-30 审计发现
+    错误块此前被 _event_has_payload 当「有内容」，导致流式换号链被整体绕过、
+    失败账号 mark_ok 并粘住会话。抛出后走 _apply_failure 正常分类。
+    """
     prefix: list[str] = []
     for _ in range(limit):
         try:
             line = next(it)
         except StopIteration:
             return prefix or None
+        err = _error_of_event(line)
+        if err:
+            raise RuntimeError(f"上游流内错误: {err}")
         prefix.append(line)
         if _chunk_has_payload(line):
             return prefix

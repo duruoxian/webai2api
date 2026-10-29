@@ -159,7 +159,9 @@ def create_admin_router(
             return {"ok": False, "error": "请求格式错误"}
         pw = str(body.get("password", ""))
         expect = await run_in_threadpool(store.get_setting, "admin_password", "admin")
-        if not hmac.compare_digest(pw, expect):
+        if not hmac.compare_digest(
+            pw.encode("utf-8"), str(expect).encode("utf-8")
+        ):
             toks.note_fail()
             return {"ok": False, "error": "密码错误"}
         toks.note_ok()
@@ -184,6 +186,7 @@ def create_admin_router(
         offset: int = 0,
         key_id: str = "",
         account_id: str = "",
+        status: str = "",
     ):
         g = _guard(request)
         if g:
@@ -208,7 +211,7 @@ def create_admin_router(
             "network": await run_in_threadpool(_network_status),
             "key_usage": await run_in_threadpool(store.key_usage_map),
             "recent": await run_in_threadpool(
-                store.recent_usage, limit, offset, "", "", key_id, account_id
+                store.recent_usage, limit, offset, status, "", key_id, account_id
             ),
             "recent_total": await run_in_threadpool(
                 store.count_usage, "", "", key_id, account_id
@@ -671,21 +674,26 @@ def create_admin_router(
                 "错误码",
             ]
         )
+        def _csv_safe(v):
+            # 公式注入防护：= + - @ 开头的单元格在 Excel 里会当公式执行
+            sv = str(v)
+            return "'" + sv if sv[:1] in ("=", "+", "-", "@") else sv
+
         for r in rows:
             writer.writerow(
                 [
-                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"])),
-                    r.get("api_key_name", ""),
-                    r.get("account_name", ""),
-                    r.get("provider", ""),
-                    r.get("model", ""),
+                    _csv_safe(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"]))),
+                    _csv_safe(r.get("api_key_name", "")),
+                    _csv_safe(r.get("account_name", "")),
+                    _csv_safe(r.get("provider", "")),
+                    _csv_safe(r.get("model", "")),
                     r.get("prompt_tokens", 0),
                     r.get("completion_tokens", 0),
                     r.get("total_tokens", 0),
-                    r.get("status", ""),
+                    _csv_safe(r.get("status", "")),
                     r.get("latency_ms", 0),
                     r.get("first_token_ms", 0),
-                    r.get("error_code", ""),
+                    _csv_safe(r.get("error_code", "")),
                 ]
             )
         from fastapi.responses import Response
@@ -745,6 +753,12 @@ def create_admin_router(
                     "admin_password",
                     "deepseek_base_url", "glm_base_url",
                     "kimi_base_url", "qwen_base_url",
+                    # 防风控延迟存空串会让 float('') 炸掉整个平台的池构建
+                    # （2026-10-30 审计），空值一律保留旧值
+                    "deepseek_anti_min", "deepseek_anti_max",
+                    "glm_anti_min", "glm_anti_max",
+                    "kimi_anti_min", "kimi_anti_max",
+                    "qwen_anti_min", "qwen_anti_max",
                 )
             ):
                 await run_in_threadpool(store.set_setting, k, str(b[k]).strip())

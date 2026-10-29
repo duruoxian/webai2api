@@ -879,7 +879,9 @@ function copyText(text){
 async function api(path,method='GET',body=null){
   const opt={method,headers:{'X-Admin-Token':TOKEN}};
   if(body){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body);}
-  const r=await fetch('/admin/api'+path,opt);
+  let r;
+  try{ r=await fetch('/admin/api'+path,opt); }
+  catch(e){ toast('网络错误：' + (e.message||e)); throw e; }
   if(r.status===401){showLogin();throw new Error('未登录');}
   let j;
   try{ j=await r.json(); }
@@ -1015,6 +1017,10 @@ function animateNum(id, html, num){
   animateNumTo(el, html, num, prev);
 }
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+// JS 字符串字面量转义（用于 onclick 内联参数）：HTML 属性解析会把实体
+// 还原成原文再交给 JS，esc() 的 &#39; 会被解码回 ' 击穿字符串——这里用
+// JS 十六进制转义，属性解码不碰反斜杠序列（2026-10-30 审计 P2-7）
+function jsq(s){return String(s==null?'':s).replace(/[\\'"<>\n\r&]/g,c=>({'\\':'\\\\',"'":'\\x27','"':'\\x22','<':'\\x3C','>':'\\x3E','\n':'\\n','\r':'\\r','&':'\\x26'}[c]));}
 function fmtTime(ts){if(!ts)return '–';const d=new Date(ts*1000);
   return d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
 
@@ -1425,7 +1431,7 @@ function renderDonut(models){
   if(!tip) return;
   svg.querySelectorAll('.donut-seg').forEach(seg=>{
     seg.addEventListener('mouseenter', ev=>{
-      tip.innerHTML=`<b>${seg.dataset.name}</b><br>用量 ${seg.dataset.val} Token<br>占比 ${seg.dataset.pct}%`;
+      tip.innerHTML=`<b>${esc(seg.dataset.name)}</b><br>用量 ${seg.dataset.val} Token<br>占比 ${seg.dataset.pct}%`;
       tip.classList.add('show');
       const box=svg.getBoundingClientRect();
       const parent=svg.parentElement.getBoundingClientRect();
@@ -2954,7 +2960,7 @@ ${lines.join(',\n')}
     // 通用兼容卡：模型列表按本机可用模型动态生成
     const gm=document.getElementById('guideModels');
     if(gm) gm.innerHTML=models.map(m=>
-      `<div class="guide-model"><code>${esc(m)}</code><button class="btn gray sm" onclick="copyText('${esc(m)}')">复制 ID</button></div>`).join('');
+      `<div class="guide-model"><code>${esc(m)}</code><button class="btn gray sm" onclick="copyText('${jsq(m)}')">复制 ID</button></div>`).join('');
     // WorkBuddy 卡：接口地址是完整 chat/completions 路径，模型逐条添加
     const wbB=document.getElementById('wbBase');
     if(wbB) wbB.textContent=location.origin+'/v1/chat/completions';
@@ -2963,7 +2969,7 @@ ${lines.join(',\n')}
     window.__wbKey=k?k.key:'';
     const wm=document.getElementById('wbModels');
     if(wm) wm.innerHTML=models.map(m=>
-      `<div class="guide-model"><code>${esc(m)}</code><span class="muted" style="font-size:12px">单独添加</span><button class="btn gray sm" onclick="copyText('${esc(m)}')">复制</button></div>`).join('');
+      `<div class="guide-model"><code>${esc(m)}</code><span class="muted" style="font-size:12px">单独添加</span><button class="btn gray sm" onclick="copyText('${jsq(m)}')">复制</button></div>`).join('');
   }
   function buildClaudeSnippet(keyVal){
     const base=location.origin;
