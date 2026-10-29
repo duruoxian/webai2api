@@ -836,6 +836,13 @@ class QwenWebClient:
                             saw_done = True
                             break
                         elif typ == "error":
+                            # 中继 JS 把零内容上游转成 error(empty:true)——
+                            # 这正是「空响应」的形态之一，转成正常流结束交给
+                            # 消费端的弃会话重试，而不是直接 502（单账号部署
+                            # 时网关换号救不了，审计 QWEN-P2-5）
+                            if event.get("empty"):
+                                saw_done = True
+                                break
                             if is_cont:
                                 # 续写轮报错：按截断收场，不让已输出的流变报错
                                 self.logger.warning(
@@ -1234,7 +1241,7 @@ class QwenWebClient:
                     ]
                 }
             )
-            yield chunk({}, usage=_usage(payload, text))
+            yield chunk({}, usage=_usage(payload, text, sent_reasoning))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
             return

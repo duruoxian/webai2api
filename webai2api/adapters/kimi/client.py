@@ -1334,7 +1334,7 @@ class KimiWebClient:
                     ]
                 }
             )
-            yield chunk({}, usage=_usage(payload, text))
+            yield chunk({}, usage=_usage(payload, text, sent_reasoning))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
             return

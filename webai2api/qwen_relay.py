@@ -762,9 +762,15 @@ def _run_webview(acc_id: str, quiet: bool = False) -> None:
                         except Exception:
                             pass
                 elif not shown and not quiet:
-                    # quiet（预热）模式：登录态失效时保持隐藏，不弹窗打扰用户；
-                    # 真正发请求走的是非 quiet 路径，届时仍会弹窗提示登录。
+                    # 非 quiet 中继（真实请求路径）检测到登录态失效：弹窗让
+                    # 用户补登录。预热提交误删了 window.show()，提示窗口从此
+                    # 永远不出现（2026-10-30 审计 QWEN-P2-4）；quiet（预热）
+                    # 模式仍保持隐藏不打扰。
                     shown = True
+                    try:
+                        window.show()
+                    except Exception:
+                        pass
         finally:
             try:
                 server.shutdown()
