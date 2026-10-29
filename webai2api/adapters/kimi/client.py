@@ -1168,7 +1168,11 @@ class KimiWebClient:
     def chat_completion(self, payload: dict) -> dict:
         model = payload.get("model") or self.config.default_model
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        # 与流式路径一致：tool_choice="none" 等价于没有工具（否则正文里
+        # 举例输出的调用形 JSON 会被解析成 tool_calls 返回，违反 none 语义）
         tools = payload.get("tools") or []
+        if payload.get("tool_choice") == "none":
+            tools = []
         text = reasoning = ""
         calls: list = []
         finish_seen = True
@@ -1345,6 +1349,9 @@ class KimiWebClient:
         calls: list = []
         buf = None
         emitted_tail = ""
+        visible_all = ""  # 全量已发正文（emitted_tail 只是 200 字滑窗，
+        # 空响应判定若只看窗口，正文以 200+ 空白结尾会被误判全空而重试，
+        # 造成第二份回答拼接——2026-10-30 审计 KIMI-F4）
         sent_text = ""
         sent_reasoning = ""
         finish_seen = True
@@ -1363,6 +1370,7 @@ class KimiWebClient:
                 legacy=self.config.legacy_reasoning_in_content
             )
             emitted_tail = ""
+            visible_all = ""
             sent_text = ""
             sent_reasoning = ""
             finish_seen = True
@@ -1382,6 +1390,7 @@ class KimiWebClient:
                     if out_r:
                         yield chunk({"reasoning_content": out_r})
                     if out_c:
+                        visible_all += out_c
                         emitted_tail = (emitted_tail + out_c)[
                             -tool_bridge.SEAM_WINDOW :
                         ]
@@ -1402,7 +1411,7 @@ class KimiWebClient:
             )
             if (
                 calls
-                or emitted_tail.strip()
+                or visible_all.strip()
                 or sent_reasoning.strip()
                 or not finish_seen
             ):
@@ -1439,7 +1448,7 @@ class KimiWebClient:
 
         # P0 思考双通道：正文可见输出为空时才扫 reasoning 里的完整 DSML 块
         # ——思考里的草稿调用绝不提取（shell 级误执行风险）
-        if tools and not calls and not emitted_tail.strip() and sent_reasoning:
+        if tools and not calls and not visible_all.strip() and sent_reasoning:
             rcalls = _parse_tool_calls(sent_reasoning, tools)
             if rcalls:
                 self.logger.warning("思考里发现完整工具调用（正文为空），已提取下发")
