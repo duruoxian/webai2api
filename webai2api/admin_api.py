@@ -1244,6 +1244,9 @@ def _build_opencode_snippet(host: str, key: str, models: list[str]) -> str:
         prov = infer_provider(mid)
         # 除 deepseek-chat 这类明确的非思考模型外，其余都按可输出思考处理
         reasoning = "false" if low in ("deepseek-chat", "deepseek-v4-flash") else "true"
+        # 图片输入按网关真实能力声明：deepseek/chatglm 有上传链路；
+        # kimi/qwen 适配器暂不支持上行图片，声明了客户端就会真的发图被丢
+        vision = '["image","text"]' if prov in ("deepseek", "chatglm") else '["text"]'
         lim = DEFAULT_LIMITS.get(prov, DEFAULT_LIMITS["deepseek"])
         ctx, out = lim["context"], lim["output"]
         tiers: list[tuple[str, str]] = []
@@ -1273,7 +1276,7 @@ def _build_opencode_snippet(host: str, key: str, models: list[str]) -> str:
             variants = f',\n      "variants": [{items}]'
         lines.append(
             f'    {jmid}: {{ "name": {jmid},\n'
-            f'      "capabilities": {{ "input": ["image","text"], "output": ["text"],\n'
+            f'      "capabilities": {{ "input": {vision}, "output": ["text"],\n'
             f'        "reasoning": {{ "supported": {reasoning} }} }},\n'
             f'      "limit": {{ "context": {ctx}, "output": {out} }}{variants} }}'
         )

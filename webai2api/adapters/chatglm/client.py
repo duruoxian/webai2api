@@ -19,6 +19,7 @@ from logging import Logger
 
 from .. import conv_cache, netutil, reasoning_bridge, tool_bridge
 from .config import GlmConfig
+from .uploader import GlmImageUploader, extract_image_urls
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -489,6 +490,33 @@ class ChatGlmWebClient:
         # 同账号上游请求最小间隔
         self._last_call_at: float = 0.0
         self._last_call_lock = threading.Lock()
+        # 图片上传（chat_upload），消息含 image_url 时调用
+        self.image_uploader = GlmImageUploader(self, logger)
+
+    def upload_headers(self) -> dict[str, str]:
+        """图片上传请求头（含签名与 Bearer，供 uploader 复用同一出口）。"""
+        return _headers_for(self.config, self._access())
+
+    def _upload_image_items(self, messages: list[dict]) -> list[dict]:
+        """把消息里的图片上传并按网页端字段组装 image part 条目。
+
+        消息不含图片时返回空列表；单张失败跳过（纯文本继续），全部走完
+        后按顺序编 order。
+        """
+        urls = extract_image_urls(messages)
+        if not urls:
+            return []
+        items: list[dict] = []
+        for i, u in enumerate(urls[:8]):
+            item = self.image_uploader.upload(u, name_hint=f"image_{i}.png")
+            if item:
+                item["order"] = len(items)
+                items.append(item)
+            else:
+                self.logger.warning("Vision | 第 %d 张图片上传失败，已跳过", i)
+        if items:
+            self.logger.info("Vision | 已上传 %d/%d 张图片", len(items), len(urls))
+        return items
 
     # ── 会话缓存持久化（实现见 adapters/conv_cache.py）──
     def flush_cache(self) -> None:
@@ -654,7 +682,12 @@ class ChatGlmWebClient:
         return "zero", "high"
 
     def _body(
-        self, content: str, model: str, conv_id: str = "", effort: str = ""
+        self,
+        content: str,
+        model: str,
+        conv_id: str = "",
+        effort: str = "",
+        image_items: list[dict] | None = None,
     ) -> dict:
         chat_mode, effort = self._resolve_mode(model, effort)
         meta = {
@@ -671,14 +704,18 @@ class ChatGlmWebClient:
         }
         if effort:
             meta["reasoning_effort"] = effort
+        # 图片 part：字段名逐字对齐网页端（file_id/image_url/file_size/order），
+        # 抓帧实测缺字段或用错字段名上游会静默丢图
+        parts: list[dict] = [{"type": "text", "text": content}]
+        if image_items:
+            parts.append({"type": "image", "image": image_items})
+            meta["input_question_type"] = "image_upload"
         return {
             "assistant_id": self._assistant_id(model),
             "conversation_id": conv_id,
             "project_id": "",
             "chat_type": "user_chat",
-            "messages": [
-                {"role": "user", "content": [{"type": "text", "text": content}]}
-            ],
+            "messages": [{"role": "user", "content": parts}],
             "meta_data": meta,
         }
 
@@ -803,6 +840,27 @@ class ChatGlmWebClient:
             content = _collapse_cached_text(content, messages)
         else:
             content = _prepare_content(messages)
+        # 图片：首轮随全量压平附上全部图片；复用会话轮只看最后一条 user
+        # 消息的新图（上游会话里已有历史图片）。任一张失败跳过，纯文本继续。
+        try:
+            if cached_conv:
+                last_user = next(
+                    (
+                        m
+                        for m in reversed(messages)
+                        if m.get("role") == "user"
+                        and isinstance(m.get("content"), list)
+                    ),
+                    None,
+                )
+                image_items = (
+                    self._upload_image_items([last_user]) if last_user else []
+                )
+            else:
+                image_items = self._upload_image_items(messages)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("Vision | 图片处理失败，按纯文本继续: %s", exc)
+            image_items = []
         conn, resp = self._open_stream(
             self.config.stream_url,
             self._body(
@@ -812,6 +870,7 @@ class ChatGlmWebClient:
                 effort=str(
                     payload.get("reasoning_effort") or self.config.default_effort
                 ),
+                image_items=image_items,
             ),
             _headers_for(self.config, token),
             self.config.request_timeout,
