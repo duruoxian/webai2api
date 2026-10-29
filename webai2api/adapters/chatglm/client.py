@@ -826,9 +826,54 @@ class ChatGlmWebClient:
         base_reasoning = ""
         all_calls: list[dict] = []
         saw_finish = False
+        # 续写接缝剪除（对齐 deepseek/kimi/qwen 的 SeamTrimmer）：模型
+        # 「继续」常把断点前最后一段逐字重说一遍，增量开头「出现在已发
+        # 尾巴里」就扣住，分叉时提交最长后缀-前缀重叠——剪掉的字节都与
+        # 客户端已有内容逐字相同，数学上不丢新内容。仅续写轮激活
+        # （None = 首轮直通）。思考侧在接缝处补一个换行，条件收得很窄：
+        # 基线结尾与续写开头都是文字字符、且本轮尚未剪掉重叠（剪过说明
+        # 分叉点是真实续点，拼接即原貌，补换行反而拆字）；正文永不注入。
+        seam_text = None
+        seam_reason = None
+        seam_fed = [0, 0]  # 本轮 acc.text / acc.reasoning 已喂入 seam 的长度
+        round_text_shown = ""  # 本轮已放行正文（seam.committed 镜像）
+        round_reason_shown = ""  # 本轮已放行思考（含接缝换行）
+        round_reason_fed = 0  # 本轮已喂入思考的原始字节数（判「剪过没有」）
+        seam_joiner = ""
+
+        def _seam_feed() -> None:
+            nonlocal round_text_shown, round_reason_shown, round_reason_fed
+            nonlocal seam_joiner
+            if seam_text is None:
+                return
+            d_text = acc.text[seam_fed[0] :]
+            d_reason = acc.reasoning[seam_fed[1] :]
+            if not d_text and not d_reason:
+                return
+            seam_fed[0], seam_fed[1] = len(acc.text), len(acc.reasoning)
+            if d_text:
+                round_text_shown += seam_text.feed(d_text)
+            if d_reason:
+                round_reason_fed += len(d_reason)
+                out = seam_reason.feed(d_reason)
+                if out and seam_joiner:
+                    if (
+                        base_reasoning
+                        and base_reasoning[-1].isalnum()
+                        and out[0].isalnum()
+                        and round_reason_fed == len(round_reason_shown) + len(out)
+                    ):
+                        out = seam_joiner + out
+                    seam_joiner = ""
+                round_reason_shown += out
 
         def _combined() -> tuple[str, str]:
-            return base_text + acc.text, base_reasoning + acc.reasoning
+            if seam_text is None:
+                return base_text + acc.text, base_reasoning + acc.reasoning
+            return (
+                base_text + round_text_shown,
+                base_reasoning + round_reason_shown,
+            )
 
         def _drain(resp) -> bool:
             """消费一个上游 SSE 流直到 finish/断流，返回是否见到 finish 帧。"""
@@ -840,6 +885,7 @@ class ChatGlmWebClient:
                     conv_id = event["conversation_id"]
                 if isinstance(event.get("parts"), list):
                     acc.consume(event["parts"])
+                    _seam_feed()
                 if event.get("status") == "finish":
                     return True
                 text, reasoning = _combined()
@@ -885,10 +931,29 @@ class ChatGlmWebClient:
                     _cont_rounds,
                     MAX_AUTO_CONTINUATIONS,
                 )
-                base_text += acc.text
-                base_reasoning += acc.reasoning
+                if seam_text is None:
+                    # 首轮无接缝，全文已示，直接并入基线
+                    base_text += acc.text
+                    base_reasoning += acc.reasoning
+                else:
+                    # 续写轮只并入已放行部分；仍扣着的必然是已发尾巴的
+                    # 逐字复读，finish() 丢弃（与 deepseek/kimi 同语义）
+                    seam_text.finish()
+                    seam_reason.finish()
+                    base_text += round_text_shown
+                    base_reasoning += round_reason_shown
                 all_calls.extend(acc.tool_calls)
                 acc = _GlmParts(is_silent, allowed_tools=allowed)
+                seam_text = tool_bridge.SeamTrimmer(
+                    base_text[-tool_bridge.SEAM_WINDOW :]
+                )
+                seam_reason = tool_bridge.SeamTrimmer(
+                    base_reasoning[-tool_bridge.SEAM_WINDOW :]
+                )
+                seam_fed[0] = seam_fed[1] = 0
+                round_text_shown = round_reason_shown = ""
+                round_reason_fed = 0
+                seam_joiner = "\n\n"
                 try:
                     c_conn, c_resp = self._open_stream(
                         self.config.stream_url,
@@ -934,7 +999,16 @@ class ChatGlmWebClient:
             except Exception:
                 pass
 
-        text, reasoning = base_text + acc.text, base_reasoning + acc.reasoning
+        if seam_text is None:
+            text, reasoning = base_text + acc.text, base_reasoning + acc.reasoning
+        else:
+            # 收尾：仍扣住的尾巴复读段丢弃，只保留已放行内容
+            seam_text.finish()
+            seam_reason.finish()
+            text, reasoning = (
+                base_text + round_text_shown,
+                base_reasoning + round_reason_shown,
+            )
         all_calls.extend(acc.tool_calls)
         if conv_id:
             if self.config.session_cache_enabled:
