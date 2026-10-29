@@ -9,6 +9,18 @@ on:
 permissions:
   contents: write
 
+# SignPath 代码签名（可选启用）：仓库 Settings → Secrets and variables 配置
+#   Secrets：SIGNPATH_API_TOKEN / SIGNPATH_ORGANIZATION_ID
+#   Variables：SIGNPATH_PROJECT_SLUG / SIGNPATH_SIGNING_POLICY_SLUG / SIGNPATH_ARTIFACT_CONFIGURATION_SLUG
+# 未配置时签名步骤自动跳过，Release 照常发布未签名包。
+# 申请 SignPath 开源签名：https://signpath.org （人工申请与审核，签名政策见仓库 CODE_SIGNING.md）
+env:
+  SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+  SIGNPATH_ORG_ID: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+  SIGNPATH_PROJECT: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+  SIGNPATH_POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+  SIGNPATH_ARTIFACT_CFG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+
 jobs:
   build:
     runs-on: windows-latest
@@ -59,10 +71,32 @@ jobs:
           Compress-Archive -Path $app -DestinationPath "$env:DIST/webai2api-win64.zip" -Force
 
       - name: Upload artifact
+        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: webai2api
           path: ${{ env.DIST }}/*-win64.zip
+
+      - name: Sign with SignPath
+        if: ${{ startsWith(github.ref, 'refs/tags/') && env.SIGNPATH_API_TOKEN != '' }}
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ env.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORG_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT }}
+          signing-policy-slug: ${{ env.SIGNPATH_POLICY }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CFG }}
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+          skip-decompress: true
+
+      - name: Use signed archive for release
+        if: ${{ startsWith(github.ref, 'refs/tags/') && env.SIGNPATH_API_TOKEN != '' }}
+        shell: pwsh
+        run: |
+          Copy-Item "signed/*-win64.zip" "$env:DIST/webai2api-win64.zip" -Force
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')

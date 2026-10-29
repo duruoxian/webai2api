@@ -12,21 +12,23 @@ OpenAI 兼容 API**，自带中文管理面板 😃
 | 🐒 **真的会干活** | 四平台全部支持工具调用——opencode / Claude Code / ZCode 接进来能读写文件、跑命令、写文档 |
 | 🛡️ **自己的数据自己守** | 全程本机运行，账号凭证不上传任何第三方 ♥️ |
 | 🌕 **开箱即用** | Windows 免装 Python，解压双击就跑 |
-| 🆓 **完全开源免费** | MIT 协议，自由使用、修改、分发；不售卖、不出租、不需要授权码 |
+| 🆓 **完全开源免费** | MIT 协议，自由使用、修改；不售卖、不出租、不需要授权码 |
 
 - 一个软件里管理**多个账号**（每个账号独立凭证、互不干扰，也不影响你自己浏览器里的登录）
-- 生成**多个 API Key**，发给朋友，填进 opencode / Cherry Studio 等任何 OpenAI 兼容客户端即可
+- 生成**多个 API Key**，按客户端/用途隔离管理，填进 opencode / Cherry Studio 等任何 OpenAI 兼容客户端即可
 - 按 **模型 / 账号 / API Key** 统计 token 使用量
 - 想折腾？也支持源码运行（Python 3.12+）
 
-> 🥺 仅供个人学习与本地自用，请勿公开分发或对外提供服务——
-> 风控 ⛈️ 面前，低调是最长的保险。
+> 🥺 作者倡导：仅供个人学习与本地自用，请勿公开分发或对外提供服务——
+> 超出自用范围的一切后果由使用者自负。完整使用声明见 [DISCLAIMER.md](DISCLAIMER.md)。
 
 > 🥹 这个项目从「一个周末的反代脚本」长成了现在这棵树，
 > 中间被真实使用打碎又重装了好几轮。完整踩坑记录（博客系列）：
 > [一、把网页版做成 API](https://duruoxian-blog.pages.dev/posts/webai2api) ｜
 > [二、从玩具到能卖的客户端](https://duruoxian-blog.pages.dev/posts/webai2api-v2) ｜
 > [三、让网页模型真的会调工具](https://duruoxian-blog.pages.dev/posts/webai2api-v3)
+
+> （注：系列二写于早期曾考虑售卖的阶段，自 v0.1.36 起已完全免费，仅作历史记录。）
 
 ## 下载（Windows）
 
@@ -313,3 +315,7 @@ DeepSeek 适配内核基于开源项目
 在其基础之上做了多账号、用量统计与网关层面的集成改造。
 
 本项目的网关、面板、多账号等外层代码同为 MIT。详见 `LICENSE`。
+
+发布产物的代码签名由 [SignPath Foundation](https://signpath.org) 免费提供：
+*Free code signing provided by SignPath.io, certificate by SignPath Foundation.*
+代码签名政策见 [CODE_SIGNING.md](CODE_SIGNING.md)。
