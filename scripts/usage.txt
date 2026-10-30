@@ -1,0 +1,16 @@
+webai2api 使用说明（v0.1.51 起）
+========================================
+
+把 DeepSeek / 智谱清言 / Kimi / 通义千问 四家 AI 的网页版
+反向代理成统一的 OpenAI 兼容 API，自带中文管理面板。
+
+快速上手：
+  1. 下载 Release 的 webai2api-win64.zip，解压后双击 webai2api.exe
+  2. 面板 http://127.0.0.1:8800/admin（默认密码 admin）
+  3. 「账号管理」添加账号 → 点「浏览器登录」内嵌 WebView2 登录抓取凭证
+  4. 「API Key」页生成 Key，填入任意 OpenAI 兼容客户端
+     （Base URL 填 http://127.0.0.1:8800/v1）
+
+四家平台全部支持工具调用与流式输出；DeepSeek 与 GLM 支持图片输入。
+本项目 MIT 开源，仅供个人学习与本地自用。
+详见仓库 README.md（含英文版 README_EN.md）。

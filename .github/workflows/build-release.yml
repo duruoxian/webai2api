@@ -58,7 +58,7 @@ jobs:
         run: |
           $app = "$env:DIST/$env:APPNAME"
           New-Item -ItemType Directory -Force -Path $app | Out-Null
-          Copy-Item "scripts/usage-pro.txt" "$app/使用说明.txt" -Force
+          Copy-Item "scripts/usage.txt" "$app/使用说明.txt" -Force
           Get-Content "$app/使用说明.txt" -TotalCount 3
 
       - name: Package zip
