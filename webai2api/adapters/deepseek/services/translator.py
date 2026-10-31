@@ -307,7 +307,13 @@ def convert_openai_to_deepseek_incremental(
             last_assistant_idx = i
             break
 
-    start = last_assistant_idx + 1
+    if last_assistant_idx < 0:
+        # 历史里没有 assistant（required 强校验重试的典型形态）：上游会话
+        # 已有首轮全部内容，只发最后一条 user（nudge 本身）。此前 start=0
+        # 会把 user_1 原文再发一遍（2026-10-30 审计 DS-P3）
+        start = max(0, len(messages) - 1)
+    else:
+        start = last_assistant_idx + 1
 
     # ── 收集边界之后的新消息 ──
     current_parts: list[str] = []

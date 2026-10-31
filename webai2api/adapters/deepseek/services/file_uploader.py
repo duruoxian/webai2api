@@ -61,6 +61,21 @@ class FileUploader:
 
     # ── 公共入口 ─────────────────────────────────────────
 
+    def _open(self, request: urllib.request.Request, timeout: int):
+        """带账号出口设置的 urlopen：与 chat/PoW 路径走同一出口。
+
+        此前三处用裸 urllib.request.urlopen，绕过 egress——配置了代理的
+        账号会出现上传走系统代理、聊天走账号代理的出口分裂
+        （2026-10-30 审计 DS-P3）。
+        """
+        from ....egress import egress_opener
+
+        egress = str(getattr(self.config, "egress", "system") or "system")
+        proxy_url = str(getattr(self.config, "proxy", "") or "")
+        host = urllib.parse.urlsplit(request.full_url).hostname or ""
+        opener = egress_opener(egress, proxy_url, host)
+        return opener.open(request, timeout=timeout)
+
     def upload_from_openai_image(
         self,
         image_url: str,
@@ -134,7 +149,7 @@ class FileUploader:
             request = urllib.request.Request(
                 url, data=body, method="POST", headers=headers,
             )
-            with urllib.request.urlopen(
+            with self._open(
                 request, timeout=self.config.request_timeout,
             ) as resp:
                 self.auth.absorb_response_cookies(resp)
@@ -182,7 +197,7 @@ class FileUploader:
             self.config.pow_challenge_url,
             data=body, method="POST", headers=headers,
         )
-        with urllib.request.urlopen(request, timeout=15) as resp:
+        with self._open(request, timeout=15) as resp:
             self.auth.absorb_response_cookies(resp)
             payload = self.auth._read_json_response(resp)
 
@@ -228,7 +243,7 @@ class FileUploader:
             request = urllib.request.Request(
                 image_url, headers={"User-Agent": "Mozilla/5.0"},
             )
-            with urllib.request.urlopen(request, timeout=30) as resp:
+            with self._open(request, timeout=30) as resp:
                 content = resp.read()
                 mime = (
                     (resp.headers.get("Content-Type") or "image/png")

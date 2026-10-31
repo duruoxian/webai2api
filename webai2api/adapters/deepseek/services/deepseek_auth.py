@@ -137,11 +137,24 @@ class DeepSeekAuthManager:
         self.logger.info("HIF tokens 获取完成")
 
     def get_hif_tokens(self) -> HIFTokens:
+        # 快路径无锁读；两次网络调用（各 10s 超时）不持锁——此前持 RLock
+        # 取 token，并发请求最长被串行阻塞 ~20s（2026-10-30 审计 DS-P3）
+        cached = self._hif_tokens
+        if cached and not cached.is_expired:
+            return cached
         with self._lock:
-            if self._hif_tokens and not self._hif_tokens.is_expired:
-                return self._hif_tokens
-            self._fetch_hif_tokens()
-            return self._hif_tokens
+            # 双重检查：另一个线程可能已取到新 token
+            cached = self._hif_tokens
+            if cached and not cached.is_expired:
+                return cached
+        self._fetch_hif_tokens()
+        fetched = self._hif_tokens
+        if fetched is not None and not (fetched.leim or fetched.dliq):
+            # 两个 token 都取空：不缓存（此前空结果也缓存 600s，期间
+            # 持续失败），下次调用立即重试
+            self._hif_tokens = None
+            return HIFTokens(leim="", dliq="", fetched_at=0.0)
+        return fetched or HIFTokens(leim="", dliq="", fetched_at=0.0)
 
     def build_full_headers(
         self,

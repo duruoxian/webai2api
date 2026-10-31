@@ -165,6 +165,14 @@ def dispose_client(client) -> None:
             browser.close()
         except Exception:  # noqa: BLE001
             pass
+    # 复用长连接（DeepSeek 的 _http_conn）也一并关闭：池重建时旧客户端
+    # 被丢弃，不关则每次重建泄漏一个套接字（2026-10-30 审计 DS-P3）
+    conn = getattr(client, "_http_conn", None)
+    if conn is not None and hasattr(conn, "close"):
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class GenericClientPool:
