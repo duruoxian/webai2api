@@ -21,6 +21,7 @@ import gzip
 import http.client
 import json
 import math
+import re
 import socket
 import threading
 import time
@@ -79,6 +80,35 @@ MAX_EMPTY_RETRIES = 1
 # 每次续写都是一轮新的 completion PoW + 请求（有日志可查）。
 MAX_AUTO_CONTINUATIONS = 2
 CONTINUE_PROMPT = "继续"
+
+# ── 光说不做自愈（think-only self-heal）──────────────
+# 真实事故：reasoner 把工具调用起草在思考里（含 DSML 草稿），正文与
+# tool_calls 却双空、回合直接结束（opencode 里表现为「光说不做」）。
+# 检测到后向**同一上游会话**追加一条 nudge user 消息重试一轮（保留
+# 上下文，模型只是忘了发调用）；每个请求最多一次，重试仍无产出则落回
+# 现有镜像兜底（最坏情况=现状）。
+MAX_THINK_ONLY_RETRIES = 1
+THINK_ONLY_NUDGE_PROMPT = (
+    "你上一轮没有输出正文，也没有发出任何工具调用，只输出了思考。"
+    "请直接给出工具调用（按之前给你的调用格式），或直接给出正文回答；"
+    "不要只输出思考。"
+)
+
+# 「工具调用草稿」的气味：思考里出现 DSML 标记（半角/全角竖线各变体，
+# 后跟 calls/invoke/parameter 标签字）或哨兵标记（<|tool_call(s)|> 及
+# 闭合变体）。只作触发信号——思考草稿本身绝不提取执行（安全红线）。
+_THINK_ONLY_SMELL_RE = re.compile(
+    r"[|\uff5c][\s|\uff5c]{0,4}DSML[\s|\uff5c]{0,4}[|\uff5c][\s|\uff5c]{0,4}"
+    r"(?:calls|invoke|parameter)\b"
+    r"|<\s*/?\s*[|\uff5c][\s|\uff5c]{0,4}/?\s*tool_calls?\b[^>\n]{0,60}>",
+    re.IGNORECASE,
+)
+
+
+def _reasoning_has_tool_call_draft(reasoning: str) -> bool:
+    """思考里是否有「工具调用草稿」的气味（DSML/哨兵标记，半角/全角都算）。"""
+    return bool(reasoning) and bool(_THINK_ONLY_SMELL_RE.search(reasoning))
+
 
 def _drop_trailing_partial_markup(text: str) -> str:
     """非流式续写前清场：截掉尾部未闭合的 DSML/哨兵 opener 残块。
@@ -1122,6 +1152,11 @@ class DeepSeekWebClient:
         rate_limit_retries = 0
         file_retries = 0
         empty_retries = 0
+        think_only_retries = 0
+        # 光说不做自愈：重试轮要接续的上一轮思考草稿（"" = 无）
+        carried_reasoning = ""
+        # 光说不做自愈轮的预开上游流（触发点先开流，开失败就地镜像兜底）
+        pending_response = None
         has_tools = _payload_has_tools(payload)
         slot_name = f"chat:{payload.get('model', 'unknown')}"
 
@@ -1131,12 +1166,26 @@ class DeepSeekWebClient:
         try:
             while True:
                 response = None
+                # 光说不做自愈轮的 resolved 带一次性哨兵 cache_key，最终
+                # 入库/删除/结果构造必须取回原始 resolved（回指由
+                # _nudge_resolved 注入；常规轮 resolved 即 store_resolved）
+                store_resolved = (
+                    resolved.get("__nudge_store_resolved__") or resolved
+                )
                 session_id = resolved.get("session_id") or ""
                 try:
-                    response, session_id = self._open_chat_stream(resolved)
+                    if pending_response is not None:
+                        # 光说不做自愈轮：上游流已在触发点预开成功
+                        response = pending_response
+                        pending_response = None
+                    else:
+                        response, session_id = self._open_chat_stream(resolved)
 
                     full_text = ""
-                    full_reasoning = ""
+                    # nudge 重试轮接续上一轮的思考草稿（草稿+重试轮思考
+                    # 一起参与解析/镜像/用量，草稿绝不因此被执行）
+                    full_reasoning = carried_reasoning
+                    carried_reasoning = ""
                     last_response_message_id: str | None = None
                     accumulated_tokens = 0
                     state = StreamState()
@@ -1259,7 +1308,7 @@ class DeepSeekWebClient:
                             ", ".join(c.name for c in parsed.calls),
                         )
                         self._store_after_response(
-                            resolved,
+                            store_resolved,
                             session_id,
                             parsed.clean_text,
                             last_response_message_id,
@@ -1270,17 +1319,69 @@ class DeepSeekWebClient:
                         )
                         if (
                             self.config.delete_conversation
-                            and resolved["mode"] == "fresh"
+                            and store_resolved["mode"] == "fresh"
                             and session_id
                         ):
                             self._delete_session(session_id)
                         return self._build_tool_call_result(
                             payload,
-                            resolved,
+                            store_resolved,
                             parsed.calls,
                             full_reasoning,
                             completion_id,
                         )
+
+                    # ── 光说不做自愈（think-only self-heal）──────────────
+                    # 触发（四条同时满足，宁窄勿宽）：声明了 tools + 本轮
+                    # 无 tool_calls + 客户端可见正文为空 + 思考里有工具调用
+                    # 气味（DSML/哨兵草稿，半角/全角都算），且上面的思考
+                    # 双通道没提取出完整调用。向同一上游会话追加一条 nudge
+                    # user 消息重试一轮（保留上下文，不弃会话），草稿思考
+                    # 接续进重试轮；每个请求最多一次，重试仍无产出则落回
+                    # 下方镜像兜底（最坏情况=现状）。思考草稿绝不直接提取
+                    # 执行——这里只发送 nudge，绝不把草稿变成调用。
+                    if (
+                        has_tools
+                        and think_only_retries < MAX_THINK_ONLY_RETRIES
+                        and not full_text.strip()
+                        and full_reasoning
+                        and _reasoning_has_tool_call_draft(full_reasoning)
+                    ):
+                        nudge_resolved = self._nudge_resolved(
+                            resolved, session_id, last_response_message_id
+                        )
+                        try:
+                            preopened, _nudge_session = self._open_chat_stream(
+                                nudge_resolved
+                            )
+                        except (
+                            ContextLengthExceededError,
+                            RateLimitError,
+                            FileParseError,
+                        ):
+                            # 可重试的上游错误交给外层既定处理器（冷却/换会话）
+                            raise
+                        except Exception as exc:  # noqa: BLE001
+                            # nudge 轮打不开（上游硬错误）：就地落回镜像兜底，
+                            # 最坏情况=现状，绝不把本可镜像的回答变成 502
+                            self.logger.warning(
+                                "think-only nudge 重试打开失败（按镜像兜底）: %s", exc
+                            )
+                        else:
+                            think_only_retries += 1
+                            self._bump("think_only_retry")
+                            self.logger.warning(
+                                "思考含工具调用草稿但正文/调用皆空（think-only），"
+                                "同会话追加 nudge 重试 %d/%d",
+                                think_only_retries,
+                                MAX_THINK_ONLY_RETRIES,
+                            )
+                            # 草稿思考接续进重试轮；重试仍无产出时由下方
+                            # 镜像兜底一并顶出（草稿与重试轮思考合计只计一次）
+                            carried_reasoning = full_reasoning + "\n\n"
+                            pending_response = preopened
+                            resolved = nudge_resolved
+                            continue
 
                     # 空正文兜底（对齐 Kimi/GLM 的 finalize_reasoning 语义）：
                     # 正文空（纯空白也算空）、思考有货 → 思考顶成正文并清空
@@ -1327,7 +1428,7 @@ class DeepSeekWebClient:
                         self._validate_response_format(payload, full_text)
 
                     self._store_after_response(
-                        resolved,
+                        store_resolved,
                         session_id,
                         full_text,
                         last_response_message_id,
@@ -1338,14 +1439,14 @@ class DeepSeekWebClient:
 
                     if (
                         self.config.delete_conversation
-                        and resolved["mode"] == "fresh"
+                        and store_resolved["mode"] == "fresh"
                         and session_id
                     ):
                         self._delete_session(session_id)
 
                     return self._build_non_stream_result(
                         payload,
-                        resolved,
+                        store_resolved,
                         full_text,
                         full_reasoning,
                         completion_id,
@@ -1528,6 +1629,7 @@ class DeepSeekWebClient:
             rate_limit_retries = 0
             file_retries = 0
             empty_retries = 0
+            think_only_retries = 0
             # 客户端可见正文的尾巴（续写接缝剪除的比较基准）
             emitted_tail = ""
             # 仅在续写轮激活；None = 直通
@@ -1845,6 +1947,89 @@ class DeepSeekWebClient:
                                     seam = None
                             if saw or upstream_finish_reason is not None:
                                 saw_upstream_finish = True
+
+                        # ── 光说不做自愈（think-only self-heal）──────────
+                        # 触发（四条同时满足，宁窄勿宽）：声明了 tools +
+                        # 本轮未发任何 tool_calls + 客户端可见正文为空
+                        # （emitted_tail 全空白）+ 思考里有工具调用气味
+                        # （DSML/哨兵草稿，半角/全角都算），且步骤 2.25 的
+                        # require_marker 解析提不出完整调用——模型把调用
+                        # 起草在思考里却忘了真正发出。向同一上游会话追加
+                        # 一条 nudge user 消息重试一轮；每个请求最多一次，
+                        # 重试仍无产出由 _finalize_round 的镜像兜底收场
+                        # （最坏情况=现状）。思考草稿绝不直接提取执行。
+                        if (
+                            has_tools
+                            and think_only_retries < MAX_THINK_ONLY_RETRIES
+                            and not tool_calls_emitted
+                            and not emitted_tail.strip()
+                            and full_reasoning
+                            and _reasoning_has_tool_call_draft(full_reasoning)
+                            and not parse_tool_calls(
+                                full_reasoning,
+                                payload.get("tools"),
+                                require_marker=True,
+                            ).calls
+                        ):
+                            think_only_retries += 1
+                            self._bump("think_only_retry")
+                            self.logger.warning(
+                                "思考含工具调用草稿但正文/调用皆空（think-only），"
+                                "同会话追加 nudge 重试 %d/%d",
+                                think_only_retries,
+                                MAX_THINK_ONLY_RETRIES,
+                            )
+                            # 半截标记清场（对齐断流续写同款处理）：SCAN/JSON
+                            # 态释放扣住的普通正文，DSML/SENTINEL 半截调用
+                            # 丢弃，换新检测器——否则 nudge 轮增量拼进半开的
+                            # 块里必然损坏
+                            if detector.pending_markup:
+                                recovered = detector.recover_text_on_cut()
+                                if recovered:
+                                    self.logger.warning(
+                                        "nudge 前释放检测器扣住的正文 %d 字（跳过半截标记）",
+                                        len(recovered),
+                                    )
+                                    yield from _emit_content(recovered)
+                                detector = StreamingToolDetector(
+                                    payload.get("tools"),
+                                    require_marker=not has_tools,
+                                )
+                            nudge_resolved = self._nudge_resolved(
+                                current_resolved,
+                                current_session_id,
+                                last_response_message_id,
+                            )
+                            try:
+                                nudge_resp, nudge_session = self._open_chat_stream(
+                                    nudge_resolved
+                                )
+                                if nudge_session:
+                                    current_session_id = nudge_session
+                                # 两轮思考分段：接缝补一个空行，镜像/用量
+                                # 语义不变（草稿只计一次，绝不双计）
+                                full_reasoning += "\n\n"
+                                try:
+                                    saw = yield from _consume(
+                                        nudge_resp, skip_role=True
+                                    )
+                                    if saw or upstream_finish_reason is not None:
+                                        saw_upstream_finish = True
+                                finally:
+                                    try:
+                                        nudge_resp.read()
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                    try:
+                                        nudge_resp.close()
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                            except Exception as exc:  # noqa: BLE001
+                                # nudge 轮失败按原样收场，交给 _finalize_round
+                                # 的镜像兜底；绝不能把已输出的流变成报错
+                                self.logger.warning(
+                                    "think-only nudge 重试失败（按镜像兜底）: %s", exc
+                                )
 
                         # ── 流结束收尾（finalize 必须在续写全部结束后）──
                         yield from _finalize_round()
@@ -2228,6 +2413,42 @@ class DeepSeekWebClient:
             "model": current_resolved["model"],
             "turn_count": 0,
             "msg_count": 0,
+        }
+
+    def _nudge_resolved(
+        self, current_resolved: dict, session_id: str, parent_message_id: str | None
+    ) -> dict:
+        """构造光说不做自愈轮的 resolved：同会话追加一条 nudge user 消息。
+
+        与 _continuation_resolved 同族（同会话、parent 指向上一条消息、
+        一次性哨兵 cache_key 绝不读/写会话缓存——cached 分支不会用旧
+        parent_message_id 覆盖本轮指向）。带 ``__nudge_store_resolved__``
+        回指：非流式外层循环最终入库/删除/结果构造时取回原始 resolved，
+        nudge 轮的一次性哨兵不污染会话缓存（nudge 消息对缓存不可见，
+        与「继续」续写轮同口径）。
+        """
+        synthetic = {
+            "model": current_resolved["model"],
+            "messages": [{"role": "user", "content": THINK_ONLY_NUDGE_PROMPT}],
+        }
+        ds_payload = convert_openai_to_deepseek_incremental(synthetic, self.config)
+        ds_payload["chat_session_id"] = session_id
+        try:
+            ds_payload["parent_message_id"] = int(parent_message_id)
+        except (TypeError, ValueError):
+            pass
+        return {
+            "mode": "cached",
+            "ds_payload": ds_payload,
+            "session_id": session_id,
+            "cache_key": f"__think_only_nudge__{uuid.uuid4().hex}",
+            "full_prefix": list(current_resolved.get("full_prefix") or []),
+            "last_message": current_resolved.get("last_message"),
+            "last_content": current_resolved.get("last_content", ""),
+            "model": current_resolved["model"],
+            "turn_count": current_resolved.get("turn_count") or 0,
+            "msg_count": current_resolved.get("msg_count", 0),
+            "__nudge_store_resolved__": current_resolved,
         }
 
     def _open_chat_stream(self, resolved: dict):
