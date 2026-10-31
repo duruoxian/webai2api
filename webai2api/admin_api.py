@@ -214,7 +214,7 @@ def create_admin_router(
                 store.recent_usage, limit, offset, status, "", key_id, account_id
             ),
             "recent_total": await run_in_threadpool(
-                store.count_usage, "", "", key_id, account_id
+                store.count_usage, "", status, key_id, account_id
             ),
             "recent_limit": limit,
             "recent_offset": offset,
@@ -646,13 +646,16 @@ def create_admin_router(
 
     @router.get("/usage/export")
     async def export_usage(
-        request: Request, range: str = "all", start: str = "", end: str = ""
+        request: Request, range: str = "all", start: str = "", end: str = "",
+        status: str = "", key_id: str = "", account_id: str = "",
     ):
         g = _guard(request)
         if g:
             return g
         since, until = _range_window(range, start, end)
-        rows = await run_in_threadpool(store.export_usage, since, until)
+        rows = await run_in_threadpool(
+            store.export_usage, since, until, status, key_id, account_id
+        )
         import csv
         import io
 
@@ -662,7 +665,9 @@ def create_admin_router(
             [
                 "时间",
                 "Key",
+                "Key ID",
                 "账号",
+                "账号 ID",
                 "平台",
                 "模型",
                 "输入",
@@ -684,7 +689,9 @@ def create_admin_router(
                 [
                     _csv_safe(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"]))),
                     _csv_safe(r.get("api_key_name", "")),
+                    _csv_safe(r.get("api_key_id", "")),
                     _csv_safe(r.get("account_name", "")),
+                    _csv_safe(r.get("account_id", "")),
                     _csv_safe(r.get("provider", "")),
                     _csv_safe(r.get("model", "")),
                     r.get("prompt_tokens", 0),

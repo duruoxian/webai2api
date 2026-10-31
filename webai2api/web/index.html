@@ -63,7 +63,7 @@
     <label class="fld" style="text-align:left"><span>管理员密码</span>
       <input type="password" id="loginPw" placeholder="默认 admin" onkeydown="if(event.key==='Enter')doLogin()">
     </label>
-    <button class="btn block" onclick="doLogin()">登录</button>
+    <button class="btn block" id="loginBtn" onclick="doLogin()">登录</button>
   </div>
   <p class="hint" style="margin-top:16px">首次使用默认密码 admin，登录后请尽快修改</p>
 </div>
@@ -176,7 +176,7 @@
           </div>
           <div class="model-table">
             <div class="tbl-scroll">
-              <table id="modelTable"><thead><tr><th>模型</th><th>请求数</th><th>输入</th><th>输出</th><th>合计</th></tr></thead><tbody></tbody></table>
+              <table id="modelTable"><thead><tr><th>模型</th><th>请求数</th><th>失败</th><th>输入</th><th>输出</th><th>合计</th></tr></thead><tbody></tbody></table>
             </div>
           </div>
         </div>
@@ -254,7 +254,7 @@
           <span class="muted" style="font-size:12.5px">接口地址 <b id="baseHint2">/v1</b> · 可用模型 <b id="modelHint">—</b></span>
         </div>
         <div class="set-group">
-          <div class="set-group-title">opencode</div>
+          <div class="set-group-title">opencode <span class="tag off" id="ocStatusTag" style="display:none;margin-left:6px"></span></div>
           <p class="hint" style="margin-bottom:8px">opencode 不会自动识别模型能力（上下文 / 推理 / 图片），直接复制下面这段完整配置（已带好能力值），粘进 <code>~/.config/opencode/opencode.jsonc</code> 的 providers 里：</p>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">API Key
             <div class="sel sel-sm" id="sel-ocKeySel" style="min-width:220px">
@@ -861,8 +861,11 @@
 <script>
 let TOKEN = localStorage.getItem('wapi_token') || '';
 
+let _toastTimer=null;
 function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'),1800); }
+  // 清旧句柄：连续 toast 时前一条的计时器会把后一条提前掐灭（2026-11-01 审计）
+  if(_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(()=>t.classList.remove('show'),1800); }
 function copyText(text){
   const done=()=>toast('已复制');
   if(navigator.clipboard&&window.isSecureContext){
@@ -888,20 +891,46 @@ async function api(path,method='GET',body=null){
   catch(e){ throw new Error('服务异常（HTTP '+r.status+'）'); }
   return j;
 }
+/* 写操作统一收口：后端失败返回 {ok:false,error:...}，此前多数调用方不查
+   就 toast「已保存」——失败也装成功、弹窗关闭输入全丢（2026-11-01 审计）。 */
+function apiOk(j,okMsg){
+  if(j&&(j.ok===undefined||j.ok)){ if(okMsg) toast(okMsg); return true; }
+  toast((j&&j.error)||'操作失败'); return false;
+}
 function showLogin(){document.body.classList.add('no-scroll');document.getElementById('loginView').style.display='flex';
-  document.getElementById('mainView').style.display='none';}
+  document.getElementById('mainView').style.display='none';closeRowMenus();}
 function showMain(){document.body.classList.remove('no-scroll');document.getElementById('loginView').style.display='none';
   document.getElementById('mainView').style.display='block';}
 async function doLogin(){
+  const btn=document.getElementById('loginBtn')||document.querySelector('#loginView button.btn');
   const pw=document.getElementById('loginPw').value;
-  const r=await fetch('/admin/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
-  const j=await r.json();
-  if(j.ok){TOKEN=j.token;localStorage.setItem('wapi_token',TOKEN);showMain();refresh();
-    if(j.default_password) setTimeout(()=>toast('当前仍是默认密码 admin，建议到「设置」里修改'),1500);
-    else toast('已登录');}
-  else toast(j.error||'登录失败');
+  if(btn){btn.disabled=true;btn.textContent='登录中…';}
+  try{
+    const r=await fetch('/admin/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+    let j=null; try{ j=await r.json(); }catch(e){}
+    if(j&&j.ok){TOKEN=j.token;localStorage.setItem('wapi_token',TOKEN);showMain();refresh();loadOcStatus();
+      if(j.default_password) setTimeout(()=>toast('当前仍是默认密码 admin，建议到「设置」里修改'),1500);
+      else toast('已登录');}
+    else toast((j&&j.error)||('登录失败（HTTP '+r.status+'）'));
+  }catch(e){ toast('网络错误：'+(e.message||e)); }
+  finally{ if(btn){btn.disabled=false;btn.textContent='登录';} }
 }
 async function logout(){try{await api('/logout','POST')}catch(e){}TOKEN='';localStorage.removeItem('wapi_token');showLogin();}
+
+/* opencode 接入状态标签：数据后端本就有（/opencode/status），此前无 UI
+   （2026-11-01 审计 增强-5）；init 与一键写入/断开后各刷一次 */
+async function loadOcStatus(){
+  const tag=document.getElementById('ocStatusTag');
+  if(!tag) return;
+  try{
+    const j=await api('/opencode/status');
+    if(!j||j.ok===false){ tag.style.display='none'; return; }
+    tag.style.display='';
+    if(j.has_provider){ tag.className='tag on'; tag.textContent='已接入'; tag.title=j.config_path||''; }
+    else if(j.installed){ tag.className='tag off'; tag.textContent='未接入'; tag.title=j.config_path||''; }
+    else { tag.className='tag off'; tag.textContent='未检测到 opencode'; }
+  }catch(e){ tag.style.display='none'; }
+}
 
 /* ── 胶囊段选滑动指示层：选中胶囊平滑滑到目标按钮 ── */
 function segSlide(seg){
@@ -1142,6 +1171,15 @@ document.addEventListener('mousedown', e=>{
   if(e.target.closest('.date-btn')) return;
   closeDatePicker();
 });
+// 与行菜单同类浮层行为对齐：Escape 可关、页面滚动不脱位（2026-11-01 审计 UI-12）
+// （行菜单的 Escape 收起由其既有 keydown 监听负责）
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  const dp=document.getElementById('datePicker');
+  if(dp.classList.contains('show')) closeDatePicker();
+});
+window.addEventListener('scroll',()=>closeDatePicker(),{passive:true});
+window.addEventListener('resize',()=>closeDatePicker());
 
 let RANGE_BEFORE_CUSTOM=null;
 function setRange(r){
@@ -1162,6 +1200,7 @@ function setRange(r){
   RANGE_BEFORE_CUSTOM=null;
   RANGE=r;
   segSet('rangeSeg',r);
+  closeDatePicker();   // 开着日历时切其它范围胶囊：日历不残留（2026-11-01 审计）
   RANGE_START=''; RANGE_END='';
   document.getElementById('rangeStartText').textContent='选择日期';
   document.getElementById('rangeEndText').textContent='选择日期';
@@ -1285,7 +1324,7 @@ function renderOverview(s){
     if(vis.length){
       ab.style.display='';
       ab.innerHTML=vis.map(x=>
-        `<div class="alert-item">${esc(x.t)}<button class="alert-x" onclick="dismissAlert('${x.id}',${x.w?1:0})" title="${x.w?'本会话内不再显示':'不再显示'}" aria-label="关闭通知"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`).join('');
+        `<div class="alert-item">${esc(x.t)}<button class="alert-x" onclick="dismissAlert('${jsq(x.id)}',${x.w?1:0})" title="${x.w?'本会话内不再显示':'不再显示'}" aria-label="关闭通知"><svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>`).join('');
     }
     else ab.style.display='none';
   }
@@ -1316,14 +1355,18 @@ function renderOverview(s){
   const yd0=(s.today&&s.today.yesterday)||{n:0,t:0};
   document.getElementById('ovReqsFoot').textContent =
     `${RANGE_LABEL()} · 成功率 ${t.n?rate.toFixed(1)+'%':'–'} · 今日 ${fmt(td0.n)}（昨日 ${fmt(yd0.n)}）`;
+  // 平均耗时/首字（usage.latency 随 /state 下发，此前从未消费）
+  const lat=(s.usage&&s.usage.latency)||{};
   document.getElementById('ovTokFoot').textContent =
-    `输入 ${fmtTok(t.p)} · 输出 ${fmtTok(t.c)} · 今日 ${fmtTok(td0.t)}`;
+    `输入 ${fmtTok(t.p)} · 输出 ${fmtTok(t.c)} · 今日 ${fmtTok(td0.t)}`+
+    (lat.avg_ms?` · 均耗 ${(lat.avg_ms/1000).toFixed(1)}s`:'' )+
+    (lat.avg_ttft?` · 首字 ${(lat.avg_ttft/1000).toFixed(1)}s`:'');
   animateNum('ov24', fmtTokHTML((s.usage.last24h||{}).t),
              Number((s.usage.last24h||{}).t||0));
   animateNum('ovAcc', String(s.accounts.filter(a=>a.enabled).length),
              s.accounts.filter(a=>a.enabled).length);
-  const src=(s.usage.by_model||[]).map(m=>({label:m.model,n:m.n,p:m.p,c:m.c,t:m.t}));
-  const tb=document.querySelector('#modelTable tbody');tb.innerHTML='';
+  const src=(s.usage.by_model||[]).map(m=>({label:m.model,n:m.n,p:m.p,c:m.c,t:m.t,err:Number(m.err)||0}));
+  const tb=document.querySelector('#modelTable tbody');
   const rows=src.slice().sort((a,b)=>{
     if(MODEL_SORT==='req') return (Number(b.n)||0)-(Number(a.n)||0);
     return (Number(b.t)||0)-(Number(a.t)||0);
@@ -1336,13 +1379,19 @@ function renderOverview(s){
     if(i<MAX_SEG) colorMap.set(m.label, DONUT_COLORS[i%DONUT_COLORS.length]);
     else colorMap.set(m.label, '#d6d9de');
   });
-  tb.innerHTML=rows.map(m=>{
-    const c=colorMap.get(m.label)||'#c9cdd4';
-    return `<tr><td><span class="m-dot" style="background:${c}"></span><b>${esc(m.label)}</b></td>
+  // 未变化不重建（15s 轮询热路径，悬停态不闪）
+  const __msig=rows.map(m=>`${m.label}|${m.n}|${m.err}|${m.t}`).join(';');
+  if(tb.dataset.sig!==__msig){
+    tb.dataset.sig=__msig;
+    tb.innerHTML=rows.map(m=>{
+      const c=colorMap.get(m.label)||'#c9cdd4';
+      return `<tr><td><span class="m-dot" style="background:${c}"></span><b>${esc(m.label)}</b></td>
       <td class="num-t">${fmt(m.n)}</td>
+      <td class="num-t">${m.err?`<span class="tag err" title="${esc(errHint('error'))}">${fmt(m.err)}</span>`:'<span class="muted">0</span>'}</td>
       <td class="num-t">${fmtTok(m.p)}</td><td class="num-t">${fmtTok(m.c)}</td>
       <td class="num-t"><b>${fmtTok(m.t)}</b></td></tr>`;}).join('');
-  if(!rows.length)tb.innerHTML='<tr><td colspan="5" class="empty">暂无数据</td></tr>';
+    if(!rows.length)tb.innerHTML='<tr><td colspan="6" class="empty">暂无数据</td></tr>';
+  }
   renderDonut(byToken.map(x=>({model:x.label,t:x.t})));
   renderHeatmap(s);
   renderGuide(s);
@@ -1583,7 +1632,7 @@ function renderAccounts(s){
     const entries=Object.entries(cnt);
     pcA.style.display=entries.length?'':'none';
     pcA.innerHTML=entries.map(([pr,v])=>
-      `<button type="button" class="plat-chip${ACC_PROV_FILTER===pr?' on':''}" onclick="setAccProvFilter('${esc(pr)}')">${esc(names[pr]||pr)} ${v.ok}/${v.total}</button>`).join('');
+      `<button type="button" class="plat-chip${ACC_PROV_FILTER===pr?' on':''}" onclick="setAccProvFilter('${jsq(pr)}')">${esc(names[pr]||pr)} ${v.ok}/${v.total}</button>`).join('');
   }
   // 排序：启用且正常在前，未检查/未使用居中，验证不通过与停用沉底
   const usedIds=new Set(((s.usage&&s.usage.by_account)||[]).map(x=>x.account_id));
@@ -1615,22 +1664,26 @@ function renderAccounts(s){
     __sig+=`${a.id}|${a.name}|${a.enabled}|${a.health}|${a.provider}|${a.has_token}${a.has_device}${a.has_settings}${a.has_cookie}|${a.egress};`;
     __rows+=`<tr data-acc="${a.id}"><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
       <td class="muted mono">${credEmpty?'<span class="tag off">未填写凭证</span> ':''}${loginBadge} ${healthBadge} ${egressTag(a.egress)}</td>
-      <td><label class="switch" title="${a.enabled?'点击停用':'点击启用'}"><input type="checkbox" ${a.enabled?'checked':''} aria-label="启用或停用账号" onchange="toggleAcc('${a.id}',${a.enabled?0:1})"><span class="knob"></span></label>${cdBadge}</td>
+      <td><label class="switch" title="${a.enabled?'点击停用':'点击启用'}"><input type="checkbox" ${a.enabled?'checked':''} aria-label="启用或停用账号" onchange="toggleAcc('${jsq(a.id)}',${a.enabled?0:1})"><span class="knob"></span></label>${cdBadge}</td>
       <td style="text-align:right;white-space:nowrap">
-        <button class="btn sm" onclick="browserLogin('${a.id}')">浏览器登录</button>
+        <button class="btn sm" onclick="browserLogin('${jsq(a.id)}')">浏览器登录</button>
         <span class="row-menu-wrap">
           <button class="btn gray sm" onclick="toggleAccMenu(this,event)">⋯</button>
           <div class="row-menu" data-menu-id="acc:${a.id}">
-            <button onclick="checkAcc('${a.id}')">检查凭证</button>
-            <button onclick="editAcc('${a.id}')">编辑账号</button>
-            <button class="danger" onclick="delAcc('${a.id}')">删除账号</button>
+            <button onclick="checkAcc('${jsq(a.id)}')">检查凭证</button>
+            <button onclick="editAcc('${jsq(a.id)}')">编辑账号</button>
+            <button class="danger" onclick="delAcc('${jsq(a.id)}')">删除账号</button>
           </div>
         </span></td></tr>`;});
   if(!__rows)__rows=empty(ACC_PROV_FILTER?'该平台暂无账号':'还没有账号，点右上角添加',5);
   const same = tb.dataset.sig === __sig;
   tb.dataset.sig = __sig;
-  // 轮询重渲染会销毁打开的 ⋯ 菜单：重建后按行回填打开态
-  const openAcc = (tb.querySelector('.row-menu.open')?.dataset.menuId) || '';
+  // 打开中的 ⋯ 菜单是 body 级浮层（openRowMenu 会把它挂到 body）：
+  // 按 data-menu-id 全局捕获，重渲染前先 closeRowMenus 归位清理——
+  // 否则旧菜单成为 body 下的孤儿浮层（登录页上还悬着、id 已失联）
+  // （2026-11-01 审计 UI-3；原 tb 级查询是永远查不到的死代码）
+  const openAcc = (document.querySelector('.row-menu.open')?.dataset.menuId) || '';
+  closeRowMenus();
   tb.innerHTML = __rows;
   tb.classList.toggle('no-anim', same);
   if(openAcc){
@@ -1655,28 +1708,32 @@ function renderKeys(s){
   let __krows='';let __ksig='';
   s.keys.forEach(k=>{
     const accN=(k.accounts||[]).length, modN=(k.models||[]).length;
+    // 今日用量（后端 key_usage 随 /state 下发，此前前端从未消费）
+    const kt=((s.key_usage||{})[k.id]||{}).today;
     const scope=`<div class="muted" style="font-size:12px;margin-top:3px">${
-      accN?('账号 '+accN+' 个'):'全部账号'} · ${modN?('模型 '+modN+' 个'):'全部模型'}</div>`;
+      accN?('账号 '+accN+' 个'):'全部账号'} · ${modN?('模型 '+modN+' 个'):'全部模型'}${
+      kt?(' · 今日 '+fmtTok(kt)):''}</div>`;
     __ksig+=`${k.id}|${k.name}|${k.enabled}|${k.accounts.length}|${k.models.length};`;
-    __krows+=`<tr><td><a href="javascript:void(0)" onclick="openKeyDetail('${k.id}')" style="color:inherit;text-decoration:none"><b>${esc(k.name)}</b></a>${scope}</td>
+    __krows+=`<tr><td><a href="javascript:void(0)" onclick="openKeyDetail('${jsq(k.id)}')" style="color:inherit;text-decoration:none"><b>${esc(k.name)}</b></a>${scope}</td>
       <td class="muted">${fmtTime(k.created_at)}</td>
       <td><span class="tag ${k.enabled?'on':'off'}">${k.enabled?'启用':'停用'}</span></td>
       <td class="muted">${fmtTime(k.last_used_at)}</td>
       <td style="text-align:right;white-space:nowrap">
-        <button class="btn sm" onclick="openKeyView('${k.id}')">查看</button>
-        <button class="btn gray sm" onclick="openKeyEdit('${k.id}')">编辑</button>
+        <button class="btn sm" onclick="openKeyView('${jsq(k.id)}')">查看</button>
+        <button class="btn gray sm" onclick="openKeyEdit('${jsq(k.id)}')">编辑</button>
         <span class="row-menu-wrap">
           <button class="btn gray sm" onclick="toggleAccMenu(this,event)">⋯</button>
           <div class="row-menu" data-menu-id="key:${k.id}">
-            <button onclick="toggleKey('${k.id}',${k.enabled?0:1})">${k.enabled?'停用':'启用'}</button>
-            <button onclick="ocConnect('${k.id}')">接入</button>
-            <button onclick="ocDisconnect('${k.id}')">断开接入</button>
-            <button class="danger" onclick="delKey('${k.id}')">删除</button>
+            <button onclick="toggleKey('${jsq(k.id)}',${k.enabled?0:1})">${k.enabled?'停用':'启用'}</button>
+            <button onclick="ocConnect('${jsq(k.id)}')">接入</button>
+            <button onclick="ocDisconnect('${jsq(k.id)}')">断开接入</button>
+            <button class="danger" onclick="delKey('${jsq(k.id)}')">删除</button>
           </div>
         </span></td></tr>`;});
   const ksame = tb.dataset.sig === __ksig;
   tb.dataset.sig = __ksig;
-  const openKey = (tb.querySelector('.row-menu.open')?.dataset.menuId) || '';
+  const openKey = (document.querySelector('.row-menu.open')?.dataset.menuId) || '';
+  closeRowMenus();
   tb.innerHTML = __krows;
   tb.classList.toggle('no-anim', ksame);
   if(!s.keys.length)tb.innerHTML=empty('还没有 Key，点右上角生成',5);
@@ -1699,36 +1756,42 @@ function renderUsage(s){
   const kids=new Set((s.keys||[]).map(k=>k.id));
   const accIds=new Set((s.accounts||[]).map(a=>a.id));
   const keyName=(id,name)=>keyNameHTML(id,name,kids);
-  const ku=s.key_usage||{};
-  let tb=document.querySelector('#keyUsageTable tbody');tb.innerHTML='';
+  // 未变化不重建：15s 轮询热路径上反复 innerHTML 会让悬停态每轮闪掉
+  // （2026-11-01 审计 UI-10；与账号/Key 表的 __sig 机制同款）
+  const setTbody=(tb,html,sig)=>{ if(tb.dataset.sig!==sig){ tb.dataset.sig=sig; tb.innerHTML=html; } };
+  let tb=document.querySelector('#keyUsageTable tbody');
   // 已删除的 Key/账号不再出现在用量明细与最近请求里（统计卡总量仍含其历史用量）
   const byKeyAlive=(s.usage.by_key||[]).filter(k=>kids.has(k.api_key_id));
-  tb.innerHTML=byKeyAlive.map(k=>`<tr><td>${keyName(k.api_key_id,k.api_key_name)}</td>
-      <td class="num-t">${fmt(k.n)}</td><td class="num-t"><b>${fmtTok(k.t)}</b></td></tr>`).join('');
-  if(!byKeyAlive.length)tb.innerHTML='<tr><td colspan="6" class="empty">暂无数据</td></tr>';
-  tb=document.querySelector('#accUsageTable tbody');tb.innerHTML='';
+  setTbody(tb,byKeyAlive.map(k=>`<tr><td>${keyName(k.api_key_id,k.api_key_name)}</td>
+      <td class="num-t">${fmt(k.n)}</td><td class="num-t"><b>${fmtTok(k.t)}</b></td></tr>`).join(''),
+    byKeyAlive.map(k=>`${k.api_key_id}|${k.n}|${k.t}`).join(';'));
+  if(!byKeyAlive.length)setTbody(tb,'<tr><td colspan="3" class="empty">暂无数据</td></tr>','__empty__');
+  tb=document.querySelector('#accUsageTable tbody');
   const byAccAlive=(s.usage.by_account||[]).filter(a=>accIds.has(a.account_id));
-  tb.innerHTML=byAccAlive.map(a=>`<tr><td><b>${esc(a.account_name||'–')}</b></td>
-    <td class="muted">${esc(a.provider||'')}</td><td class="num-t">${fmt(a.n)}</td><td class="num-t"><b>${fmtTok(a.t)}</b></td></tr>`).join('');
-  if(!byAccAlive.length)tb.innerHTML=empty('暂无数据',4);
-  tb=document.querySelector('#recentTable tbody');tb.innerHTML='';
+  setTbody(tb,byAccAlive.map(a=>`<tr><td><b>${esc(a.account_name||'–')}</b></td>
+    <td class="muted">${esc(a.provider||'')}</td><td class="num-t">${fmt(a.n)}</td><td class="num-t"><b>${fmtTok(a.t)}</b></td></tr>`).join(''),
+    byAccAlive.map(a=>`${a.account_id}|${a.n}|${a.t}`).join(';'));
+  if(!byAccAlive.length)setTbody(tb,empty('暂无数据',4),'__empty__');
+  tb=document.querySelector('#recentTable tbody');
   const recentAlive=(s.recent||[]).filter(r=>
     !(r.api_key_id&&!kids.has(r.api_key_id)) && !(r.account_id&&!accIds.has(r.account_id))
     &&!(RECENT_STATUS==='error'&&r.status==='ok'));
-  tb.innerHTML=recentAlive.map(r=>`<tr><td class="muted">${fmtTime(r.ts)}</td>
+  setTbody(tb,recentAlive.map(r=>`<tr><td class="muted">${fmtTime(r.ts)}</td>
     <td>${keyName(r.api_key_id,r.api_key_name)}</td><td>${esc(r.account_name||'–')}</td>
     <td class="mono">${esc(r.model)}</td><td class="num-t">${fmtTok(r.prompt_tokens)}</td>
     <td class="num-t">${fmtTok(r.completion_tokens)}</td><td class="num-t"><b>${fmtTok(r.total_tokens)}</b></td>
     <td class="num-t">${r.latency_ms?((r.latency_ms/1000).toFixed(1)+'s'):'–'}</td>
-    <td>${r.status==='ok'?'<span class="tag on">成功</span>':`<span class="tag err" title="${esc(errHint(r.error_code||r.status))}">${esc(r.error_code||r.status)}</span>`}</td></tr>`).join('');
-  if(!recentAlive.length)tb.innerHTML=empty('暂无记录');
+    <td>${r.status==='ok'?'<span class="tag on">成功</span>':`<span class="tag err" title="${esc(errHint(r.error_code||r.status))}">${esc(r.error_code||r.status)}</span>`}</td></tr>`).join(''),
+    recentAlive.map(r=>`${r.id}|${r.status}|${r.total_tokens}`).join(';'));
+  if(!recentAlive.length)setTbody(tb,empty('暂无记录'),'__empty__');
   const info=document.getElementById('recentInfo');
   if(info){
     const total=Number(s.recent_total)||0;
     const lim=Number(s.recent_limit)||50;
-    const off=Number(s.recent_offset)||0;
+    const off=Math.min(Number(s.recent_offset)||0, Math.max(0,total-1));
+    // 双侧 clamp：数据被清理后 offset 可能越界，不再显示「101–100」
     info.textContent = total
-      ? `${off+1}–${Math.min(off+lim,total)} / 共 ${total} 条`
+      ? `${Math.min(off+1,total)}–${Math.min(off+lim,total)} / 共 ${total} 条`
       : '';
   }
 }
@@ -1918,7 +1981,9 @@ async function saveGlmSettings(){
     glm_output_limit:document.getElementById('setGlmOutput').value.trim()||'128000',
     glm_search:document.getElementById('setGlmSearch').checked,
     glm_session_cache:document.getElementById('setGlmCache').checked};
-  await api('/settings','POST',body);toast('已保存并应用');refresh();
+  const j=await api('/settings','POST',body);
+  if(!apiOk(j))return;
+  toast('已保存并应用');refresh();
 }
 
 async function saveKimiSettings(){
@@ -1929,7 +1994,9 @@ async function saveKimiSettings(){
     kimi_output_limit:document.getElementById('setKimiOutput').value.trim()||'32768',
     kimi_search:document.getElementById('setKimiSearch').checked,
     kimi_session_cache:document.getElementById('setKimiCache').checked};
-  await api('/settings','POST',body);toast('已保存并应用');refresh();
+  const j=await api('/settings','POST',body);
+  if(!apiOk(j))return;
+  toast('已保存并应用');refresh();
 }
 
 async function saveQwenSettings(){
@@ -1940,7 +2007,9 @@ async function saveQwenSettings(){
     qwen_output_limit:document.getElementById('setQwenOutput').value.trim()||'65536',
     qwen_search:document.getElementById('setQwenSearch').checked,
     qwen_session_cache:document.getElementById('setQwenCache').checked};
-  await api('/settings','POST',body);toast('已保存并应用');refresh();
+  const j=await api('/settings','POST',body);
+  if(!apiOk(j))return;
+  toast('已保存并应用');refresh();
 }
 
 async function testProxy(){
@@ -1948,14 +2017,22 @@ async function testProxy(){
   const out=document.getElementById('proxyTestResult');
   const px=(el&&el.value||'').trim();
   if(!px){ out.textContent='请先填写代理地址'; return; }
+  if(testProxy._busy) return;   // 防重入：连点两次旧慢响应会覆盖新结果
+  testProxy._busy=true;
   out.textContent='测试中…';
-  const j=await api('/proxy/test','POST',{proxy:px});
-  if(!j){ out.textContent='测试失败'; return; }
-  if(j.ok){
-    out.innerHTML=`<span class="tag on">可用</span> 出口 IP <b>${esc(j.exit_ip||'')}</b>（${j.elapsed_ms||0}ms）`+
-      (j.warning?` <span class="tag off">${esc(j.warning)}</span>`:'');
-  }else{
-    out.innerHTML=`<span class="tag err">不可用</span> ${esc(j.error||'')}`;
+  try{
+    const j=await api('/proxy/test','POST',{proxy:px});
+    if(!j){ out.textContent='测试失败'; return; }
+    if(j.ok){
+      out.innerHTML=`<span class="tag on">可用</span> 出口 IP <b>${esc(j.exit_ip||'')}</b>（${j.elapsed_ms||0}ms）`+
+        (j.warning?` <span class="tag off">${esc(j.warning)}</span>`:'');
+    }else{
+      out.innerHTML=`<span class="tag err">不可用</span> ${esc(j.error||'')}`;
+    }
+  }catch(e){
+    out.innerHTML=`<span class="tag err">不可用</span> ${esc(String(e.message||e))}`;
+  }finally{
+    testProxy._busy=false;
   }
 }
 function openAccModal(acc){
@@ -2019,6 +2096,7 @@ function onProviderChange(){
 }
 /* ── 主题化确认弹窗：替代原生 confirm()，Promise 风格 ── */
 let _confirmResolve=null,_confirmYes=false;
+let _disclaimerResolve=null;
 function uiConfirm(msg,opts){
   opts=opts||{};
   return new Promise(resolve=>{
@@ -2042,6 +2120,12 @@ function closeModal(id){
   if(id==='confirmModal'&&_confirmResolve){
     const r=_confirmResolve;_confirmResolve=null;r(_confirmYes);
   }
+  if(id==='disclaimerModal'&&_disclaimerResolve){
+    // Escape 等途径关掉免责弹窗：必须 resolve（false=未同意，不写
+    // localStorage、下次刷新会再弹），否则 init 永远卡在 await——软锁
+    // 整个面板（2026-11-01 审计 UI-1）
+    const r=_disclaimerResolve;_disclaimerResolve=null;r(false);
+  }
 }
 function openModal(id){
   document.body.classList.add('modal-open');
@@ -2050,6 +2134,8 @@ function openModal(id){
 }
 
 /* 首次启动的使用声明弹窗：同意后写入 localStorage 留痕，此后不再弹。
+   Escape 关闭按「未同意」处理（放行进入面板、不写留痕，下次再弹），
+   Promise 绝不悬挂——closeModal 里的 disclaimer 分支兜底 resolve。
    弹窗失败不阻塞面板（完整声明仍可见于仓库根目录 DISCLAIMER.md）。 */
 async function ensureDisclaimer(){
   try{
@@ -2057,13 +2143,13 @@ async function ensureDisclaimer(){
     const m=document.getElementById('disclaimerModal');
     const btn=document.getElementById('disclaimerAgree');
     if(!m||!btn) return;
-    await new Promise(resolve=>{
-      const done=()=>{ btn.removeEventListener('click',done); resolve(); };
-      btn.addEventListener('click',done,{once:true});
+    const agreed=await new Promise(resolve=>{
+      _disclaimerResolve=resolve;
+      btn.addEventListener('click',()=>{ _disclaimerResolve=null; resolve(true); },{once:true});
       openModal('disclaimerModal');
     });
     closeModal('disclaimerModal');
-    localStorage.setItem('wapi_disclaimer_agreed','1');
+    if(agreed) localStorage.setItem('wapi_disclaimer_agreed','1');
   }catch(e){ /* 不阻塞面板 */ }
 }
 
@@ -2138,10 +2224,11 @@ async function saveAccount(){
   body.egress=eg;
   if(eg==='custom'&&px)body.proxy=px;
   if(eg!=='custom')body.proxy='';
-  if(id)await api('/accounts/'+id,'PUT',body);else await api('/accounts','POST',body);
+  const j = id ? await api('/accounts/'+id,'PUT',body) : await api('/accounts','POST',body);
+  if(!apiOk(j))return;   // 失败保留弹窗与输入，错误已 toast
   closeModal('accModal');refresh();toast('已保存');
 }
-async function toggleAcc(id,en){await api('/accounts/'+id,'PUT',{enabled:en});refresh();}
+async function toggleAcc(id,en){const j=await api('/accounts/'+id,'PUT',{enabled:en});if(apiOk(j))refresh();}
 async function checkAcc(id){
   toast('正在检查账号…');
   const j=await api('/accounts/'+id+'/check','POST',{});
@@ -2156,17 +2243,22 @@ async function checkAllAcc(){
   CHECKING_ALL=true;
   const btn=document.getElementById('checkAllBtn');
   const orig=btn?btn.textContent:'';
+  const bad=[];   // 单账号失败不再静默吞掉（2026-11-01 审计）
   // 串行逐个检查：避免并发打上游触发风控
   for(let i=0;i<accs.length;i++){
     if(btn) btn.textContent=`检查中 ${i+1}/${accs.length}`;
-    try{ await api('/accounts/'+accs[i].id+'/check','POST',{}); }catch(e){}
+    try{
+      const j=await api('/accounts/'+accs[i].id+'/check','POST',{});
+      if(!j||!j.ok) bad.push(accs[i].name||accs[i].id);
+    }catch(e){ bad.push(accs[i].name||accs[i].id); }
   }
   CHECKING_ALL=false;
   if(btn) btn.textContent=orig;
-  toast('全部账号凭证检查完成');
+  if(bad.length) toast(`${accs.length-bad.length}/${accs.length} 正常，失效：${bad.join('、')}（请重新登录）`);
+  else toast(`${accs.length} 个账号凭证全部正常`);
   refresh();
 }
-async function delAcc(id){if(await uiConfirm('确定删除该账号？',{title:'删除账号',danger:true})){await api('/accounts/'+id,'DELETE');refresh();toast('已删除');}}
+async function delAcc(id){if(await uiConfirm('确定删除该账号？',{title:'删除账号',danger:true})){const j=await api('/accounts/'+id,'DELETE');if(apiOk(j)){refresh();toast('已删除');}}}
 function openKeyModal(){document.getElementById('keyName').value='';
   document.getElementById('keyResult').style.display='none';
   const btn=document.getElementById('keyGenBtn');btn.disabled=false;btn.textContent='生成';
@@ -2191,7 +2283,7 @@ async function createKey(){
     toast((j&&j.error)||'生成失败');
   }
 }
-async function toggleKey(id,en){await api('/keys/'+id,'PUT',{enabled:en});refresh();}
+async function toggleKey(id,en){const j=await api('/keys/'+id,'PUT',{enabled:en});if(apiOk(j))refresh();}
 let EDIT_KEY_ID='';
 let EDIT_KEY_MODELS=[];
 function openKeyView(id){
@@ -2272,8 +2364,13 @@ function showKeyDaily(id){
   renderBars();
 }
 async function exportCsv(){
-  const qs=RANGE==='all'?'':('?range='+encodeURIComponent(RANGE)
-    +'&start='+encodeURIComponent(RANGE_START)+'&end='+encodeURIComponent(RANGE_END));
+  const p=new URLSearchParams();
+  if(RANGE!=='all'){p.set('range',RANGE);p.set('start',RANGE_START);p.set('end',RANGE_END);}
+  // 导出跟随界面所见：最近请求区的筛选同步进导出（2026-11-01 审计 UI-15）
+  if(RECENT_STATUS) p.set('status',RECENT_STATUS);
+  if(RECENT_KEY) p.set('key_id',RECENT_KEY);
+  if(RECENT_ACC) p.set('account_id',RECENT_ACC);
+  const qs=p.toString()?('?'+p.toString()):'';
   try{
     const r=await fetch('/admin/api/usage/export'+qs,{headers:{'X-Admin-Token':TOKEN}});
     if(!r.ok){toast('导出失败');return;}
@@ -2286,11 +2383,11 @@ async function exportCsv(){
     toast('已导出');
   }catch(e){toast('导出失败');}
 }
-async function delKey(id){if(await uiConfirm('确定删除该 Key？',{title:'删除 Key',danger:true})){await api('/keys/'+id,'DELETE');refresh();toast('已删除');}}
+async function delKey(id){if(await uiConfirm('确定删除该 Key？',{title:'删除 Key',danger:true})){const j=await api('/keys/'+id,'DELETE');if(apiOk(j)){refresh();toast('已删除');}}}
 async function saveTray(){
   const on=document.getElementById('setTray').checked;
-  await api('/settings','POST',{tray_enabled:on?'true':'false'});
-  toast(on?'已开启托盘（重启后生效）':'已关闭托盘（重启后生效）');
+  const j=await api('/settings','POST',{tray_enabled:on?'true':'false'});
+  if(apiOk(j)) toast(on?'已开启托盘（重启后生效）':'已关闭托盘（重启后生效）');
 }
 async function loadSystem(){
   try{
@@ -2329,7 +2426,8 @@ async function cleanUsageNow(){
 async function saveAutostart(){
   const on=document.getElementById('setAutostart').checked;
   const j=await api('/system/autostart','POST',{enabled:on});
-  toast(j&&j.autostart?'已设置开机启动':'已取消开机启动');
+  if(j&&(j.ok===undefined||j.ok)) toast(j.autostart?'已设置开机启动':'已取消开机启动');
+  else toast((j&&j.error)||'设置失败');
 }
 async function doBackup(){
   const j=await api('/system/backup','POST',{});
@@ -2342,10 +2440,20 @@ async function showLogs(){
   el.textContent=(j&&j.lines&&j.lines.length)?j.lines.join('\n'):'暂无日志';
   openModal('logModal');
 }
+let _POLL_TIMER=null;
 async function doShutdown(){
   if(!(await uiConfirm('确定退出 webai2api？退出后接口将不可用。',{title:'退出程序',danger:true}))) return;
-  await api('/system/shutdown','POST',{});
-  toast('已退出');
+  try{
+    const j=await api('/system/shutdown','POST',{});
+    if(j&&!j.ok){ toast(j.error||'退出失败'); return; }
+  }catch(e){ /* 服务已在退出途中，网络错误属预期 */ }
+  // 停轮询 + 静态遮罩：否则每 15s 一次「网络错误」toast 循环（2026-11-01 审计）
+  if(_POLL_TIMER){ clearInterval(_POLL_TIMER); _POLL_TIMER=null; }
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px';
+  ov.innerHTML='<div style="font-size:17px;font-weight:600">服务已退出</div><div class="muted">网关已停止，接口不可用。可安全关闭此页面。</div>';
+  document.body.appendChild(ov);
+  document.title='webai2api · 已退出';
 }
 let SETTINGS_PROV=segGet('setProvSeg','deepseek');
 function setSettingsProvider(p){
@@ -2366,14 +2474,19 @@ async function saveDeepSeekSettings(){
     deepseek_anti_max:document.getElementById('setAntiMax').value.trim(),
     deepseek_context_limit:document.getElementById('setDsContext').value.trim()||'1000000',
     deepseek_output_limit:document.getElementById('setDsOutput').value.trim()||'384000'};
-  await api('/settings','POST',body);toast('DeepSeek 设置已保存');refresh();
+  const j=await api('/settings','POST',body);
+  if(!apiOk(j))return;
+  toast('DeepSeek 设置已保存');refresh();
 }
 async function saveGeneralSettings(){
   const body={tray_enabled:document.getElementById('setTray').checked,
     usage_retain_days:(document.getElementById('setRetain').value||'0').trim()};
   const pw=document.getElementById('setPw').value.trim();
   if(pw)body.admin_password=pw;
-  await api('/settings','POST',body);toast('已保存');refresh();
+  const j=await api('/settings','POST',body);
+  if(!apiOk(j))return;
+  if(pw) document.getElementById('setPw').value='';
+  toast('已保存');refresh();
 }
 function clampLimit(el){
   const cap=Number(el.dataset.cap||0);
@@ -2669,7 +2782,10 @@ function _mpBind(){
   });
   if(hue) hue.addEventListener('input',()=>{
     _ensureCustomTheme();
-    pickMiniColor(_hslToHex(+hue.value, _mpHsl[1], +document.getElementById('mpLight').value));
+    // 无彩底色（纯白/黑/灰，s≈0）下拖「色相」输出恒为灰——滑杆像坏了；
+    // 拖色相即视为想要彩色，饱和度兜底抬到 45（2026-11-01 审计 UI-13）
+    const s=_mpHsl[1]<12?45:_mpHsl[1];
+    pickMiniColor(_hslToHex(+hue.value, s, +document.getElementById('mpLight').value));
   });
   document.addEventListener('click',e=>{
     const box=document.getElementById('miniPicker');
@@ -2697,14 +2813,6 @@ function renderPatternChips(){
     `<button type="button" class="${x.id===cur?'on':''}" onclick="applyPattern('${x.id}')" aria-pressed="${x.id===cur}">${x.name}</button>`).join('');
 }
 document.addEventListener('DOMContentLoaded',()=>{renderThemeChips();renderPatternChips();renderBgPick();});
-function placeMenuByRow(btn){
-  // 下拉改为 body 级 fixed 浮层（见 openRowMenu）：不再受表格滚动容器
-  // 的 overflow 裁剪，也不受行高限制。
-  const menu = btn.parentElement.querySelector('.row-menu');
-  menu.style.top = '0px';
-  menu.style.bottom = 'auto';
-  return menu;
-}
 function openRowMenu(btn,force){
   // 单例浮层：把 .row-menu 挂到 body 并按 ⋯ 按钮位置 fixed 定位。
   // 留在原地会被 .tbl-scroll 的 overflow:auto 裁剪成一条窄缝（之前踩过的坑），
@@ -2898,8 +3006,14 @@ function tuneGlass(dark){
         ? `,
       "variants": [${tiers.map(([id,eff])=>`{ "id": ${JSON.stringify(id)}, "settings": { "reasoningEffort": "${eff}" } }`).join(", ")}]`
         : '';
+      // 图片输入按真实能力声明（与后端 _build_opencode_snippet 同口径）：
+      // 只有 deepseek/chatglm 支持上行图片，kimi/qwen 是纯文本——此前
+      // 前端片段全写 image，客户端向 kimi/qwen 发图会被静默丢弃
+      // （2026-11-01 审计 UI-5）
+      const caps = (prov==='deepseek'||prov==='chatglm')
+        ? '"input": ["image","text"]' : '"input": ["text"]';
       lines.push(`    ${JSON.stringify(m)}: { "name": ${JSON.stringify(m)},\n`
-        +`      "capabilities": { "input": ["image","text"], "output": ["text"],\n`
+        +`      "capabilities": { ${caps}, "output": ["text"],\n`
         +`        "reasoning": { "supported": ${reason} } },\n`
         +`      "limit": { "context": ${lim.context}, "output": ${lim.output} }${variants} }`);
     }
@@ -3007,6 +3121,7 @@ ${lines.join(',\n')}
       else if(r&&r.snippet){ openOcResultModal(r.error||'写入失败，可手动复制', r.snippet); }
       else { toast((r&&r.error)||'接入失败'); }
     }catch(e){ toast('接入失败: '+e.message); }
+    loadOcStatus();
   }
   async function ocDisconnect(id){
     if(!id){ toast('请先创建并启用一个 Key'); return; }
@@ -3015,6 +3130,7 @@ ${lines.join(',\n')}
       if(r&&r.ok){ toast('已移除 opencode 配置'); }
       else { toast((r&&r.error)||'移除失败'); }
     }catch(e){ toast('移除失败: '+e.message); }
+    loadOcStatus();
   }
   function ocConnectCurrent(){ const sel=document.getElementById('ocKeySel'); if(!sel||!sel.value){ toast('请先选择或创建一个启用中的 Key'); return; } ocConnect(sel.value); }
   function ocDisconnectCurrent(){ const sel=document.getElementById('ocKeySel'); if(!sel||!sel.value){ toast('请先选择 Key'); return; } ocDisconnect(sel.value); }
@@ -3061,8 +3177,8 @@ ${lines.join(',\n')}
   requestAnimationFrame(()=>document.querySelectorAll('.seg').forEach(segSlide));
   ['accProvider','accEgress'].forEach(selBuild);
   await ensureDisclaimer();
-  if(TOKEN){document.body.classList.add('loading');try{await api('/state');showMain();refresh();}catch(e){showLogin();}}else showLogin();
-  setInterval(()=>{
+  if(TOKEN){document.body.classList.add('loading');try{await api('/state');showMain();refresh();loadOcStatus();}catch(e){showLogin();}}else showLogin();
+  _POLL_TIMER=setInterval(()=>{
     if(document.hidden) return;
     if(document.getElementById('mainView').style.display==='none') return;
     if(document.body.classList.contains('modal-open')) return;

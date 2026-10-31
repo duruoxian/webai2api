@@ -572,8 +572,20 @@ class Store:
             conds.append("model = ?")
             args.append(model)
         if status:
-            conds.append("status = ?")
-            args.append(status)
+            # 与 recent_usage 同语义："error" = 只看失败（一切非 ok，含
+            # error:* 与 cancelled）——/state 的 recent_total 传同一 status，
+            # 筛选后分页总数才与列表一致（2026-11-01 审计）
+            if status == "error":
+                conds.append("status != 'ok'")
+            else:
+                conds.append("status = ?")
+                args.append(status)
+        if key_id:
+            conds.append("api_key_id = ?")
+            args.append(key_id)
+        if account_id:
+            conds.append("account_id = ?")
+            args.append(account_id)
         where = (" WHERE " + " AND ".join(conds)) if conds else ""
         with self._conn() as c:
             row = c.execute("SELECT COUNT(*) n FROM usage_log" + where, tuple(args)).fetchone()
@@ -630,7 +642,8 @@ class Store:
         return int(row["today"] or 0), int(row["month"] or 0)
 
     def export_usage(self, since_ts: float | None = None,
-                     until_ts: float | None = None) -> list[dict]:
+                     until_ts: float | None = None, status: str = "",
+                     key_id: str = "", account_id: str = "") -> list[dict]:
         conds, args = [], []
         if since_ts is not None:
             conds.append("ts>=?")
@@ -638,10 +651,24 @@ class Store:
         if until_ts is not None:
             conds.append("ts<=?")
             args.append(until_ts)
+        # 与 recent_usage 同语义：导出跟随界面筛选（2026-11-01 审计 UI-15）
+        if status:
+            if status == "error":
+                conds.append("status != 'ok'")
+            else:
+                conds.append("status = ?")
+                args.append(status)
+        if key_id:
+            conds.append("api_key_id = ?")
+            args.append(key_id)
+        if account_id:
+            conds.append("account_id = ?")
+            args.append(account_id)
         where = (" WHERE " + " AND ".join(conds)) if conds else ""
         with self._conn() as c:
             rows = c.execute(
-                "SELECT ts, api_key_name, account_name, provider, model, "
+                "SELECT ts, api_key_id, api_key_name, account_id, account_name, "
+                "provider, model, "
                 "prompt_tokens, completion_tokens, total_tokens, status, "
                 "latency_ms, first_token_ms, error_code "
                 "FROM usage_log" + where + " ORDER BY id DESC LIMIT 100000",
