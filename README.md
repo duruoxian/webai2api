@@ -9,6 +9,8 @@ OpenAI 兼容 API，自带中文管理面板。Windows 下解压即用，全程�
 
 **总览**——账号健康、模型用量、请求统计一屏尽览：
 
+![登录页](docs/screenshots/login.png)
+
 ![总览](docs/screenshots/overview.png)
 
 | 账号管理 | API Key |

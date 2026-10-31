@@ -10,6 +10,8 @@ your machine; ships as a ready-to-run Windows executable.
 
 **Overview** — account health, per-model usage and request stats at a glance:
 
+![Login](docs/screenshots/login.png)
+
 ![Overview](docs/screenshots/overview.png)
 
 | Accounts | API Keys |
