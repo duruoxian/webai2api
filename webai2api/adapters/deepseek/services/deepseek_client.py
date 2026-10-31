@@ -1228,6 +1228,9 @@ class DeepSeekWebClient:
 
         # 注意：限流 sleep 前必须先释放槽位再睡醒重拿，
         # 否则一次限流（60s×3次）会连带堵住整个队列数分钟。
+        # 防风控停顿放在拿槽位之前：20~60s 长停顿不应占着并发槽位
+        # （max_concurrency=1 时会连锁 QueueTimeout，2026-11-01 审计）
+        self._anti_rate_limit_pause(context="pre-acquire:chat")
         lease = self.request_queue.acquire(slot_name)
         try:
             while True:
@@ -1581,6 +1584,7 @@ class DeepSeekWebClient:
                     try:
                         time.sleep(RATE_LIMIT_COOLDOWN_SECONDS)
                     finally:
+                        self._anti_rate_limit_pause(context="pre-acquire:chat-retry")
                         lease = self.request_queue.acquire(slot_name)
                     # 继续 while True，resolved 保持原样（session 已在 _open_chat_stream 里回写）
 
@@ -1680,6 +1684,7 @@ class DeepSeekWebClient:
             return self._stream_forced(payload)
 
         resolved = self._resolve_conversation(payload)
+        self._anti_rate_limit_pause(context="pre-acquire:stream")
         lease = self.request_queue.acquire(f"stream:{payload.get('model', 'unknown')}")
         # 一次 completion 内所有 chunk 共享同一个 id（OpenAI 规范）。
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
@@ -2352,6 +2357,9 @@ class DeepSeekWebClient:
                         try:
                             time.sleep(RATE_LIMIT_COOLDOWN_SECONDS)
                         finally:
+                            self._anti_rate_limit_pause(
+                                context="pre-acquire:stream-retry"
+                            )
                             lease = self.request_queue.acquire(
                                 f"stream:{payload.get('model', 'unknown')}"
                             )
@@ -2418,11 +2426,13 @@ class DeepSeekWebClient:
           - rate limit 重试、context length 重试
           - 工具链的每一轮（工具调用走的是同一条 chat 通道）
         """
-        if not self.config.anti_rate_limit_enabled:
+        # getattr 防御式读取：桩测试的精简 config 没有这些字段时按「禁用」
+        # 处理（真实 AppConfig 是 dataclass，字段恒在）
+        if not getattr(self.config, "anti_rate_limit_enabled", False):
             return
 
-        min_d = max(0.0, float(self.config.anti_rate_limit_min_delay))
-        max_d = float(self.config.anti_rate_limit_max_delay)
+        min_d = max(0.0, float(getattr(self.config, "anti_rate_limit_min_delay", 0) or 0))
+        max_d = float(getattr(self.config, "anti_rate_limit_max_delay", 0) or 0)
         if max_d <= 0:
             return
 
@@ -2532,7 +2542,7 @@ class DeepSeekWebClient:
         }
 
     def _open_chat_stream(self, resolved: dict):
-        self._anti_rate_limit_pause(context=f"mode={resolved['mode']}")
+        # 防风控停顿已上移到 request_queue.acquire 之前（不占并发槽位睡觉）
         self._bump("upstream")
         ds_payload = resolved["ds_payload"]
         mode = resolved["mode"]
