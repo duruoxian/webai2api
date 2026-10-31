@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import random
 import threading
@@ -454,8 +455,13 @@ class _GlmParts:
         if not name:
             return
         # 只在客户端明确声明了工具时下发；没声明就当成上游内置能力，
-        # 混进 tool_calls 会让客户端收到无法执行的调用
-        if not self._allowed_tools or name not in self._allowed_tools:
+        # 混进 tool_calls 会让客户端收到无法执行的调用。名字按归一形
+        # 匹配变体、命中时下发声明名（与 tool_bridge.resolve_tool_name
+        # 同语义；2026-11-01 审计 D-4 拉平）
+        if not self._allowed_tools:
+            return
+        name = tool_bridge.resolve_tool_name(name, self._allowed_tools)
+        if not name:
             return
         args = data.get("arguments", {})
         if not isinstance(args, str):
@@ -1042,9 +1048,15 @@ class ChatGlmWebClient:
 
         try:
             try:
-                saw = yield from _drain(resp)
-                if saw:
-                    saw_finish = True
+                try:
+                    saw = yield from _drain(resp)
+                    if saw:
+                        saw_finish = True
+                except (OSError, http.client.HTTPException) as exc:
+                    # 上游中途 RST/超时/截断：当作断流交给自动续写，而不是
+                    # 把已输出的流变报错（对齐 deepseek/kimi 的降级语义；
+                    # 2026-11-01 审计 K-5）。连接建立阶段异常不在此列。
+                    self.logger.warning("上游读流中断（当作断流，尝试自动续写）: %s", exc)
             finally:
                 try:
                     resp.read()

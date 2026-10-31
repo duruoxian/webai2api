@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import gzip
+import http.client
 import json
 import random
 import struct
@@ -950,6 +951,12 @@ class KimiWebClient:
                     if state.done:
                         finished = True
                         break
+            except (OSError, http.client.HTTPException) as exc:
+                # 上游中途 RST/超时/截断：当作断流交给自动续写，而不是把
+                # 已输出的流变报错（对齐 deepseek 的降级语义；2026-11-01
+                # 审计 K-5）。连接建立阶段异常不在此列（_open_chat 照旧
+                # 上抛走换号）；state.error 的上游明确报错也照旧上抛。
+                self.logger.warning("上游读流中断（当作断流，尝试自动续写）: %s", exc)
             finally:
                 try:
                     resp.read()
@@ -987,6 +994,12 @@ class KimiWebClient:
             cont_shown = ""  # 本续写轮已放行给客户端的文本（剪除后）
             cont_fed = ""  # 本续写轮上游已给出的原始文本（切增量用）
             seam = None  # 仅续写轮激活；None = 直通
+            # 思考接缝（对齐 GLM seam_reason；2026-11-01 审计 K-4）：
+            # 续写轮把断点前思考尾巴逐字复读时同样剪除，reasoning_content
+            # 不再出现成段重复。剪掉的字节都与客户端已见内容逐字相同。
+            seam_reason = None
+            cont_reason_shown = ""
+            cont_reason_fed = ""
             while (
                 not finished
                 and not cont_failed
@@ -1003,13 +1016,19 @@ class KimiWebClient:
                 )
                 if _cont_rounds == 1:
                     base_text += state.text_value()  # 首轮无接缝，全文已示
+                    base_reasoning += state.think_value()
                 else:
                     base_text += cont_shown  # 上一续写轮只并入已示部分
-                base_reasoning += state.think_value()
+                    base_reasoning += cont_reason_shown
                 state = _ReplyState()
                 seam = tool_bridge.SeamTrimmer(base_text[-tool_bridge.SEAM_WINDOW :])
+                seam_reason = tool_bridge.SeamTrimmer(
+                    base_reasoning[-tool_bridge.SEAM_WINDOW :]
+                )
                 cont_shown = ""
                 cont_fed = ""
+                cont_reason_shown = ""
+                cont_reason_fed = ""
                 cont_finished = False
                 try:
                     cont_payload = {
@@ -1061,9 +1080,17 @@ class KimiWebClient:
                                 cont_shown = seam.committed
                             else:
                                 cont_shown = cur
+                            think_now = state.think_value()
+                            if seam_reason is not None:
+                                rpiece = think_now[len(cont_reason_fed) :]
+                                cont_reason_fed = think_now
+                                seam_reason.feed(rpiece)
+                                cont_reason_shown = seam_reason.committed
+                            else:
+                                cont_reason_shown = think_now
                             yield {
                                 "text": base_text + cont_shown,
-                                "reasoning": base_reasoning + state.think_value(),
+                                "reasoning": base_reasoning + cont_reason_shown,
                                 "chat_id": state.chat_id or cur_chat,
                                 "finish_seen": cont_finished or state.done,
                             }
@@ -1089,9 +1116,14 @@ class KimiWebClient:
 
             self._resolved_models[model] = (internal, scenario)
             chat_id = state.chat_id or cached or cur_chat
-            # 最终可见文本 = 已并基线 + 本轮已示部分（接缝扣住的复读丢弃）；
-            # 没进续写轮时本轮全文就是 state.text_value()
+            # 最终可见文本/思考 = 已并基线 + 本轮已示部分（接缝扣住的复读
+            # 丢弃）；没进续写轮时本轮全文就是 state.text_value()/think_value()
             reply = base_text + (cont_shown if _cont_rounds > 0 else state.text_value())
+            full_reasoning = (
+                base_reasoning + cont_reason_shown
+                if _cont_rounds > 0
+                else state.think_value()
+            )
             if chat_id and self.config.session_cache_enabled:
                 # store key 必须与客户端多轮回传时的查询 key 一致：
                 # 把本轮 assistant（解析后的调用或文本）追加进历史再算指纹
@@ -1099,12 +1131,9 @@ class KimiWebClient:
                 # 思考顶正文对齐：正文为空时交付侧会把思考提升为 content，
                 # store 的 assistant 锚点必须用同一文本，否则多轮必 miss
                 # （2026-10-30 审计 KIMI-F2；空白/标记差异由指纹归一吸收）。
-                # 注意本函数作用域内只有 base_reasoning + state.think_value()
-                # 才是本轮全部思考——引用外层名字会 UnboundLocalError
-                # （2026-11-01 审计 K-2：空正文思考型回答直接炸）
-                reply_for_store = reply if reply.strip() else (
-                    base_reasoning + state.think_value()
-                )
+                # 注意作用域内思考的最终形态是上面的 full_reasoning——引用
+                # 外层名字会 UnboundLocalError（2026-11-01 审计 K-2）
+                reply_for_store = reply if reply.strip() else full_reasoning
                 asst = {
                     "role": "assistant",
                     "content": None if calls else reply_for_store,
@@ -1123,15 +1152,12 @@ class KimiWebClient:
                     state.assistant_message_id or state.last_message_id or cur_parent,
                     # 计入基线：state 只是最后一轮的量，续写后不含首轮正文
                     # （2026-10-30 审计 KIMI-F5）
-                    used_tokens=conv_cache.estimate_tokens(
-                        base_text + state.text_value(),
-                        base_reasoning + state.think_value(),
-                    ),
+                    used_tokens=conv_cache.estimate_tokens(reply, full_reasoning),
                 )
             yield {
                 "__done__": True,
                 "text": reply,
-                "reasoning": base_reasoning + state.think_value(),
+                "reasoning": full_reasoning,
                 "chat_id": chat_id,
                 "finish_seen": finished,
             }

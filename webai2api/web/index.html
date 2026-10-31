@@ -1348,7 +1348,7 @@ function renderOverview(s){
     const entries=Object.entries(by);
     pc.style.display=entries.length?'':'none';
     pc.innerHTML=entries.map(([pr,v])=>
-      `<button type="button" class="plat-chip jump${v.bad?' warn':''}" onclick="switchTab('accounts')" title="查看账号">${esc(names[pr]||pr)} ${v.ok} 可用${v.bad?` · ${v.bad} 异常`:''}</button>`).join('');
+      `<button type="button" class="plat-chip jump${v.bad?' warn':''}" onclick="jumpAccounts('${jsq(pr)}')" title="查看该平台账号">${esc(names[pr]||pr)} ${v.ok} 可用${v.bad?` · ${v.bad} 异常`:''}</button>`).join('');
   }
   // 今日/昨日对比并入统计卡 foot（用量页重复卡已删）
   const td0=(s.today&&s.today.today)||{n:0,t:0};
@@ -1613,6 +1613,11 @@ let ACC_PROV_FILTER='';
 function setAccProvFilter(p){
   ACC_PROV_FILTER=ACC_PROV_FILTER===p?'':p;
   if(LAST_STATE) renderAccounts(LAST_STATE);
+}
+/* 总览平台 chips 跳转：直接带筛选（此前跳过去还要再点一次平台筛选） */
+function jumpAccounts(pr){
+  ACC_PROV_FILTER=pr;
+  switchTab('accounts');
 }
 function renderAccounts(s){
   const tb=document.querySelector('#accTable tbody');
@@ -2131,6 +2136,14 @@ function openModal(id){
   document.body.classList.add('modal-open');
   document.documentElement.classList.add('modal-open');
   document.getElementById(id).classList.add('show');
+  // 焦点移入弹窗（键盘 Esc 关闭后 Tab 起点不可预期的问题，轻量版）：
+  // 程序化 focus 不触发 ：focus-visible，鼠标用户看不到焦点环；
+  // accModal/keyModal 自带的定点 focus 注册得更晚，会覆盖这里的兜底
+  try{
+    const m=document.getElementById(id);
+    const f=m.querySelector('input:not([type=hidden]),button,select,textarea');
+    if(f) setTimeout(()=>{ try{f.focus({preventScroll:true});}catch(e){} },30);
+  }catch(e){}
 }
 
 /* 首次启动的使用声明弹窗：同意后写入 localStorage 留痕，此后不再弹。
@@ -2641,7 +2654,7 @@ function applyCustomBg(c){
 }
 function applyCustomHex(v){
   const rgb=_hexToRgb(v);
-  if(!rgb){ renderBgPick(); return; }   // 非法输入：还原显示，不写入
+  if(!rgb){ renderBgPick(); toast('色值格式不对，形如 #4a7dff'); return; }   // 非法输入：还原显示 + 提示（与 clampLimit 行为一致）
   applyCustomBg('#'+String(v).replace('#','').toLowerCase());
 }
 /* 自定义底色如何适配卡片与文字：

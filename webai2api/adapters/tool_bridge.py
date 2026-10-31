@@ -191,6 +191,38 @@ def tool_names(tools: list) -> set:
     return names
 
 
+def _norm_tool_name(name: str) -> str:
+    """工具名归一：小写 + -/./_ 互变（deepseek _norm_name 同款，四家拉平）。"""
+    return (
+        str(name or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(".", "_")
+    )
+
+
+def resolve_tool_name(name: str, allowed: set) -> str:
+    """模型输出的工具名 → 声明清单里的规范名。
+
+    精确命中直接用；否则按归一形匹配变体（模型写 Bash、声明 bash 这类
+    大小写/-/_ 漂移不再静默丢调用——此前只有 deepseek 有模糊匹配，
+    2026-11-01 审计 D-4）。命中变体时返回**声明名**：客户端校验用的是
+    它自己声明的名字。认不出返回空串（调用方丢弃）。
+    """
+    if not name:
+        return ""
+    if name in allowed:
+        return name
+    n = _norm_tool_name(name)
+    if not n:
+        return ""
+    for k in allowed:
+        if _norm_tool_name(k) == n:
+            return k
+    return ""
+
+
 def tool_name_by_id(messages: list) -> dict:
     """从 payload 里的 assistant.tool_calls 建立 tool_call_id → 函数名映射，
     用于把 role=tool 结果对回它的工具名。"""
@@ -409,8 +441,8 @@ def parse_dsml_tool_calls(
     try:
         for block in _dsml_blocks(text):
             for m in _DSML_INVOKE_RE.finditer(block):
-                name = _dsml_attr(m.group(1))
-                if not name or name not in allowed:
+                name = resolve_tool_name(_dsml_attr(m.group(1)), allowed)
+                if not name:
                     continue
                 args = _fix_arg_names(_dsml_params(m.group(2)), by_name.get(name))
                 calls.append(
@@ -684,7 +716,11 @@ def _bare_blobs(text: str, allowed: set) -> list:
         obj = _loads_loose(blob)
         if isinstance(obj, dict):
             name = obj.get("name") or obj.get("tool") or ""
-            if name and name in allowed and ("arguments" in obj or "args" in obj):
+            if (
+                name
+                and resolve_tool_name(name, allowed)
+                and ("arguments" in obj or "args" in obj)
+            ):
                 out.append(blob)
                 i += len(blob)
                 continue
@@ -733,7 +769,8 @@ def _build_calls(
         if not isinstance(obj, dict):
             continue
         name = obj.get("name") or obj.get("tool") or ""
-        if not name or name not in allowed:
+        name = resolve_tool_name(name, allowed)
+        if not name:
             continue
         args = obj.get("arguments", obj.get("args", {}))
         if not isinstance(args, str):

@@ -813,6 +813,14 @@ class QwenWebClient:
                     if is_cont
                     else None
                 )
+                # 思考接缝（对齐 GLM seam_reason；2026-11-01 审计 K-4 拉平）：
+                # 续写轮复读断点前思考尾巴时同样剪除
+                seam_reason = (
+                    tool_bridge.SeamTrimmer(base_reasoning[-tool_bridge.SEAM_WINDOW :])
+                    if is_cont
+                    else None
+                )
+                round_reason_shown = ""  # 本轮已示思考（续写轮=剪除后）
                 round_shown = ""  # 本轮已示文本（续写轮=剪除后）
                 anchor_base = response_id
                 anchor_seen = False
@@ -840,17 +848,25 @@ class QwenWebClient:
                             if isinstance(rid, str) and rid:
                                 response_id = rid
                                 anchor_seen = True
+                            # 续写轮 round_text 恒空（增量进了 seam），快照
+                            # 必须用已示值，否则前缀差回退（快照非单调）
                             yield {
-                                "text": base_text + round_text,
-                                "reasoning": base_reasoning + round_reasoning,
+                                "text": base_text + round_shown,
+                                "reasoning": base_reasoning + round_reason_shown,
                                 "chat_id": chat_id or response_id,
                                 "finish_seen": saw_done,
                             }
                         elif typ == "reasoning":
-                            round_reasoning += str(event.get("content") or "")
+                            piece = str(event.get("content") or "")
+                            if seam_reason is not None:
+                                seam_reason.feed(piece)
+                                round_reason_shown = seam_reason.committed
+                            else:
+                                round_reasoning += piece
+                                round_reason_shown = round_reasoning
                             yield {
-                                "text": base_text + round_text,
-                                "reasoning": base_reasoning + round_reasoning,
+                                "text": base_text + round_shown,
+                                "reasoning": base_reasoning + round_reason_shown,
                                 "chat_id": chat_id or response_id,
                                 "finish_seen": saw_done,
                             }
@@ -864,7 +880,7 @@ class QwenWebClient:
                                 round_shown = round_text
                             yield {
                                 "text": base_text + round_shown,
-                                "reasoning": base_reasoning + round_reasoning,
+                                "reasoning": base_reasoning + round_reason_shown,
                                 "chat_id": chat_id or response_id,
                                 "finish_seen": saw_done,
                             }
@@ -928,7 +944,7 @@ class QwenWebClient:
                     break
                 _cont_rounds += 1
                 base_text += round_shown  # 只并入已示部分，扣住的复读丢弃
-                base_reasoning += round_reasoning
+                base_reasoning += round_reason_shown  # 思考同口径（K-4）
                 self._bump("auto_continued")
                 self.logger.warning(
                     "上游流提前中断（未见 done 事件），自动续写 %d/%d",
@@ -966,7 +982,7 @@ class QwenWebClient:
                 pass
 
         text = base_text + round_shown
-        reasoning = base_reasoning + round_reasoning
+        reasoning = base_reasoning + round_reason_shown
         if chat_id and self.config.session_cache_enabled:
             # assistant 塑形必须与客户端多轮回传形态一致（content=None +
             # tool_calls），否则工具轮指纹必失配、中继会话上下文断链
