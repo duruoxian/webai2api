@@ -1098,8 +1098,13 @@ class KimiWebClient:
                 calls = _parse_tool_calls(reply, payload.get("tools") or [])
                 # 思考顶正文对齐：正文为空时交付侧会把思考提升为 content，
                 # store 的 assistant 锚点必须用同一文本，否则多轮必 miss
-                # （2026-10-30 审计 KIMI-F2；空白/标记差异由指纹归一吸收）
-                reply_for_store = reply if reply.strip() else (reasoning or "")
+                # （2026-10-30 审计 KIMI-F2；空白/标记差异由指纹归一吸收）。
+                # 注意本函数作用域内只有 base_reasoning + state.think_value()
+                # 才是本轮全部思考——引用外层名字会 UnboundLocalError
+                # （2026-11-01 审计 K-2：空正文思考型回答直接炸）
+                reply_for_store = reply if reply.strip() else (
+                    base_reasoning + state.think_value()
+                )
                 asst = {
                     "role": "assistant",
                     "content": None if calls else reply_for_store,
@@ -1251,6 +1256,9 @@ class KimiWebClient:
             self.logger.warning(
                 "上游流提前中断（续写未救回），按截断返回 finish=length"
             )
+        # usage 按收尾后的最终交付口径计：思考顶正文（finalize 置换）后
+        # reasoning 已清空、正文是提升出来的思考——用置换后的两个字段才
+        # 不漏计整段答案（2026-11-01 审计 K-3）
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -1267,7 +1275,7 @@ class KimiWebClient:
                     "finish_reason": "stop" if finish_seen else "length",
                 }
             ],
-            "usage": _usage(payload, text, reasoning),
+            "usage": _usage(payload, content, reasoning),
         }
 
     def stream_chat_completion(self, payload: dict):
@@ -1344,7 +1352,7 @@ class KimiWebClient:
                     ]
                 }
             )
-            yield chunk({}, usage=_usage(payload, text, sent_reasoning))
+            yield chunk({}, usage=_usage(payload, text, reasoning))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
             return
@@ -1432,6 +1440,13 @@ class KimiWebClient:
                     pass
 
         if calls:
+            # 扣留器在无 opener（裸 JSON 兜底）时保守扣住末尾 max(opener)
+            # 字节；calls 成立时这段是纯正文尾巴，先放行再发调用（对齐 GLM
+            # 2026-10-30 审计 GLM-2；kimi 2026-11-01 补课）。opener 已找到时
+            # 水位已在 opener 处，这里返回空串，行为不变。
+            held = buf.flush_prefix() if buf is not None else ""
+            if held:
+                yield chunk({"content": held})
             tail = rs.close_think()
             if tail:
                 yield chunk({"content": tail})

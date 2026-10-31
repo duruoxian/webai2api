@@ -103,6 +103,9 @@ def _error(status: int, message: str, code: str = "invalid_request_error"):
 
 def _friendly_error(exc: Exception) -> tuple[int, str]:
     """把上游异常翻译成中文可读提示。"""
+    if _is_code_error(exc):
+        # 代码级 bug 不冒充上游异常，直接透出真实信息便于定位
+        return 500, f"网关内部错误（{type(exc).__name__}）：{str(exc)[:200]}"
     text = str(exc)
     low = text.lower()
 
@@ -189,10 +192,35 @@ def _response_text(resp: dict) -> str:
     return "".join(out)
 
 
+def _is_code_error(exc: Exception | None) -> bool:
+    """网关/适配器自身的代码级异常（不是账号或上游的问题）。
+
+    这类错误换任何账号都会原样复现：冷却账号只会把整个池子冻住
+    （UnboundLocalError 级 bug 一次冻一个号），换号重试也纯属浪费——
+    正确做法是立即失败并把真实异常透给客户端。
+    """
+    return isinstance(
+        exc,
+        (
+            NameError,
+            UnboundLocalError,
+            AttributeError,
+            TypeError,
+            KeyError,
+            IndexError,
+            RecursionError,
+            ZeroDivisionError,
+            NotImplementedError,
+        ),
+    )
+
+
 def _classify_error(exc: Exception | None) -> str:
     """把上游异常分类，决定「换号 / 冷却 / 直接失败」。"""
     if exc is None:
         return "unknown"
+    if _is_code_error(exc):
+        return "internal"
     text = str(exc)
     low = text.lower()
 
@@ -246,6 +274,17 @@ def _classify_error(exc: Exception | None) -> str:
 def _apply_failure(registry: ProviderRegistry, ac, exc: Exception) -> str:
     """按错误类型更新账号状态，返回分类结果。"""
     kind = _classify_error(exc)
+    if kind == "internal":
+        # 代码级 bug：不是账号的错，冷却只会把池子冻住；记 error 级日志
+        # 便于夜里第一时间发现（warning 会被淹没）。
+        logger = getattr(registry, "logger", None)
+        if logger is not None:
+            logger.error(
+                "网关内部错误（非账号/上游问题，不冷却不换号）: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+        return kind
     if kind == "auth":
         registry.note_auth_failure(ac.account["id"])
         ac.mark_bad(600, exc=exc)
@@ -317,12 +356,26 @@ def _conv_key(payload: dict, key_id: str, ignore_assistant: bool = False) -> str
             # 工具调用轮同样要计入指纹：assistant.content 为 null 时若跳过，
             # 工具轮与首轮算出同一个 key，上游会新建会话、丢掉工具结果。
             if not asst_seen and not ignore_assistant:
-                names = [
-                    str((c.get("function") or {}).get("name") or "")
-                    for c in m["tool_calls"]
-                    if isinstance(c, dict)
-                ]
-                first_assistant = "tool_call:" + ",".join(names)
+                # 签名含参数摘要（解析后规范化序列化，空白/键序免疫）：
+                # 只记工具名会让「首条 user 相同+同名工具、参数不同」的两个
+                # 会话粘到同一账号（2026-11-01 审计 GW-3）
+                def _call_sig(c: Any) -> str:
+                    fn = (c.get("function") or {}) if isinstance(c, dict) else {}
+                    raw = fn.get("arguments")
+                    try:
+                        norm = json.dumps(
+                            json.loads(raw) if isinstance(raw, str) else raw,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                    except Exception:
+                        norm = str(raw or "")
+                    digest = hashlib.sha1(norm.encode("utf-8")).hexdigest()[:12]
+                    return f"{fn.get('name') or ''}:{digest}"
+
+                first_assistant = "tool_call:" + ",".join(
+                    _call_sig(c) for c in m["tool_calls"]
+                )
                 asst_seen = True
             if first_user:
                 break
@@ -598,11 +651,13 @@ def create_gateway_router(
                     )
                     kind = _apply_failure(registry, ac, exc)
                     # 内容审核：换号也没用，直接返回。
+                    # internal（代码级 bug）：换号照样复现，立即失败把真实
+                    # 异常透给客户端，也不冷却账号（2026-11-01 审计）。
                     # auth 不能 break（2026-10-29 冒烟实测抓到）：多账号池里
                     # 各号凭证独立，A 号 token 过期不代表 B 号也死了——
                     # 撞上死号要排除它换下一个，本次请求才能救回来；
                     # note_auth_failure 的连续两次自动停用仍然生效。
-                    if want_acc or kind in ("content",):
+                    if want_acc or kind in ("content", "internal"):
                         break
                     tried.add(ac.account["id"])
                     nxt = registry.pick(
@@ -667,7 +722,7 @@ def create_gateway_router(
         # 这样上游失败时可以换账号重试（而不是已经 200 了才发现失败）。
         # ttft 从这里单独起算；latency 仍用链路起点 started（含鉴权/选号）。
         t_pick = time.perf_counter()
-        first_chunk, ac, base = await _stream_with_retry(
+        first_chunk, ac, base, stream_last_exc = await _stream_with_retry(
             registry,
             store,
             payload,
@@ -686,14 +741,21 @@ def create_gateway_router(
             # 流式失败统计整段缺失（2026-10-30 审计 P2-4）
             await run_in_threadpool(
                 store.log_usage,
-                status=f"error:{type(last_exc).__name__}"
-                if last_exc
+                status=f"error:{type(stream_last_exc).__name__}"
+                if stream_last_exc
                 else "error:RuntimeError",
                 **base,
                 latency_ms=int((time.perf_counter() - t_pick) * 1000),
-                error_code=_err_code(last_exc) if last_exc else "all_accounts_failed",
+                error_code=_err_code(stream_last_exc)
+                if stream_last_exc
+                else "all_accounts_failed",
             )
-            return _error(502, "所有可用账号均请求失败，请稍后重试", "upstream_error")
+            code, msg = (
+                _friendly_error(stream_last_exc)
+                if stream_last_exc
+                else (502, "所有可用账号均请求失败，请稍后重试")
+            )
+            return _error(code, msg, "upstream_error")
 
         async def gen():
             prompt_t = completion_t = total_t = 0
@@ -777,6 +839,9 @@ def create_gateway_router(
                                         or "上游流内错误"
                                     )
                                     status = "error:upstream_stream"
+                                    stream_err = emsg[
+                                        :120
+                                    ]  # 落库 error_code 带真实原因（此前恒空）
                                     logger.warning("流内上游错误块: %s", emsg)
                                 u = obj.get("usage")
                                 if isinstance(u, dict) and u:
@@ -981,7 +1046,7 @@ async def _stream_with_retry(
             ac.mark_ok()
             registry.note_auth_ok(ac.account["id"])
             _sticky_set(conv, ac.account["id"])
-            return _ChainPrefix(prefix, it), ac, base
+            return _ChainPrefix(prefix, it), ac, base, last_exc
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             logger.warning(
@@ -991,10 +1056,10 @@ async def _stream_with_retry(
                 exc,
             )
             kind = _apply_failure(registry, ac, exc)
-            # auth 不能 break（2026-10-29 冒烟实测抓到）：多账号池里各号
-            # 凭证独立，A 号 token 过期不代表 B 号也死了——排除死号换下一个，
-            # 本次流式请求才能救回来；连续两次鉴权失败的自动停用仍生效。
-            if want_acc or kind in ("content",):
+            # internal（代码级 bug）立即失败：换号照样复现，把真实异常透给
+            # 客户端；auth 不能 break（2026-10-29 冒烟实测抓到）：多账号池
+            # 各号凭证独立，死号要排除换下一个；连续两次鉴权失败自动停用。
+            if want_acc or kind in ("content", "internal"):
                 break
             tried.add(ac.account["id"])
             nxt = registry.pick(model, exclude=tried, allowed=allowed)
@@ -1013,7 +1078,9 @@ async def _stream_with_retry(
             )
     if last_exc:
         logger.warning("流式请求最终失败: %s", last_exc)
-    return None, ac, base
+    # 最后一次异常一并返回：全失败路径的 usage_log/错误提示要用真实原因
+    # （此前引用外层未绑定的 last_exc 直接 NameError——2026-11-01 审计）
+    return None, ac, base, last_exc
 
 
 def _split_sse_events(line: str) -> list[str]:

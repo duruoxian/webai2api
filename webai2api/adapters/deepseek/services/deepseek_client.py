@@ -1632,6 +1632,11 @@ class DeepSeekWebClient:
             think_only_retries = 0
             # 客户端可见正文的尾巴（续写接缝剪除的比较基准）
             emitted_tail = ""
+            # 全量已发正文（emitted_tail 只是 200 字滑窗）：空判定（思考双
+            # 通道/镜像兜底/think-only/空响应重试）必须用全量口径——正文以
+            # 200+ 空白结尾时滑窗会误判全空，导致镜像重复下发/第二份回答
+            # 拼接（2026-10-30 审计 KIMI-F4 同族，DS 流式 2026-11-01 补课）
+            visible_all = ""
             # 仅在续写轮激活；None = 直通
             seam = None
 
@@ -1682,8 +1687,10 @@ class DeepSeekWebClient:
 
                         def _emit_content(text: str):
                             """统一正文出口：发 chunk + 维护客户端可见尾巴
-                            （emitted_tail 供续写接缝剪除做重叠比较）。"""
-                            nonlocal content_emitted, anything_yielded, emitted_tail
+                            （emitted_tail 供续写接缝剪除做重叠比较；
+                            visible_all 供空判定用全量口径）。"""
+                            nonlocal content_emitted, anything_yielded
+                            nonlocal emitted_tail, visible_all
                             if not text:
                                 return
                             yield _make_content_chunk(
@@ -1692,6 +1699,7 @@ class DeepSeekWebClient:
                             content_emitted = True
                             anything_yielded = True
                             emitted_tail = (emitted_tail + text)[-SEAM_WINDOW:]
+                            visible_all += text
 
                         def _emit_tool_calls(calls):
                             nonlocal tool_calls_emitted, anything_yielded
@@ -1737,7 +1745,7 @@ class DeepSeekWebClient:
                             if (
                                 has_tools
                                 and not tool_calls_emitted
-                                and not emitted_tail.strip()
+                                and not visible_all.strip()
                                 and full_reasoning
                             ):
                                 rparsed = parse_tool_calls(
@@ -1757,7 +1765,7 @@ class DeepSeekWebClient:
                             #     否则客户端只看得到空消息或「全部藏在思考里」。
                             if (
                                 not tool_calls_emitted
-                                and not emitted_tail.strip()
+                                and not visible_all.strip()
                                 and full_reasoning
                             ):
                                 yield from _emit_content(full_reasoning)
@@ -1962,7 +1970,7 @@ class DeepSeekWebClient:
                             has_tools
                             and think_only_retries < MAX_THINK_ONLY_RETRIES
                             and not tool_calls_emitted
-                            and not emitted_tail.strip()
+                            and not visible_all.strip()
                             and full_reasoning
                             and _reasoning_has_tool_call_draft(full_reasoning)
                             and not parse_tool_calls(
@@ -2043,7 +2051,7 @@ class DeepSeekWebClient:
                         if (
                             saw_upstream_finish
                             and not tool_calls_emitted
-                            and not emitted_tail.strip()
+                            and not visible_all.strip()
                             and not full_reasoning
                             and empty_retries < MAX_EMPTY_RETRIES
                         ):
@@ -2071,6 +2079,12 @@ class DeepSeekWebClient:
                                 if self.config.strip_citations
                                 else None
                             )
+                            # 骨架文本清场：round1 被检测器吞掉的 DSML 骨架
+                            # 从未发给客户端、旧会话也已弃用（新会话不知道它
+                            # 存在），不清则 usage/JSON 校验/会话存储全带上
+                            # 这段幽灵文本（2026-11-01 审计 D-4）
+                            full_text = ""
+                            full_reasoning = ""
                             try:
                                 retry_resp, retry_session = self._open_chat_stream(
                                     current_resolved

@@ -199,6 +199,9 @@ TOOL_INSTRUCTION = """【身份与环境（最重要的前提，先读这条）�
    需要更多信息就再调用工具，信息够了就给出最终回答（不要再输出标记）。
 6. 编辑文件时，old_string 必须逐字复制自最近一次读到的文件内容，
    禁止凭记忆改写；不确定或上次编辑失败时，先重新读取文件再编辑。
+7. 思考内容里禁止出现任何工具调用：不要在思考里起草 {marker} 行或
+   调用草稿，要调用就直接在正文输出（对齐 kimi/qwen/deepseek，
+   2026-11-01 审计 G-3 补课）。
 """
 
 
@@ -339,10 +342,14 @@ def _estimate_tokens(text: str) -> int:
     return max(1, int(cjk / 1.5 + other / 4))
 
 
-def _usage(payload: dict, text: str) -> dict:
-    """估算用量（智谱上游不返回 token 数）。"""
+def _usage(payload: dict, text: str, reasoning: str = "") -> dict:
+    """估算用量（智谱上游不返回 token 数）。
+
+    思考与正文都是真实输出，completion 必须都算——对齐 deepseek/kimi/qwen
+    口径（GLM 此前漏计思考，effort 越高低估越多；2026-11-01 审计 G-2）。
+    """
     p = max(1, _estimate_tokens(_prepare_content(payload.get("messages") or [])))
-    c = max(1, _estimate_tokens(text or ""))
+    c = max(1, _estimate_tokens(text or "") + _estimate_tokens(reasoning or ""))
     return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
 
 
@@ -1347,14 +1354,37 @@ class ChatGlmWebClient:
         text = reasoning = ""
         native: list = []
         finish_seen = True
-        for ev in self._stream_events(payload):
-            text, reasoning = ev["text"], ev["reasoning"]
-            native = ev.get("tool_calls") or native
-            if ev.get("__done__"):
-                finish_seen = bool(ev.get("finish_seen", True))
+        # P0 空响应重试（对齐 deepseek/kimi/qwen，2026-11-01 审计 G-3 补课）：
+        # 上游正常结束但正文/思考/调用全空 → 弃会话重跑一次
+        for attempt in range(2):
+            text = reasoning = ""
+            native = []
+            finish_seen = True
+            conv_id = ""
+            for ev in self._stream_events(payload):
+                text, reasoning = ev["text"], ev["reasoning"]
+                native = ev.get("tool_calls") or native
+                if ev.get("__done__"):
+                    finish_seen = bool(ev.get("finish_seen", True))
+                    conv_id = str(ev.get("conv_id") or "")
+            if text.strip() or reasoning.strip() or native or not finish_seen:
+                break
+            if attempt == 0:
+                self.logger.warning(
+                    "上游正常结束但输出全空（empty_response），弃会话重试 1/1"
+                )
+                try:
+                    if conv_id:
+                        self._conv_cache.delete_by_session_id(conv_id)
+                except Exception:
+                    pass
 
-        # 服务端原生 tool_calls 优先（上游已确定调用意图）；没有再解析正文标记
+        # 服务端原生 tool_calls 优先（上游已确定调用意图）；没有再解析正文标记。
+        # tool_choice=none：正文举例/复述的调用 JSON 绝不解析成真实调用
+        # （对齐 kimi 5a7676f / qwen _active_tools；2026-11-01 审计 G-1）
         tools = payload.get("tools") or []
+        if payload.get("tool_choice") == "none":
+            tools = []
         calls = native or (_parse_tool_calls(text, tools) if tools else [])
         if not calls and tools and tool_bridge.is_forced_tool_choice(payload):
             text, reasoning, calls = self._forced_retry(payload, tools, first_reply=text)
@@ -1377,7 +1407,7 @@ class ChatGlmWebClient:
                         "finish_reason": "tool_calls",
                     }
                 ],
-                "usage": _usage(payload, text),
+                "usage": _usage(payload, text, reasoning),
             }
 
         # 整段重复折叠 + 空正文兜底（思考里就是答案时顶上来）
@@ -1390,6 +1420,7 @@ class ChatGlmWebClient:
             self.logger.warning(
                 "上游流提前中断（续写未救回），按截断返回 finish=length"
             )
+        # usage 按收尾后的最终交付口径计（思考顶正文置换后不漏计）
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -1406,7 +1437,7 @@ class ChatGlmWebClient:
                     "finish_reason": "stop" if finish_seen else "length",
                 }
             ],
-            "usage": _usage(payload, text),
+            "usage": _usage(payload, content, reasoning),
         }
 
     def stream_chat_completion(self, payload: dict):
@@ -1486,7 +1517,7 @@ class ChatGlmWebClient:
                         ]
                     }
                 )
-            yield chunk({}, usage=_usage(payload, text))
+            yield chunk({}, usage=_usage(payload, text, reasoning))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
             return
@@ -1495,108 +1526,136 @@ class ChatGlmWebClient:
         # 扣留器用增量口径（DeltaToolBuffer）——快照口径的 buf 会回扣
         # 尾部使输出非单调，嵌套在前缀差链里会错位咬字（GLM 实测）。
         # fragment_re/open_re：降级标记形态兜底（吃字符/续写重启的碎片不漏）
-        buf = (
-            tool_bridge.DeltaToolBuffer(
-                [TOOL_MARKER, tool_bridge.DSML_TOOL_CALLS_OPEN],
-                fragment_re=tool_bridge.MARKER_FRAGMENT_RE,
-                open_re=tool_bridge.MARKER_OPEN_LOOSE_RE,
-            )
-            if has_tools
-            else None
-        )
+        # P0 空响应重试（对齐 deepseek/kimi/qwen，2026-11-01 审计 G-3 补课）：
+        # 正常结束但正文/思考/调用全空（rs.finish 兜底也算空）→ 弃会话重跑
+        # 一次；重试轮换新扣留器/分发器。空轮没有向客户端发过任何块，重试
+        # 直接续在 role chunk 之后，输出仍是一条合法 SSE 流。
         sent_text = ""
         sent_reasoning = ""
         native: list = []
         finish_seen = True
-        rs = reasoning_bridge.ReasoningStream(
-            legacy=self.config.legacy_reasoning_in_content
-        )
-        try:
-            for ev in self._stream_events(payload):
-                native = ev.get("tool_calls") or native
-                if ev.get("__done__"):
-                    finish_seen = bool(ev.get("finish_seen", True))
-                d_reason = ev["reasoning"][len(sent_reasoning) :]
-                if d_reason:
-                    sent_reasoning = ev["reasoning"]
-                d_text = ev["text"][len(sent_text) :]
-                sent_text = ev["text"]
-                d_out = buf.feed_delta(d_text) if buf is not None else d_text
-                # GLM 多阶段思考（think→text→think→…）原样透传：答后思考走
-                # reasoning 通道穿插下发，渲染由客户端负责。2026-10-28 曾按
-                # 用户报障改为「正文开流后丢弃答后思考」；2026-11-01 用户
-                # 拍板恢复穿插透传（「答完又冒思考块」即穿插的本来面目）。
-                out_r, out_c = rs.feed(d_reason, d_out)
-                if out_r:
-                    yield chunk({"reasoning_content": out_r})
-                if out_c:
-                    yield chunk({"content": out_c})
-        except Exception as exc:  # noqa: BLE001
-            self.logger.warning("智谱流式请求失败: %s", exc)
-            err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
-            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-            return
-
-        if has_tools:
-            calls = native or _parse_tool_calls(buf.text, payload.get("tools"))
-            if calls:
-                # 扣留器在无 opener 时保守扣住末尾 max(opener) 字节；
-                # native tool_calls 场景正文里没有标记，这 18 字节是纯正文
-                # 尾巴，先放行再发调用（2026-10-30 审计 GLM-2）
-                held = buf.flush_prefix()
-                if held:
-                    yield chunk({"content": held})
-                tail = rs.close_think()
-                if tail:
-                    yield chunk({"content": tail})
-                for i, c in enumerate(calls):
-                    yield chunk(
-                        {
-                            "tool_calls": [
-                                {
-                                    "index": i,
-                                    "id": c["id"],
-                                    "type": "function",
-                                    "function": c["function"],
-                                }
-                            ]
-                        }
-                    )
-                yield chunk({}, usage=_usage(payload, sent_text))
-                yield chunk({}, finish="tool_calls")
+        for attempt in range(2):
+            buf = (
+                tool_bridge.DeltaToolBuffer(
+                    [TOOL_MARKER, tool_bridge.DSML_TOOL_CALLS_OPEN],
+                    fragment_re=tool_bridge.MARKER_FRAGMENT_RE,
+                    open_re=tool_bridge.MARKER_OPEN_LOOSE_RE,
+                )
+                if has_tools
+                else None
+            )
+            rs = reasoning_bridge.ReasoningStream(
+                legacy=self.config.legacy_reasoning_in_content
+            )
+            sent_text = ""
+            sent_reasoning = ""
+            native = []
+            finish_seen = True
+            conv_id = ""
+            emitted_any = False
+            rel_tail = ""
+            try:
+                for ev in self._stream_events(payload):
+                    native = ev.get("tool_calls") or native
+                    if ev.get("__done__"):
+                        finish_seen = bool(ev.get("finish_seen", True))
+                        conv_id = str(ev.get("conv_id") or "")
+                    d_reason = ev["reasoning"][len(sent_reasoning) :]
+                    if d_reason:
+                        sent_reasoning = ev["reasoning"]
+                    d_text = ev["text"][len(sent_text) :]
+                    sent_text = ev["text"]
+                    d_out = buf.feed_delta(d_text) if buf is not None else d_text
+                    # GLM 多阶段思考（think→text→think→…）原样透传：答后思考走
+                    # reasoning 通道穿插下发，渲染由客户端负责。2026-10-28 曾按
+                    # 用户报障改为「正文开流后丢弃答后思考」；2026-11-01 用户
+                    # 拍板恢复穿插透传（「答完又冒思考块」即穿插的本来面目）。
+                    out_r, out_c = rs.feed(d_reason, d_out)
+                    if out_r:
+                        emitted_any = True
+                        yield chunk({"reasoning_content": out_r})
+                    if out_c:
+                        emitted_any = True
+                        yield chunk({"content": out_c})
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("智谱流式请求失败: %s", exc)
+                err = {"error": {"message": f"上游错误: {exc}", "type": "upstream_error"}}
+                yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
-            # 没解析出工具调用：只放缓冲器扣住的未发尾巴（剥掉标记残迹）
-            tail = buf.flush()
-            if buf.opener_found:
-                # 模型输出了调用标记但没解析成调用（名字不在声明清单 /
-                # JSON 残缺）。静默剥掉会造成「模型以为调用了、客户端什么
-                # 都没收到」的无头案，留一条带片段的 warning 便于排查。
-                self.logger.warning(
-                    "GLM 输出了工具调用标记但未解析成调用（工具名不在声明清单"
-                    "或 JSON 残缺），已按普通文本剥离。片段: %r",
-                    _strip_tool_block(tail)[:200] or tail[:200],
-                )
-            rel_tail = tool_bridge.scrub_marker_fragments(_strip_tool_block(tail))
-        else:
-            rel_tail = ""
 
-        if rel_tail:
-            out_r, out_c = rs.feed("", rel_tail)
+            if has_tools:
+                calls = native or _parse_tool_calls(buf.text, payload.get("tools"))
+                if calls:
+                    # 扣留器在无 opener 时保守扣住末尾 max(opener) 字节；
+                    # native tool_calls 场景正文里没有标记，这 18 字节是纯正文
+                    # 尾巴，先放行再发调用（2026-10-30 审计 GLM-2）
+                    held = buf.flush_prefix()
+                    if held:
+                        yield chunk({"content": held})
+                    tail = rs.close_think()
+                    if tail:
+                        yield chunk({"content": tail})
+                    for i, c in enumerate(calls):
+                        yield chunk(
+                            {
+                                "tool_calls": [
+                                    {
+                                        "index": i,
+                                        "id": c["id"],
+                                        "type": "function",
+                                        "function": c["function"],
+                                    }
+                                ]
+                            }
+                        )
+                    yield chunk({}, usage=_usage(payload, sent_text, sent_reasoning))
+                    yield chunk({}, finish="tool_calls")
+                    yield "data: [DONE]\n\n"
+                    return
+                # 没解析出工具调用：只放缓冲器扣住的未发尾巴（剥掉标记残迹）
+                tail = buf.flush()
+                if buf.opener_found:
+                    # 模型输出了调用标记但没解析成调用（名字不在声明清单 /
+                    # JSON 残缺）。静默剥掉会造成「模型以为调用了、客户端什么
+                    # 都没收到」的无头案，留一条带片段的 warning 便于排查。
+                    self.logger.warning(
+                        "GLM 输出了工具调用标记但未解析成调用（工具名不在声明清单"
+                        "或 JSON 残缺），已按普通文本剥离。片段: %r",
+                        _strip_tool_block(tail)[:200] or tail[:200],
+                    )
+                rel_tail = tool_bridge.scrub_marker_fragments(_strip_tool_block(tail))
+
+            if rel_tail:
+                out_r, out_c = rs.feed("", rel_tail)
+                if out_r:
+                    emitted_any = True
+                    yield chunk({"reasoning_content": out_r})
+                if out_c:
+                    emitted_any = True
+                    yield chunk({"content": out_c})
+            out_r, out_c = rs.finish()
             if out_r:
+                emitted_any = True
                 yield chunk({"reasoning_content": out_r})
             if out_c:
+                emitted_any = True
                 yield chunk({"content": out_c})
-        out_r, out_c = rs.finish()
-        if out_r:
-            yield chunk({"reasoning_content": out_r})
-        if out_c:
-            yield chunk({"content": out_c})
+            if emitted_any or not finish_seen:
+                break
+            if attempt == 0:
+                self.logger.warning(
+                    "上游正常结束但输出全空（empty_response），弃会话重试 1/1"
+                )
+                try:
+                    if conv_id:
+                        self._conv_cache.delete_by_session_id(conv_id)
+                except Exception:
+                    pass
 
         # 无条件带上 usage（客户端没传 include_usage 也要给，
         # 否则 opencode 等客户端统计不到用量）
-        yield chunk({}, usage=_usage(payload, sent_text))
+        yield chunk({}, usage=_usage(payload, sent_text, sent_reasoning))
         if not finish_seen:
             self.logger.warning(
                 "上游流提前中断（续写未救回），按截断返回 finish=length"

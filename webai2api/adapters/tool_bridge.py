@@ -905,9 +905,10 @@ class _ToolHoldBuffer:
         self._full = ""
         self._emitted = 0
         self._open_at = -1
-        # 降级标记形态（上游吃字符/换写法）：提供给 GLM 这类「模型手写标记」
-        # 的链路——fragment_re 负责清洗放行段/收尾残迹；open_re（更严，必须
-        # 还剩 <）在精确 opener 找不到时兜底认 opener。kimi/qwen 不传，行为不变。
+        # 降级标记形态（上游吃字符/换写法）：GLM/kimi/qwen 的「模型手写标记」
+        # 链路都传——fragment_re 负责清洗放行段/收尾残迹；open_re（更严，必须
+        # 还剩 <）在精确 opener 找不到时兜底认 opener。不传则降级逻辑全关
+        # （行为与 v0.1.30 前一致）。
         self._fragment_re = fragment_re
         self._open_re = open_re
 
@@ -967,6 +968,12 @@ class _ToolHoldBuffer:
                 if not s.startswith(("<", "|")):
                     continue
                 s2 = s.lstrip("<")
+                if not s2.strip("|"):
+                    # 纯括号/竖线尾巴（Markdown 表格行尾的 |、单个 <）与任何
+                    # opener 的可辨识前缀都不沾边，绝不当标记吞掉——DSML
+                    # opener 以 | 开头，此前表格结尾的 | 在 flush 时被吃掉
+                    # （2026-11-01 审计 T-1）
+                    continue
                 if core.startswith(s2):
                     best = cut
                     break
@@ -1046,8 +1053,10 @@ def strip_truncated_marker_tail(text: str, openers: list) -> str:
         if not s.startswith(("<", "|")):
             continue
         s2 = s.lstrip("<")
-        if not s2:
-            continue  # 纯尖括号尾巴可能是正文，不吞
+        if not s2 or not s2.strip("|"):
+            # 纯尖括号/竖线尾巴可能是正文，不吞（对齐流式 _partial_prefix_len
+            # 的守卫；<| 这类两字符残留交给 MARKER_FRAGMENT_RE 清洗兜底）
+            continue
         if any(op.strip("<>").startswith(s2) for op in openers if op):
             return text[: len(text) - cut]
     return text

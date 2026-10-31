@@ -637,7 +637,37 @@ class QwenWebClient:
 
     # ── SSE 解析 ───────────────────────────────────────
     @staticmethod
-    def _parse_event(raw: dict) -> tuple[str, str]:
+    def _content_to_text(content) -> str:
+        """把上游 content 规整成纯文本。
+
+        OpenWebUI 形态会把 content 发成 list（多段 part 混排）；此前
+        str(list) 会把 Python repr 当正文透传给客户端（2026-11-01 审计
+        Q-6）。text 段拼接，image 段渲染成 Markdown 图（对齐 GLM
+        _render_part），其余段忽略。
+        """
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            out = []
+            for seg in content:
+                if isinstance(seg, str):
+                    out.append(seg)
+                elif isinstance(seg, dict):
+                    if isinstance(seg.get("text"), str):
+                        out.append(seg["text"])
+                    elif str(seg.get("type") or "") == "image":
+                        url = seg.get("image_url") or seg.get("url") or ""
+                        if isinstance(url, dict):
+                            url = url.get("url") or ""
+                        if url:
+                            out.append(f"![图像]({url})")
+            return "".join(out)
+        return str(content)
+
+    @classmethod
+    def _parse_event(cls, raw: dict) -> tuple[str, str]:
         """从 OpenWebUI SSE 事件提取 (text_delta, reasoning_delta)。"""
         if not isinstance(raw, dict):
             return "", ""
@@ -645,14 +675,10 @@ class QwenWebClient:
         if isinstance(choices, list) and choices:
             delta = choices[0].get("delta") or {}
             if isinstance(delta, dict):
-                content = delta.get("content") or ""
-                if not isinstance(content, str):
-                    content = str(content)
-                reasoning = (
-                    delta.get("reasoning_content") or delta.get("reasoning") or ""
+                content = cls._content_to_text(delta.get("content"))
+                reasoning = cls._content_to_text(
+                    delta.get("reasoning_content") or delta.get("reasoning")
                 )
-                if not isinstance(reasoning, str):
-                    reasoning = str(reasoning)
                 return content, reasoning
         return "", ""
 
@@ -874,6 +900,15 @@ class QwenWebClient:
                             if body:
                                 msg = f"{msg} | {str(body)[:400]}"
                             raise QwenError(msg, int(event.get("status") or 502))
+                except Exception as exc:  # noqa: BLE001
+                    if is_cont:
+                        # 续写轮中途连接异常：按截断收场，绝不让已输出的流
+                        # 变成报错（对齐 GLM/kimi/deepseek 续写轮语义；
+                        # 2026-11-01 审计 Q-5）
+                        self.logger.warning("续写轮中断（按截断返回）: %s", exc)
+                        cont_failed = True
+                    else:
+                        raise
                 finally:
                     try:
                         resp.close()
@@ -1174,6 +1209,8 @@ class QwenWebClient:
             self.logger.warning(
                 "上游流提前中断（续写未救回），按截断返回 finish=length"
             )
+        # usage 按收尾后的最终交付口径计（思考顶正文置换后 text 仍是空壳，
+        # 用置换后的 content/reasoning 才不漏计——2026-11-01 审计 Q-4）
         return {
             "id": completion_id,
             "object": "chat.completion",
@@ -1190,7 +1227,7 @@ class QwenWebClient:
                     "finish_reason": "stop" if finish_seen else "length",
                 }
             ],
-            "usage": _usage(payload, text, reasoning),
+            "usage": _usage(payload, content, reasoning),
         }
 
     def stream_chat_completion(self, payload: dict):
@@ -1264,7 +1301,7 @@ class QwenWebClient:
                     ]
                 }
             )
-            yield chunk({}, usage=_usage(payload, text, sent_reasoning))
+            yield chunk({}, usage=_usage(payload, text, reasoning))
             yield chunk({}, finish="tool_calls")
             yield "data: [DONE]\n\n"
             return
@@ -1276,6 +1313,9 @@ class QwenWebClient:
         calls: list = []
         buf = None
         emitted_tail = ""
+        visible_all = ""  # 全量已发正文（emitted_tail 只是 200 字滑窗，
+        # 空响应判定若只看窗口，正文以 200+ 空白结尾会被误判全空而重试，
+        # 造成第二份回答拼接——2026-10-30 审计 KIMI-F4 同族，Q-2 补课）
         sent_text = ""
         sent_reasoning = ""
         finish_seen = True
@@ -1294,6 +1334,7 @@ class QwenWebClient:
                 legacy=self.config.legacy_reasoning_in_content
             )
             emitted_tail = ""
+            visible_all = ""
             sent_text = ""
             sent_reasoning = ""
             finish_seen = True
@@ -1313,6 +1354,7 @@ class QwenWebClient:
                     if out_r:
                         yield chunk({"reasoning_content": out_r})
                     if out_c:
+                        visible_all += out_c
                         emitted_tail = (emitted_tail + out_c)[
                             -tool_bridge.SEAM_WINDOW :
                         ]
@@ -1334,7 +1376,7 @@ class QwenWebClient:
             )
             if (
                 calls
-                or emitted_tail.strip()
+                or visible_all.strip()
                 or sent_reasoning.strip()
                 or not finish_seen
             ):
@@ -1349,6 +1391,13 @@ class QwenWebClient:
                     pass
 
         if calls:
+            # 扣留器在无 opener（裸 JSON 兜底）时保守扣住末尾 max(opener)
+            # 字节；calls 成立时这段是纯正文尾巴，先放行再发调用（对齐 GLM
+            # 2026-10-30 审计 GLM-2；qwen 2026-11-01 补课）。opener 已找到时
+            # 水位已在 opener 处，这里返回空串，行为不变。
+            held = buf.flush_prefix() if buf is not None else ""
+            if held:
+                yield chunk({"content": held})
             tail = rs.close_think()
             if tail:
                 yield chunk({"content": tail})
@@ -1371,7 +1420,7 @@ class QwenWebClient:
 
         # P0 思考双通道：正文可见输出为空时才扫 reasoning 里的完整
         # <tool_call> 块——思考里的草稿调用绝不提取（shell 级误执行风险）
-        if tools and not calls and not emitted_tail.strip() and sent_reasoning:
+        if tools and not calls and not visible_all.strip() and sent_reasoning:
             rcalls = tool_bridge.parse_tool_calls(
                 sent_reasoning,
                 tools,
