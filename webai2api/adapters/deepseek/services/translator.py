@@ -491,15 +491,20 @@ def convert_deepseek_to_openai_chunk(
             state.last_fragment_type = frag_type
             content = frag.get("content", "")
             if isinstance(content, str) and content:
-                delta = {}
+                if out_delta is None:
+                    out_delta = {}
                 if state.is_first_content:
-                    delta["role"] = "assistant"
+                    out_delta["role"] = "assistant"
                     state.is_first_content = False
+                # 同一事件多个 fragment（如 THINK+RESPONSE 同帧）：合并进同一
+                # delta（reasoning_content 与 content 两键并存）——单 chunk 返回
+                # 装不下，此前只留最后一个 fragment，同帧前面的内容整体丢失
+                # （2026-11-01 审计 D3）。消费端按快照口径分别 diff 两键，
+                # 事件粒度的先后顺序保持原样。
                 if frag_type in ("THINK", "THINKING"):
-                    delta["reasoning_content"] = content
+                    out_delta["reasoning_content"] = out_delta.get("reasoning_content", "") + content
                 else:
-                    delta["content"] = content
-                out_delta = delta
+                    out_delta["content"] = out_delta.get("content", "") + content
         if out_delta is not None:
             return _build_chunk(model, out_delta, None, completion_id)
         return None
@@ -558,6 +563,8 @@ def convert_deepseek_to_openai_chunk(
         if isinstance(response, dict):
             fragments = response.get("fragments", [])
             if isinstance(fragments, list):
+                out_delta = None
+                status = response.get("status", "")
                 for frag in fragments:
                     if not isinstance(frag, dict):
                         continue
@@ -572,23 +579,30 @@ def convert_deepseek_to_openai_chunk(
                     state.emitted_fragment_ids.add(frag_id)
                     state.last_fragment_type = frag_type
 
-                    delta = {}
+                    if out_delta is None:
+                        out_delta = {}
                     if state.is_first_content:
-                        delta["role"] = "assistant"
+                        out_delta["role"] = "assistant"
                         state.is_first_content = False
 
+                    # 快照内多个 fragment：合并进同一 delta（D3 同款——
+                    # 此前处理完第一个就 return，同快照其余 fragment 若
+                    # 不再重发即永久丢字）
                     if frag_type in ("THINK", "THINKING"):
-                        delta["reasoning_content"] = content
+                        out_delta["reasoning_content"] = out_delta.get("reasoning_content", "") + content
                     else:
-                        delta["content"] = content
+                        out_delta["content"] = out_delta.get("content", "") + content
 
-                    status = response.get("status", "")
-                    finish = None
-                    if status == "FINISHED" and not state.finished_sent:
-                        finish = "stop"
-                        state.finished_sent = True
-                        state.is_finished = True
-
-                    return _build_chunk(model, delta, finish, completion_id)
+                finish = None
+                if status == "FINISHED" and not state.finished_sent:
+                    finish = "stop"
+                    state.finished_sent = True
+                    state.is_finished = True
+                if out_delta is not None:
+                    return _build_chunk(model, out_delta, finish, completion_id)
+                if finish:
+                    # 快照内 fragment 全部发过但状态为 FINISHED：补 finish
+                    # （旧实现直接落 return None，finish 丢失）
+                    return _build_chunk(model, {}, finish, completion_id)
 
     return None
