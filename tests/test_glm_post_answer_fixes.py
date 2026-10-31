@@ -83,7 +83,7 @@ def test_collapse_head_not_added_without_tool_history():
     assert _collapse_cached_text("", msgs) == ""
 
 
-# ── 2. 答后思考抑制（流式 e2e，mock 上游 SSE）────────────────────
+# ── 2. 答后思考透传（2026-11-01 恢复穿插；流式 e2e，mock 上游 SSE）──────
 
 
 class _ThinkTextThinkHandler(BaseHTTPRequestHandler):
@@ -166,11 +166,11 @@ def _client(base: str) -> ChatGlmWebClient:
     return ChatGlmWebClient(cfg, logging.getLogger("glm.post-answer"))
 
 
-def test_stream_suppresses_post_answer_thinking(glm_server):
-    """答案开流后到达的思考不再下发：reasoning 只含答前思考，content 完整。"""
+def test_stream_passes_through_interleaved_thinking(glm_server):
+    """2026-11-01 恢复穿插透传：答后思考经 reasoning 通道穿插下发，
+    content 完整，且答后思考块在正文之后到达（顺序保持）。"""
     c = _client(glm_server)
-    reasoning = ""
-    content = ""
+    seq: list[tuple[str, str]] = []
     for chunk in c.stream_chat_completion({
         "model": "GLM-5.3-Flash",
         "stream": True,
@@ -181,12 +181,20 @@ def test_stream_suppresses_post_answer_thinking(glm_server):
         obj = json.loads(chunk[len("data: "):])
         for ch in obj.get("choices") or []:
             d = ch.get("delta") or {}
-            reasoning += d.get("reasoning_content") or ""
-            content += d.get("content") or ""
+            if d.get("reasoning_content"):
+                seq.append(("r", d["reasoning_content"]))
+            if d.get("content"):
+                seq.append(("c", d["content"]))
 
+    reasoning = "".join(t for k, t in seq if k == "r")
+    content = "".join(t for k, t in seq if k == "c")
     assert content == "最终答案"
     assert "答前思考" in reasoning
-    assert "答后思考" not in reasoning
+    # 穿插：答后思考在 reasoning 流里，且其 chunk 在首个正文 chunk 之后
+    assert "答后思考" in reasoning
+    first_c = next(i for i, (k, _) in enumerate(seq) if k == "c")
+    post_r = [i for i, (k, t) in enumerate(seq) if k == "r" and "答后思考" in t]
+    assert post_r and all(i > first_c for i in post_r)
 
 
 def test_nonstream_still_keeps_full_reasoning(glm_server):

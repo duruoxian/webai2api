@@ -64,9 +64,12 @@ class ReasoningStream:
         if d_reasoning:
             self._reasoning_total += d_reasoning
             if self._legacy:
-                if not self._think_open:
+                if not self._think_open or self._think_closed:
+                    # 穿插思考（GLM 多阶段）：正文闭合后再来思考段，重开一个
+                    # <think> 块——旧实现只会追加裸文本（2026-11-01 恢复透传）
+                    out_c += "<think>\n" if not self._content_total else "\n<think>\n"
                     self._think_open = True
-                    out_c += "<think>\n"
+                    self._think_closed = False
                 out_c += d_reasoning
             else:
                 out_r = d_reasoning

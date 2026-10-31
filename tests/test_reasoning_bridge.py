@@ -108,3 +108,25 @@ def test_stream_close_think_for_tool_path():
     rs2.feed("思考", "")
     assert rs2.close_think() == "\n</think>\n"
     assert rs2.finish() == ("", "")    # 已闭合，不再补发
+
+
+def test_stream_legacy_interleaved_think_reopens_block():
+    """穿插思考（GLM 多阶段）：正文闭合后再来思考段，重开 <think> 块——
+    旧实现只会追加裸文本（2026-11-01 恢复透传时的配套修复）。"""
+    rs = ReasoningStream(legacy=True)
+    emitted = ""
+    for r, c in (rs.feed("思考A", ""), rs.feed("", "正文"),
+                 rs.feed("答后思考", ""), rs.finish()):
+        emitted += (r or "") + (c or "")
+    assert emitted == (
+        "<think>\n思考A\n</think>\n正文\n<think>\n答后思考\n</think>\n"
+    )
+
+
+def test_stream_normal_mode_interleaved_passthrough():
+    """正常模式：答后思考走 reasoning_content 通道穿插下发，正文不动。"""
+    rs = ReasoningStream()
+    outs = [rs.feed("答前", ""), rs.feed("", "正文"), rs.feed("答后", "")]
+    assert outs[0] == ("答前", "")
+    assert outs[1] == ("", "正文")
+    assert outs[2] == ("答后", "")

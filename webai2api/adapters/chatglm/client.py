@@ -1511,8 +1511,6 @@ class ChatGlmWebClient:
         rs = reasoning_bridge.ReasoningStream(
             legacy=self.config.legacy_reasoning_in_content
         )
-        content_streamed = False
-        dropped_post_thinking = 0
         try:
             for ev in self._stream_events(payload):
                 native = ev.get("tool_calls") or native
@@ -1524,21 +1522,13 @@ class ChatGlmWebClient:
                 d_text = ev["text"][len(sent_text) :]
                 sent_text = ev["text"]
                 d_out = buf.feed_delta(d_text) if buf is not None else d_text
-                # GLM 多阶段思考：正文开流后还会冒出后续思考段（答后思考），
-                # 透传会让客户端在「答案」后面再渲染思考块（2026-10-28 用户
-                # 报障）。答案既已开始，后续思考对 agent 是纯噪音，丢弃。
-                if content_streamed and d_reason:
-                    dropped_post_thinking += len(d_reason)
-                    d_reason = ""
+                # GLM 多阶段思考（think→text→think→…）原样透传：答后思考走
+                # reasoning 通道穿插下发，渲染由客户端负责。2026-10-28 曾按
+                # 用户报障改为「正文开流后丢弃答后思考」；2026-11-01 用户
+                # 拍板恢复穿插透传（「答完又冒思考块」即穿插的本来面目）。
                 out_r, out_c = rs.feed(d_reason, d_out)
                 if out_r:
                     yield chunk({"reasoning_content": out_r})
-                # content_streamed 只由真实正文增量（d_out）置位：legacy 模式
-                # 下思考经 rs.feed 包成 <think> 也走 out_c，若据此判定「答案
-                # 已开流」，多事件思考的第 2 段起会被当答后思考丢弃
-                # （2026-10-30 审计 GLM-P2-6）
-                if d_out:
-                    content_streamed = True
                 if out_c:
                     yield chunk({"content": out_c})
         except Exception as exc:  # noqa: BLE001
@@ -1547,11 +1537,6 @@ class ChatGlmWebClient:
             yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
             return
-        if dropped_post_thinking:
-            self.logger.debug(
-                "已丢弃答后思考 %d 字（答案开始后的多阶段思考）",
-                dropped_post_thinking,
-            )
 
         if has_tools:
             calls = native or _parse_tool_calls(buf.text, payload.get("tools"))
