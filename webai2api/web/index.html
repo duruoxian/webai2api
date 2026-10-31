@@ -1052,6 +1052,9 @@ function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;',
 function jsq(s){return String(s==null?'':s).replace(/[\\'"<>\n\r&]/g,c=>({'\\':'\\\\',"'":'\\x27','"':'\\x22','<':'\\x3C','>':'\\x3E','\n':'\\n','\r':'\\r','&':'\\x26'}[c]));}
 function fmtTime(ts){if(!ts)return '–';const d=new Date(ts*1000);
   return d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}
+function relTime(ts){const d=Date.now()/1000-(Number(ts)||0);
+  if(!(d>0))return '–';if(d<60)return '刚刚';if(d<3600)return Math.floor(d/60)+' 分钟前';
+  if(d<86400)return Math.floor(d/3600)+' 小时前';return Math.floor(d/86400)+' 天前';}
 
 /* ── 段选记忆：默认选第一项 + 记住上次选择（跨打开恢复） ── */
 const SEG_VALID={
@@ -1667,7 +1670,13 @@ function renderAccounts(s){
     else if(lg.status==='success') loginBadge='<span class="tag on">登录成功</span>';
     else if(lg.status==='error') loginBadge='<span class="tag err">'+esc(lg.message||'失败')+'</span>';
     __sig+=`${a.id}|${a.name}|${a.enabled}|${a.health}|${a.provider}|${a.has_token}${a.has_device}${a.has_settings}${a.has_cookie}|${a.egress};`;
-    __rows+=`<tr data-acc="${a.id}"><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}</td><td class="muted">${esc(a.provider)}</td>
+    // 账号最近一次失败摘要（/state.account_recent_errors，7 天窗口；
+    // 此前账号页看不出哪个号在报什么错，要去用量页翻——2026-11-01 增强）。
+    // code 进 sig：错误码变化要触发重渲染
+    const le=(s.account_recent_errors||{})[a.id];
+    if(le) __sig+=`err:${le.code};`;
+    const errLine=le?`<div class="muted" style="font-size:12px;margin-top:2px"><span class="tag err" title="${esc(errHint(le.code))}">${esc(le.code||'失败')}</span> <span>最近失败 ${relTime(le.ts)}</span></div>`:'';
+    __rows+=`<tr data-acc="${a.id}"><td><b>${esc(a.name)}</b>${who?`<div class="muted" style="font-size:12px;margin-top:3px">${esc(who)}</div>`:''}${errLine}</td><td class="muted">${esc(a.provider)}</td>
       <td class="muted mono">${credEmpty?'<span class="tag off">未填写凭证</span> ':''}${loginBadge} ${healthBadge} ${egressTag(a.egress)}</td>
       <td><label class="switch" title="${a.enabled?'点击停用':'点击启用'}"><input type="checkbox" ${a.enabled?'checked':''} aria-label="启用或停用账号" onchange="toggleAcc('${jsq(a.id)}',${a.enabled?0:1})"><span class="knob"></span></label>${cdBadge}</td>
       <td style="text-align:right;white-space:nowrap">

@@ -55,3 +55,19 @@ def test_export_usage_follows_filters(tmp_path):
     assert len(st.export_usage(key_id="k1")) == 2
     assert len(st.export_usage(account_id="a2")) == 1
     assert all(r["api_key_id"] == "k2" for r in st.export_usage(account_id="a2"))
+
+
+def test_recent_account_errors_latest_per_account(tmp_path):
+    st = _seed(tmp_path)  # a1: error:UpstreamAPIError(20s前) + cancelled(10s前,k2/a2)
+    errs = st.recent_account_errors()
+    assert set(errs) == {"a1", "a2"}
+    assert errs["a1"]["code"] == "500", "取账号最近一条失败（优先具体 error_code）"
+    assert errs["a2"]["code"] == "cancelled"
+    assert errs["a1"]["ts"] >= errs["a2"]["ts"] - 1
+    # 成功请求不影响摘要
+    st.log_usage(
+        status="ok", api_key_id="k1", api_key_name="K1", account_id="a1",
+        account_name="A1", provider="deepseek", model="deepseek-chat",
+        prompt_tokens=1, completion_tokens=1, total_tokens=2, ts=time.time(),
+    )
+    assert st.recent_account_errors()["a1"]["code"] == "500", "成功请求不影响失败摘要"

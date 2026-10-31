@@ -427,6 +427,30 @@ class Store:
                  str(kw.get("error_code", "") or "")),
             )
 
+    def recent_account_errors(self, days: int = 7) -> dict:
+        """每个账号最近一次失败（账号页「最近失败」摘要用）。
+
+        返回 {account_id: {code, ts, status}}；窗口默认 7 天（走 ts 索引）。
+        SQLite bare-column 语义：MAX(ts) 聚合下非聚合列取自 max 所在行。
+        """
+        import datetime as _dt
+        since = (_dt.datetime.now() - _dt.timedelta(days=days)).timestamp()
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT account_id, "
+                "CASE WHEN error_code<>'' THEN error_code ELSE status END code, "
+                "status, MAX(ts) ts "
+                "FROM usage_log WHERE status<>'ok' AND ts>=? AND account_id IS NOT NULL "
+                "GROUP BY account_id",
+                (since,),
+            ).fetchall()
+        return {
+            r["account_id"]: {
+                "code": r["code"], "status": r["status"], "ts": r["ts"]
+            }
+            for r in rows
+        }
+
     def today_summary(self) -> dict:
         """今日 vs 昨日对比。"""
         import datetime as _dt

@@ -211,6 +211,9 @@ def create_admin_router(
             "model_providers": {m["id"]: infer_provider(m["id"]) for m in catalog},
             "usage": await run_in_threadpool(store.usage_summary, since_ts, until_ts),
             "today": await run_in_threadpool(store.today_summary),
+            "account_recent_errors": await run_in_threadpool(
+                store.recent_account_errors
+            ),
             "cooldowns": await run_in_threadpool(registry.cooldowns),
             "network": await run_in_threadpool(_network_status),
             "key_usage": await run_in_threadpool(store.key_usage_map),
