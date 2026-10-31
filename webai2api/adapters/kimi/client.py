@@ -831,9 +831,12 @@ class KimiWebClient:
 
     # ── 会话清理（供后台清理线程调用） ─────────────────
     def cleanup_stale_sessions(self) -> None:
-        """删除已过期/超轮次的 Kimi 会话，并从缓存移除。"""
-        if not self.config.delete_conversation:
-            return
+        """删除已过期/超轮次的 Kimi 会话，并从缓存移除。
+
+        移除 delete_conversation 门：与缓存开启互斥导致清理永不生效
+        （2026-10-30 审计 QWEN-P3-6 同构）。缓存关闭时 collect_stale
+        本来就返回空。
+        """
         stale = self._conv_cache.collect_stale()
         if not stale:
             return

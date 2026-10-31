@@ -573,9 +573,13 @@ class QwenWebClient:
 
     # ── 会话清理（供后台清理线程调用） ─────────────────
     def cleanup_stale_sessions(self) -> None:
-        """删除已过期/超轮次的 Qwen 会话，并从缓存移除。"""
-        if not self.config.delete_conversation:
-            return
+        """删除已过期/超轮次的 Qwen 会话，并从缓存移除。
+
+        此前有 `if not delete_conversation: return` 门——但缓存条目只在
+        会话缓存开启时存在，而该门要求它关闭，互斥导致清理永不生效
+        （2026-10-30 审计 QWEN-P3-6，kimi 同构同修）。缓存关闭时
+        collect_stale 本来就返回空，无需此门。
+        """
         stale = self._conv_cache.collect_stale()
         if not stale:
             return
@@ -930,10 +934,16 @@ class QwenWebClient:
                 payload.get("model") or "",
                 payload.get("_wapi_key_id") or "",
             )
+            # 断流且续写轮未拿到锚点时不得存空 parent：空 parent 会让
+            # 下一轮从会话根分叉、丢全部上游上下文——回退到本轮实际使用的
+            # 旧锚点（kimi「绝不倒退」同语义，2026-10-30 审计 QWEN-P3-9）
+            prev_parent = (
+                self._cached_response_id(self._conv_key(payload)) or ""
+            )
             self._store_conv(
                 store_key,
                 chat_id,
-                response_id if anchor_seen else "",
+                response_id if anchor_seen else prev_parent,
                 used_tokens=conv_cache.estimate_tokens(text, reasoning),
             )
         if not saw_done:

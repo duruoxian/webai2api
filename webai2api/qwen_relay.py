@@ -332,7 +332,9 @@ _RELAY_JS = r"""
           }
           if(ev['response.created']){
             const c = ev['response.created'];
-            if(!primaryResponseId) primaryResponseId = c.response_id || '';
+            // 优先 index=0 的 created：多路候选乱序到达时，取首个
+            // created 会把 parent 钉到未展示分支上（审计 QWEN-P3-8）
+            if(c.index===0 || !primaryResponseId) primaryResponseId = c.response_id || '';
             responseId = primaryResponseId || c.response_id || responseId;
             await push('meta', {chat_id: c.chat_id || chatId, response_id: responseId, parent_id: c.parent_id || parentId});
             continue;
@@ -1086,6 +1088,18 @@ def start_memory_guard(store, logger=None, interval: float = 60.0) -> None:
                             continue
                         health = RelayManager._health(port) if port else {}
                         if _should_recycle(rss, limit, health):
+                            # 回收前二次确认仍空闲：健康快照与 kill 之间可能
+                            # 有新请求进入（2026-10-30 审计 QWEN-P3-7）；
+                            # 复查失败/有活动则本轮不回收（保守）
+                            try:
+                                recheck = RelayManager._health(port) if port else {}
+                            except Exception:
+                                recheck = {"active": True}
+                            if recheck.get("active"):
+                                if logger:
+                                    logger.info("千问中继 %s 回收前发现新请求，跳过",
+                                                st_path.stem)
+                                continue
                             if logger:
                                 logger.warning(
                                     "千问中继内存 %.0fMB 超限 %.0fMB 且空闲，回收 %s"
