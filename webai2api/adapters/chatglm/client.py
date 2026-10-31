@@ -817,6 +817,8 @@ class ChatGlmWebClient:
         removed = 0
         for _key, conv_id in stale:
             try:
+                # 清理路径无 model 上下文，用默认 assistant_id（best-effort；
+                # agent id 会话删除会静默失败，仅泄漏不影响功能）
                 self._delete_conversation(conv_id, token)
                 removed += 1
             except Exception:  # noqa: BLE001
@@ -1144,7 +1146,9 @@ class ChatGlmWebClient:
                     used_tokens=_estimate_tokens(text) + _estimate_tokens(reasoning),
                 )
             elif self.config.delete_conversation:
-                self._delete_conversation(conv_id, token)
+                self._delete_conversation(
+                    conv_id, token, assistant_id=self._assistant_id(model)
+                )
         yield {
             "__done__": True,
             "text": text,
@@ -1154,11 +1158,18 @@ class ChatGlmWebClient:
             "finish_seen": saw_finish,
         }
 
-    def _delete_conversation(self, conv_id: str, token: str) -> None:
+    def _delete_conversation(
+        self, conv_id: str, token: str, assistant_id: str = ""
+    ) -> None:
+        # 删除请求的属主 assistant_id 必须与创建时一致：agent id 模式下
+        # 固定用默认助手会被上游拒绝、会话泄漏（2026-10-30 审计 GLM-P2-11）
         try:
             self._post_json(
                 self.config.delete_url,
-                {"assistant_id": self.config.assistant_id, "conversation_id": conv_id},
+                {
+                    "assistant_id": assistant_id or self.config.assistant_id,
+                    "conversation_id": conv_id,
+                },
                 _headers_for(self.config, token),
                 min(self.config.request_timeout, 15),
             )

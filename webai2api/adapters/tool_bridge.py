@@ -503,16 +503,19 @@ def increment_text(
         role = m.get("role")
         if role == "tool":
             content = text_of(m)
-            if content.strip():
-                name = id2name.get(m.get("tool_call_id") or "", m.get("name") or "tool")
-                if dsml:
-                    parts.append(
-                        render_dsml_tool_result(
-                            name, content, m.get("tool_call_id") or ""
-                        )
+            # 空结果也渲染块（占位说明）：静默丢弃会让模型以为工具没执行过
+            # 而重调同一工具（2026-10-30 审计 GLM-P3）
+            if not content.strip():
+                content = "（工具执行完成，无输出）"
+            name = id2name.get(m.get("tool_call_id") or "", m.get("name") or "tool")
+            if dsml:
+                parts.append(
+                    render_dsml_tool_result(
+                        name, content, m.get("tool_call_id") or ""
                     )
-                else:
-                    parts.append(render_tool_result(name, content, tag=result_tag))
+                )
+            else:
+                parts.append(render_tool_result(name, content, tag=result_tag))
         elif role == "user":
             t = text_of(m)
             if t.strip():

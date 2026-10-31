@@ -1116,8 +1116,11 @@ class KimiWebClient:
                     store_key,
                     chat_id,
                     state.assistant_message_id or state.last_message_id or cur_parent,
+                    # 计入基线：state 只是最后一轮的量，续写后不含首轮正文
+                    # （2026-10-30 审计 KIMI-F5）
                     used_tokens=conv_cache.estimate_tokens(
-                        state.text_value(), state.think_value()
+                        base_text + state.text_value(),
+                        base_reasoning + state.think_value(),
                     ),
                 )
             yield {

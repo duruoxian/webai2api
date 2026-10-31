@@ -55,8 +55,8 @@ def extract_image_urls(messages: list[dict]) -> list[str]:
 class GlmImageUploader:
     """把 OpenAI image_url（data URL / http URL）上传成 GLM 文件引用。
 
-    内部维护 image_url hash → 上传结果的 LRU 缓存：同一张图在会话多轮里
-    反复出现时只上传一次。
+    内部维护 image_url hash → 上传结果的缓存（容量满时按 FIFO 淘汰最旧
+    一条）：同一张图在会话多轮里反复出现时只上传一次。
     """
 
     def __init__(self, client: "ChatGlmWebClient", logger: Logger) -> None:
@@ -97,7 +97,8 @@ class GlmImageUploader:
             self._logger.warning("GlmUpload | 上传响应缺少 file_url，跳过")
             return None
         if len(self._cache) >= _MAX_CACHE:
-            self._cache.clear()
+            oldest = next(iter(self._cache))
+            self._cache.pop(oldest, None)
         self._cache[key] = item
         return dict(item)
 

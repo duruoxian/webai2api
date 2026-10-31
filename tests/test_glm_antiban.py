@@ -176,7 +176,9 @@ def test_cleanup_stale_sessions_removes_expired(tmp_path) -> None:
     # 打桩：不真的发删除请求
     deleted: list[str] = []
     c._access = lambda: "tok"  # type: ignore[assignment]
-    c._delete_conversation = lambda cid, tok: deleted.append(cid)  # type: ignore[assignment]
+    c._delete_conversation = (  # type: ignore[assignment]
+        lambda cid, tok, assistant_id="": deleted.append(cid)
+    )
     c.cleanup_stale_sessions()
     assert "old" not in c._conv_cache._cache
     assert "full" not in c._conv_cache._cache

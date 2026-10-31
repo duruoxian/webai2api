@@ -98,14 +98,19 @@ def test_increment_unknown_tool_id_falls_back_to_message_name():
     assert 'tool="read"' in out
 
 
-def test_increment_skips_empty_tool_results():
+def test_increment_renders_empty_tool_results_with_placeholder():
+    """空工具结果渲染占位块：静默丢弃会让模型以为工具没执行过而重调
+    （2026-10-30 审计 GLM-P3，旧行为是 skip）。"""
     call_id = _call_id("write")
     msgs = [
         {"role": "user", "content": "q"},
         _assistant_tool_call("write", {}, call_id),
         {"role": "tool", "tool_call_id": call_id, "content": "   "},
     ]
-    assert increment_text(msgs) == "q"
+    # 增量只含最后一条 assistant 之后的消息，因此输出就是占位块本身
+    out = increment_text(msgs)
+    assert "无输出" in out
+    assert "tool" in out
 
 
 def test_increment_multimodal_content_parts():
