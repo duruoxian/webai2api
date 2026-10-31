@@ -239,6 +239,30 @@ _DSML_MAX_DEPTH = 24
 _DSML_MAX_OPENERS = 512
 _DSML_MAX_TEXT = 1_000_000
 
+# ── 降级形态残片（2026-11-01，对齐 deepseek 同族修复 commit e38ccc7）──
+# 上游会把 DSML 标记写成降级形态：吃掉 `<`、半角 `|` 换全角 `｜`（U+FF5C）、
+# 漏写闭合标签。GLM 实测事故：shell 工具 command 参数值被污染成
+# `python make_yueyanglou.py<｜｜DSML｜｜ parameter ...>D:\study`。
+_DSML_BAR = "[|\uff5c]"
+_DSML_MARKER_CORE = rf"{_DSML_BAR}+\s*DSML\s*{_DSML_BAR}+"
+
+# 「下一条 DSML 标签」边界（参数缺闭合时截断值用）：必须以 < 或 ｜ 开头
+# 且含 DSML 字样——半角规范 `<|DSML|...>` 与全角降级 `<｜｜DSML｜｜...>` /
+# `</｜｜DSML｜｜...>`（`<` 也可被上游吃掉只剩 `｜｜DSML｜｜` 开头）。
+# 保守规则：单个 `|` 与 Markdown 表格行（`| a | b |`）绝不当边界，防误吞。
+_DSML_TAG_BOUNDARY_RE = re.compile(
+    rf"</?\\?\s*{_DSML_MARKER_CORE}|\uff5c+\s*DSML\s*{_DSML_BAR}+",
+    re.IGNORECASE,
+)
+
+# 参数值里的降级残片：`<｜｜DSML｜｜ parameter name="w" ...>`、
+# `</｜｜DSML｜｜ invoke>`、`D:\study<\｜｜DSML｜｜>` 整段删
+# （deepseek _TAG_RESIDUE_RE 对等移植）。
+_DSML_TAG_RESIDUE_RE = re.compile(
+    rf"(?:</?)?\\?\s*{_DSML_MARKER_CORE}[^<>\n]{{0,300}}>",
+    re.IGNORECASE,
+)
+
 
 def _dsml_openers(text: str) -> int:
     """统计 DSML 开标签出现次数（纯字符串计数，线性——不能用带 lazy
@@ -265,16 +289,35 @@ def _dsml_cdata(s: str) -> str | None:
     return "".join(_DSML_CDATA_RE.findall(s))
 
 
+def _strip_marker_residue(value: str) -> str:
+    """清掉字符串参数值里的 DSML 降级残片（对等移植 deepseek 同名函数）。
+
+    上游漏写 `</parameter>` 时，后一条标签会被吞进前值（GLM 实测 command
+    变成 `python make_yueyanglou.py<｜｜DSML｜｜ parameter ...>D:\\study`），
+    这里做最后一道闸。只清带 DSML 字样（半角/全角）的标签形残片与孤立
+    降级闭合标签；普通 `<`、`if a < b`、Markdown 表格行一律不动
+    （值里没有 DSML 字样时直接原样返回）。
+    """
+    if not value or "DSML" not in value.upper():
+        return value
+    out = _DSML_TAG_RESIDUE_RE.sub("", value)
+    if out == value:
+        return value
+    # 去掉残片留下的裸尖括号尾巴（`D:\study<\…` → `D:\study<` → `D:\study`）；
+    # 用 \Z 而非 $：$ 会放过行尾换行（deepseek 2026-10-30 踩坑教训）
+    return re.sub(r"<\\?\s*\Z", "", out).rstrip()
+
+
 def _dsml_value(raw: str, depth: int = 0):
     """DSML 参数值 → Python 值：CDATA 字符串 / 嵌套对象 / <item> 数组 /
     JSON 字面量 / 原样文本。depth 防深度递归爆栈（上限 _DSML_MAX_DEPTH，
-    超限按原样文本返回）。"""
+    超限按原样文本返回）。字符串结果统一过降级残片清洗。"""
     s = (raw or "").strip()
     if not s:
         return ""
     cdata = _dsml_cdata(s)
     if cdata is not None:
-        return cdata
+        return _strip_marker_residue(cdata)
     if depth < _DSML_MAX_DEPTH and _DSML_PARAM_OPEN_RE.search(s):
         return _dsml_params(s, depth + 1)
     if depth < _DSML_MAX_DEPTH:
@@ -284,18 +327,29 @@ def _dsml_value(raw: str, depth: int = 0):
     try:
         return json.loads(s)
     except Exception:
-        return s
+        return _strip_marker_residue(s)
 
 
 def _dsml_param_end(text: str, start: int) -> tuple[int, int]:
-    """找与 start 处 parameter 配对的结束位置（支持同名嵌套）。"""
+    """找与 start 处 parameter 配对的结束位置（支持同名嵌套）。
+
+    缺闭合标签时截到下一条 DSML 标签边界（半角规范与全角降级形态都认，
+    边界必须是「标签形状」：< 或 ｜ 开头且含 DSML 字样，见
+    _DSML_TAG_BOUNDARY_RE）——旧实现直接吃到文末，会把下一条标签整个
+    吞进参数值（GLM 实测 command 污染成
+    `python make_yueyanglou.py<｜｜DSML｜｜ parameter ...>D:\\study`）。
+    单个 | 与 Markdown 表格行绝不当边界，防误吞正文。
+    """
     depth = 1
     pos = start
     while True:
         mo = _DSML_PARAM_OPEN_RE.search(text, pos)
         mc = _DSML_PARAM_CLOSE_RE.search(text, pos)
         if mc is None:
-            return len(text), len(text)
+            mb = _DSML_TAG_BOUNDARY_RE.search(text, pos)
+            if mb is None:
+                return len(text), len(text)
+            return mb.start(), mb.start()
         if mo is not None and mo.start() < mc.start():
             depth += 1
             pos = mo.end()
