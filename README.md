@@ -1,9 +1,23 @@
-# webai2api
+# <img src="docs/screenshots/logo.png" width="34" valign="middle" alt=""> webai2api
 
 > English documentation: [README_EN.md](README_EN.md)
 
 把 DeepSeek、智谱清言、Kimi、通义千问四家 AI 的**网页版**反向代理成统一的
 OpenAI 兼容 API，自带中文管理面板。Windows 下解压即用，全程本机运行。
+
+## 界面预览
+
+**总览**——账号健康、模型用量、请求统计一屏尽览：
+
+![总览](docs/screenshots/overview.png)
+
+| 账号管理 | API Key |
+|---|---|
+| ![账号管理](docs/screenshots/accounts.png) | ![API Key](docs/screenshots/keys.png) |
+
+| 用量统计 | 接入 |
+|---|---|
+| ![用量统计](docs/screenshots/usage.png) | ![接入](docs/screenshots/connect.png) |
 
 ## 功能
 

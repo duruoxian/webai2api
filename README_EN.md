@@ -1,10 +1,24 @@
-# webai2api
+# <img src="docs/screenshots/logo.png" width="34" valign="middle" alt=""> webai2api
 
 > 中文文档见 [README.md](README.md)
 
 Turn the web versions of DeepSeek, Zhipu (ChatGLM), Kimi and Qwen into a
 unified OpenAI-compatible API, with a Chinese admin panel. Runs entirely on
 your machine; ships as a ready-to-run Windows executable.
+
+## Screenshots
+
+**Overview** — account health, per-model usage and request stats at a glance:
+
+![Overview](docs/screenshots/overview.png)
+
+| Accounts | API Keys |
+|---|---|
+| ![Accounts](docs/screenshots/accounts.png) | ![API Keys](docs/screenshots/keys.png) |
+
+| Usage | Connect |
+|---|---|
+| ![Usage](docs/screenshots/usage.png) | ![Connect](docs/screenshots/connect.png) |
 
 ## Features
 
