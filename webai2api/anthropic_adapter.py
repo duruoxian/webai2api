@@ -153,6 +153,12 @@ def anthropic_to_openai(body: dict) -> dict:
         out["temperature"] = body["temperature"]
     if body.get("top_p") is not None:
         out["top_p"] = body["top_p"]
+    if body.get("stop_sequences"):
+        # Anthropic stop_sequences → OpenAI stop（2026-11-01 审计 B7；
+        # 上游网页端对 stop 的支持程度不一，透传由适配层自行取舍）
+        ss = body["stop_sequences"]
+        if isinstance(ss, list) and ss:
+            out["stop"] = [str(x) for x in ss if x][:4]
 
     tools = body.get("tools")
     if isinstance(tools, list) and tools:
