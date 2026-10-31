@@ -110,27 +110,46 @@ def main() -> None:
         的当前流，而不是再开一个常驻句柄——两个句柄同时持有日志文件时
         Windows 不允许重命名，doRollover 永远 PermissionError，maxBytes
         形同虚设、日志无限增长（2026-11-01 审计）。走 handler 流则轮转后
-        自动跟进新文件。"""
+        自动跟进新文件。
+
+        线程纪律：绝不能调 handler.emit/handler.flush（它们要拿 logging
+        的不可重入锁）——若某线程正持锁 emit 时往 stderr print，write()
+        里再 acquire 同一把锁就是同线程自死锁，此后所有日志永久阻塞
+        （冻结 exe 实测：进程停在初始化后一行日志都出不来）。只写底层
+        stream + stream.flush，另用标志位防多线程/重入交错。"""
 
         def __init__(self, handler):
             self._h = handler
+            self._busy = False
+            self._lk = threading.Lock()
 
         def write(self, s):
-            if not s:
+            if not s or not s.strip():
                 return
+            with self._lk:
+                if self._busy:
+                    return
+                self._busy = True
             try:
                 st = self._h.stream
                 if st is not None and not st.closed:
                     st.write(s if s.endswith("\n") else s + "\n")
-                    self._h.flush()
+                    st.flush()
             except Exception:
                 pass
+            finally:
+                self._busy = False
 
         def flush(self):
             try:
-                self._h.flush()
+                st = self._h.stream
+                if st is not None and not st.closed:
+                    st.flush()
             except Exception:
                 pass
+
+        def isatty(self):
+            return False
 
     if sys.stdout is None:
         sys.stdout = _LogSink(log_handler)
