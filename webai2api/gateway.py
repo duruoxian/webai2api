@@ -292,11 +292,16 @@ def _msg_text(content: Any) -> str:
     return str(content)
 
 
-def _conv_key(payload: dict, key_id: str) -> str:
+def _conv_key(payload: dict, key_id: str, ignore_assistant: bool = False) -> str:
     """用「Key + 模型 + 第一条 user + 第一条 assistant 文本」做指纹。
 
     跳过所有 system 消息：客户端（如 opencode）每轮的 system 内容可能变化，
     若计入指纹会让账号粘性失效、会话缓存跨账号 miss。
+
+    ignore_assistant=True 忽略首条 assistant（tool_calls 与文本都跳过），
+    得到「无 assistant」变体键——首轮请求还没有 assistant，粘性存的就是
+    这个键；第 2 轮客户端回传首轮回复后键变了，精确查必 miss，用变体键
+    兜底让粘性跨过 1→2 轮过渡（2026-11-01 实测 GLM 双健康号严格交替换号）。
     """
     msgs = payload.get("messages") or []
     first_user = ""
@@ -311,7 +316,7 @@ def _conv_key(payload: dict, key_id: str) -> str:
         if m.get("tool_calls"):
             # 工具调用轮同样要计入指纹：assistant.content 为 null 时若跳过，
             # 工具轮与首轮算出同一个 key，上游会新建会话、丢掉工具结果。
-            if not asst_seen:
+            if not asst_seen and not ignore_assistant:
                 names = [
                     str((c.get("function") or {}).get("name") or "")
                     for c in m["tool_calls"]
@@ -325,7 +330,7 @@ def _conv_key(payload: dict, key_id: str) -> str:
         text = _msg_text(m.get("content"))
         if role == "user" and not first_user:
             first_user = text[:2000]
-        elif role == "assistant" and not asst_seen:
+        elif role == "assistant" and not asst_seen and not ignore_assistant:
             first_assistant = text[:500]
             asst_seen = True
         if first_user and asst_seen:
@@ -516,7 +521,19 @@ def create_gateway_router(
             _quota_release(key_row["id"], reserve)
             return _error(403, "该 API Key 无权使用指定账号", "permission_error")
         conv = _conv_key(payload, key_row["id"])
-        sticky = _sticky_get(conv) if not want_acc else ""
+        sticky = ""
+        if not want_acc:
+            sticky = _sticky_get(conv)
+            if not sticky:
+                # 首轮请求没有 assistant，粘性存的是「无 assistant」键；第 2 轮
+                # 客户端回传首轮回复后键就变了，精确查必 miss → 多账号池轮询
+                # 换号 → 适配器会话缓存永远跨号 miss（GLM 双健康号实测每轮
+                # 都新建上游会话、全量压平重发）。回退查「无 assistant」变体
+                # 键，粘性跨过 1→2 轮过渡；第 2 轮成功后按回传键重设粘性，
+                # 第 3 轮起精确命中。
+                sticky = _sticky_get(
+                    _conv_key(payload, key_row["id"], ignore_assistant=True)
+                )
         try:
             ac = (
                 registry.pick_by_id(want_acc)
