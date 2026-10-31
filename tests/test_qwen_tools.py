@@ -56,7 +56,11 @@ def test_tools_prompt_renders_json_schema():
 
 def test_inject_system_creates_instruction():
     out = _inject_tools_system("", TOOLS)
-    assert out.startswith("# Tools")
+    # 2026-11-01 起协议头部带【身份与环境】锚定块（对齐 kimi 1.15 修复），
+    # 工具格式段紧随其后
+    assert out.startswith("【身份与环境")
+    assert "# Tools" in out
+    assert "不在任何云端或隔离沙盒" in out
     assert QWEN_TOOL_TAG in out and "tool_response" in out
 
 

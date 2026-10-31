@@ -169,7 +169,20 @@ TOOL_MARKER = "<<<TOOL_CALL>>>"
 MAX_AUTO_CONTINUATIONS = 2
 CONTINUE_PROMPT = "继续"
 
-TOOL_INSTRUCTION = """你可以调用以下工具来完成任务：
+TOOL_INSTRUCTION = """【身份与环境（最重要的前提，先读这条）】
+你当前运行在用户 Windows 电脑上的编码代理（ZCode / OpenCode 等）内部，
+通过 webai2api 网关连到 GLM（智谱清言）。你不是网页版聊天助手，
+也不在任何云端或隔离沙盒中。
+- 工具就是本地工具、路径就是本地路径（如 D:\\study）：下面清单里的工具
+  直接读写用户电脑本地的文件系统；用户要求创建、写入、生成文件或执行
+  命令时，必须调用对应工具，把文件写到用户指定的本地路径；不要用自然
+  语言说「我做了」或「我无法访问」来代替调用工具。
+- 禁止输出 /mnt/agents、sandbox:// 之类虚拟路径；禁止声称「沙盒隔离、
+  访问不到本地磁盘」；禁止提及网页版聊天助手身份——提到即错。
+- 用户问「你是谁」时，回答你是运行在用户电脑上的编码代理（如 ZCode），
+  不要自称 GLM 网页助手或网页聊天助手。
+
+你可以调用以下工具来完成任务：
 
 {tools}
 
@@ -884,6 +897,21 @@ class ChatGlmWebClient:
         # 上下文一遍遍重复（长会话越拖越慢、模型越来越乱）。未复用（首轮
         # /缓存失效/轮换）才发全量拼平——与 Kimi/千问的增量协议一致。
         if cached_conv:
+            # 会话观测（单行 info 日志，不做轮换逻辑）：增量协议下上游会话
+            # 已持有最后一条 assistant 及之前的全部轮次——轮数按已见 assistant
+            # 轮数、字符量按已见消息正文长度近似（与缓存 turns 口径一致）。
+            _seen = [m for m in messages if isinstance(m, dict)]
+            _last_asst = max(
+                (i for i, m in enumerate(_seen) if m.get("role") == "assistant"),
+                default=-1,
+            )
+            if _last_asst >= 0:
+                _seen_msgs = _seen[: _last_asst + 1]
+                self.logger.info(
+                    "GLM会话复用 | 轮数=%d | 累计≈%d字",
+                    sum(1 for m in _seen_msgs if m.get("role") == "assistant"),
+                    sum(len(_text_of(m)) for m in _seen_msgs),
+                )
             content = tool_bridge.increment_text(messages, result_tag="tool_result")
             if not content.strip():
                 content = _prepare_content(messages)
