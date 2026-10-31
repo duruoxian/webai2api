@@ -78,14 +78,39 @@ class DeepSeekAuthManager:
     # ── 每次请求后调用，将 Set-Cookie 合并回 jar ──
     def absorb_response_cookies(self, response) -> None:
         try:
-            set_cookies = response.headers.get_all("Set-Cookie") or []
+            headers = response.headers
+            # http.client 的 HTTPMessage 用 get_all；curl_cffi 的 Headers
+            # 只有 get_list——主路径装了 curl_cffi 时这里此前直接 AttributeError
+            # 被吞掉，WAF 轮换 cookie 一条都收不回（2026-11-01 审计）
+            getter = getattr(headers, "get_all", None) or getattr(
+                headers, "get_list", None
+            )
+            set_cookies = (getter("Set-Cookie") if getter else None) or []
             if set_cookies:
                 self.cookie_jar.update_from_set_cookie(set_cookies)
         except Exception as exc:
             self.logger.debug("吸收 Set-Cookie 失败: %s", exc)
 
     # ── HIF 获取：正确解析 value 并吸收 Set-Cookie ──
-    def _fetch_hif_tokens(self) -> None:
+    def _open_hif_url(self, url: str, timeout: int = 10):
+        """HIF 请求按账号 egress 发出：裸 urlopen 会从本机直连 IP 发请求，
+        与走代理的 chat 请求制造「登录 IP 与请求 IP 分裂」——egress.py 注释
+        明确说平台校验一致性；egress=direct 时语义也被破坏（2026-11-01 审计）。
+        与 file_uploader 2026-10-30 的修复同族。"""
+        from urllib.parse import urlsplit
+
+        from ....egress import egress_opener
+
+        egress = str(getattr(self.config, "egress", "system") or "system")
+        proxy_url = str(getattr(self.config, "proxy", "") or "")
+        host = urlsplit(url).hostname or ""
+        req = urllib.request.Request(
+            url, method="GET", headers=self.get_auth_headers()
+        )
+        opener = egress_opener(egress, proxy_url, host)
+        return opener.open(req, timeout=timeout)
+
+    def _fetch_hif_tokens(self) -> HIFTokens:
         self.logger.info("正在获取 HIF tokens...")
 
         leim_value = ""
@@ -93,12 +118,7 @@ class DeepSeekAuthManager:
 
         # x-hif-leim
         try:
-            req = urllib.request.Request(
-                self.config.hif_leim_url,
-                method="GET",
-                headers=self.get_auth_headers(),   # 带上完整认证头（含动态 Cookie）
-            )
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with self._open_hif_url(self.config.hif_leim_url) as response:
                 self.absorb_response_cookies(response)
                 raw = response.read().decode("utf-8", errors="replace")
                 payload = json.loads(raw)
@@ -112,12 +132,7 @@ class DeepSeekAuthManager:
 
         # x-hif-dliq
         try:
-            req = urllib.request.Request(
-                self.config.hif_dliq_url,
-                method="GET",
-                headers=self.get_auth_headers(),
-            )
-            with urllib.request.urlopen(req, timeout=10) as response:
+            with self._open_hif_url(self.config.hif_dliq_url) as response:
                 self.absorb_response_cookies(response)
                 raw = response.read().decode("utf-8", errors="replace")
                 payload = json.loads(raw)
@@ -129,12 +144,17 @@ class DeepSeekAuthManager:
             self.logger.warning("获取 x-hif-dliq 失败: %s", exc)
             dliq_value = ""
 
-        self._hif_tokens = HIFTokens(
-            leim=leim_value,
-            dliq=dliq_value,
-            fetched_at=time.time(),
+        tokens = HIFTokens(leim=leim_value, dliq=dliq_value, fetched_at=time.time())
+        # 完整结果才进缓存。部分失败（只取到一个）此前被缓存 600s，期间所有
+        # 请求带空 HIF 头；且失败线程的赋值会覆盖另一线程刚取到的有效值
+        # （快路径竞态，2026-11-01 审计）。部分/全空：只返回给本次请求用，
+        # 缓存保持原状（空/过期 → 下次调用立即重试）。
+        if leim_value and dliq_value:
+            self._hif_tokens = tokens
+        self.logger.info(
+            "HIF tokens 获取完成 (leim=%s dliq=%s)", bool(leim_value), bool(dliq_value)
         )
-        self.logger.info("HIF tokens 获取完成")
+        return tokens
 
     def get_hif_tokens(self) -> HIFTokens:
         # 快路径无锁读；两次网络调用（各 10s 超时）不持锁——此前持 RLock
@@ -147,14 +167,10 @@ class DeepSeekAuthManager:
             cached = self._hif_tokens
             if cached and not cached.is_expired:
                 return cached
-        self._fetch_hif_tokens()
-        fetched = self._hif_tokens
-        if fetched is not None and not (fetched.leim or fetched.dliq):
-            # 两个 token 都取空：不缓存（此前空结果也缓存 600s，期间
-            # 持续失败），下次调用立即重试
-            self._hif_tokens = None
-            return HIFTokens(leim="", dliq="", fetched_at=0.0)
-        return fetched or HIFTokens(leim="", dliq="", fetched_at=0.0)
+        tokens = self._fetch_hif_tokens()
+        if tokens.leim or tokens.dliq:
+            return tokens
+        return HIFTokens(leim="", dliq="", fetched_at=0.0)
 
     def build_full_headers(
         self,

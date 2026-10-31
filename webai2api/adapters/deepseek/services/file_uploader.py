@@ -236,6 +236,11 @@ class FileUploader:
                 content = urllib.parse.unquote_to_bytes(data)
             ext = mimetypes.guess_extension(mime) or ".png"
             name = name_hint or f"image_{uuid.uuid4().hex[:8]}{ext}"
+            if name_hint:
+                # name_hint 的扩展名按真实 MIME 纠正：JPEG/WebP 内容配 .png
+                # 可能诱发上游 file_parse_error（2026-11-01 审计）
+                base = re.sub(r"\.[A-Za-z0-9]+$", "", name_hint) or name_hint
+                name = f"{base}{ext}"
             return content, mime, name
 
         # HTTP / HTTPS
@@ -251,6 +256,9 @@ class FileUploader:
                 )
             ext = mimetypes.guess_extension(mime) or ".png"
             name = name_hint or f"image_{uuid.uuid4().hex[:8]}{ext}"
+            if name_hint:
+                base = re.sub(r"\.[A-Za-z0-9]+$", "", name_hint) or name_hint
+                name = f"{base}{ext}"
             return content, mime, name
 
         raise ValueError(f"不支持的 image_url: {image_url[:80]}")

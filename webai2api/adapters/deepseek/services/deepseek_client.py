@@ -497,8 +497,10 @@ class DeepSeekWebClient:
         self._http_host = None
         self._http_proxy = ""
         # 共享连接占用标记：两条线程同时读写一条 keep-alive 连接会协议损坏；
-        # 被占用时 _get_http_conn 返回独立连接（2026-10-30 审计 DS-P3）
+        # 被占用时 _get_http_conn 返回独立连接（2026-10-30 审计 DS-P3）。
+        # 「检查+置位」由 _conn_lock 保证原子（2026-11-01 审计）
         self._conn_busy = False
+        self._conn_lock = threading.Lock()
         # 浏览器指纹传输会话（curl_cffi，惰性创建；不可用时为 None）
         self._browser = None
         # 风险指标计数器（进程内，面板展示）
@@ -525,6 +527,9 @@ class DeepSeekWebClient:
 
         self._proxy_sessions: set[str] = set()
         self._proxy_sessions_lock = threading.Lock()
+        # session_id → 创建时刻：cleanup 的宽限依据（刚建好还没入会话缓存的
+        # 会话不算 stale，2026-11-01 审计）
+        self._proxy_created: dict[str, float] = {}
         # 从持久化缓存恢复的 session 也要纳入追踪，否则重启后这些上游会话
         # 永远不会被 cleanup_stale_sessions 回收（内存集合重启即空）。
         try:
@@ -581,41 +586,49 @@ class DeepSeekWebClient:
     def _get_http_conn(self, host: str, timeout: int):
         """返回 (conn, shared)。shared=True 表示租用共享长连接（用完调
         _release_conn 归还）；共享连接已被占用时新建独立连接——两条线程
-        同时读写一条 keep-alive 连接会协议损坏（2026-10-30 审计 DS-P3）。"""
-        conn = self._http_conn
+        同时读写一条 keep-alive 连接会协议损坏（2026-10-30 审计 DS-P3）。
+        「检查+置位」在 _conn_lock 内原子完成：无锁的 check-then-set 在
+        session-cleaner/面板清理与 chat 并发时会让两条线程租到同一条
+        连接（2026-11-01 审计）。timeout 此前是死参（_build_http_conn
+        硬编码 30s），现真正透传。"""
         egress = str(getattr(self.config, "egress", "system") or "system")
         proxy_url = str(getattr(self.config, "proxy", "") or "")
-        if (
-            conn is not None
-            and not self._conn_busy
-            and self._http_host == host
-            and self._http_proxy == f"{egress}|{proxy_url}"
-        ):
-            self._conn_busy = True
-            return conn, True
-        owned = self._build_http_conn(host, egress, proxy_url)
-        if conn is None or self._http_host != host or self._http_proxy != f"{egress}|{proxy_url}":
-            # 共享槽位为空或出口参数变了：新连接进槽
-            self._drop_http_conn()
-            self._http_conn = owned
-            self._http_host = host
-            self._http_proxy = f"{egress}|{proxy_url}"
-            self._conn_busy = True
-            return owned, True
-        # 槽位连接被占用：本次用独立连接（用完由调用方关闭）
-        return owned, False
+        proxy_sig = f"{egress}|{proxy_url}"
+        with self._conn_lock:
+            conn = self._http_conn
+            if (
+                conn is not None
+                and not self._conn_busy
+                and self._http_host == host
+                and self._http_proxy == proxy_sig
+            ):
+                self._conn_busy = True
+                return conn, True
+            owned = self._build_http_conn(host, egress, proxy_url, timeout)
+            if conn is None or self._http_host != host or self._http_proxy != proxy_sig:
+                # 共享槽位为空或出口参数变了：新连接进槽（已在锁内，
+                # 用 _drop_locked 版本避免重入死锁）
+                self._drop_http_conn_locked()
+                self._http_conn = owned
+                self._http_host = host
+                self._http_proxy = proxy_sig
+                self._conn_busy = True
+                return owned, True
+            # 槽位连接被占用：本次用独立连接（用完由调用方关闭）
+            return owned, False
 
     def _release_conn(self, conn, shared: bool) -> None:
         if shared and conn is self._http_conn:
-            self._conn_busy = False
+            with self._conn_lock:
+                self._conn_busy = False
         elif not shared:
             try:
                 conn.close()
             except Exception:
                 pass
 
-    def _build_http_conn(self, host: str, egress: str, proxy_url: str):
-        conn = http.client.HTTPSConnection(host, timeout=30)
+    def _build_http_conn(self, host: str, egress: str, proxy_url: str, timeout: int = 30):
+        conn = http.client.HTTPSConnection(host, timeout=timeout)
         from ....egress import (
             EGRESS_CUSTOM,
             EGRESS_SYSTEM,
@@ -679,6 +692,11 @@ class DeepSeekWebClient:
             return None
 
     def _drop_http_conn(self) -> None:
+        with self._conn_lock:
+            self._drop_http_conn_locked()
+
+    def _drop_http_conn_locked(self) -> None:
+        """调用方需已持 _conn_lock（_get_http_conn 锁内换槽用）。"""
         conn = self._http_conn
         self._http_conn = None
         self._http_host = None
@@ -870,6 +888,27 @@ class DeepSeekWebClient:
             )
             self._bump("cache_stale")
             self.session_cache.delete(conv)
+            cached = None
+
+        # 校验：前缀哈希不符 → 本请求绝不接进存档会话。正规延续轮（含网络
+        # 重试、工具轮）的 p_hash 恒等于存档的 history_hash——不等即「另一个
+        # 对话撞了同一个指纹」（system[:200]+首条 user[:500] 模板化开场白
+        # 现实可撞，msg_count 守卫挡不住同深度碰撞）或客户端改写了历史。
+        # 接进别人的会话会互相缠绕、上下文串台。这里不删存档（原主人还要
+        # 用），本请求走 fresh，存档由正常写入自然交接（2026-11-01 审计）。
+        if (
+            cached
+            and cached.history_hash
+            and cached.msg_count
+            and p_hash != cached.history_hash
+        ):
+            self.logger.warning(
+                "Cache COLLIDE | conv=%s... | prefix hash mismatch (msgs=%d, stored=%d) → fresh",
+                conv[:12],
+                msg_count,
+                cached.msg_count,
+            )
+            self._bump("cache_collide")
             cached = None
 
         # 校验：轮数超上限 → 丢弃缓存条目，走 fresh（交给清理线程删上游会话）
@@ -1074,12 +1113,20 @@ class DeepSeekWebClient:
 
     def cleanup_stale_sessions(self) -> None:
         active = self.session_cache.active_session_ids()
+        now = time.time()
         with self._proxy_sessions_lock:
-            stale = self._proxy_sessions - active
+            stale = {
+                sid
+                for sid in (self._proxy_sessions - active)
+                # 宽限：刚创建还没走完一轮回写的会话不算 stale
+                if now - self._proxy_created.get(sid, 0) > 120
+            }
             if not stale:
                 return
             stale_list = list(stale)
             self._proxy_sessions.difference_update(stale_list)
+            for sid in stale_list:
+                self._proxy_created.pop(sid, None)
 
         for sid in stale_list:
             self._delete_session(sid)
@@ -1091,6 +1138,25 @@ class DeepSeekWebClient:
                 len(self._proxy_sessions),
                 len(active),
             )
+
+    def close(self) -> None:
+        """池重建/退出时释放（base.dispose_client 自动识别 close）。
+
+        此前 deepseek 是四家唯一不 flush 会话缓存的：put 落盘节流 5s，
+        池重建/进程退出丢最多 5s 会话状态（2026-11-01 审计）。
+        """
+        try:
+            self.session_cache.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        self._drop_http_conn()
+        browser = getattr(self, "_browser", None)
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._browser = None
 
     def chat_completion(self, payload: dict[str, object]) -> dict[str, object]:
         resolved = self._resolve_conversation(payload)
@@ -2505,6 +2571,14 @@ class DeepSeekWebClient:
                 resolved["session_id"] = session_id
                 self.logger.info("Session 创建成功: %s", session_id)
                 self._bump("session_created")
+                # 创建即登记：此前登记只在成功后的 _store_after_response，
+                # completion 抛非重试类异常（网络抖动/上游 5xx）时 session
+                # 成孤儿——cleanup_stale_sessions 永远收不回，账号上游堆积
+                # （2026-11-01 审计）。created_at 给 cleanup 120s 宽限，
+                # 防止「刚建好还没入库」的会话被并发清理误删。
+                with self._proxy_sessions_lock:
+                    self._proxy_sessions.add(session_id)
+                    self._proxy_created[session_id] = time.time()
         else:
             self.logger.info("Step 3/4: 复用缓存 session=%s...", session_id[:12])
             cached_state = self.session_cache.get(resolved["cache_key"])
