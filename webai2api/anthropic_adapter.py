@@ -64,7 +64,6 @@ def anthropic_to_openai(body: dict) -> dict:
     max_tokens/temperature/top_p/stream 透传。
     """
     messages: list = []
-    aliases: dict = {}  # 工具 id 重映射记录（供网关/测试排查）
     pending_tool_ids: list = []  # 最近一条 assistant 的 tool_call id 队列
     system = body.get("system")
     sys_text = _text_of(system) if system else ""
@@ -111,12 +110,13 @@ def anthropic_to_openai(body: dict) -> dict:
             tid = str(tr.get("tool_use_id") or "")
             # 上游按 assistant.tool_calls[].id 匹配回填：id 对不上时部分适配层
             # （GLM）认不出工具结果，会原样重发上一次的 tool_call。客户端本就
-            # 应回传同一 id，错位时优先保证上游能配对：与最近一条 assistant
-            # 的 tool_call id 依序对齐。
+            # 应回传同一 id：在 id 在队列里时精确配对（乱序块也不会互换结果，
+            # 2026-11-01 审计 B2）；错位时才退回依序对齐。
             if tid and pending_tool_ids:
-                paired = pending_tool_ids.pop(0)
-                aliases[tid] = paired
-                tid = paired
+                if tid in pending_tool_ids:
+                    pending_tool_ids.remove(tid)
+                else:
+                    tid = pending_tool_ids.pop(0)
             messages.append(
                 {
                     "role": "tool",
@@ -124,6 +124,19 @@ def anthropic_to_openai(body: dict) -> dict:
                     "content": tool_text,
                 }
             )
+        # 非文本/工具块（image/document 等）：本网关上游不支持多模态上行，
+        # 但绝不能让「纯图片消息」整条蒸发——blocks 非空时三条转换分支都
+        # 不命中，该轮对话直接消失，客户端与模型对不上账（2026-11-01 审计
+        # A2）。降级为占位文本保住轮次结构。
+        placeholders = []
+        for b in blocks:
+            bt = b.get("type")
+            if bt == "image":
+                placeholders.append("[图片]")
+            elif bt == "document":
+                placeholders.append("[文档]")
+        if placeholders:
+            text = (text + "\n" if text else "") + " ".join(placeholders)
         if text:
             messages.append({"role": "user", "content": text})
         if not blocks:
@@ -157,13 +170,22 @@ def anthropic_to_openai(body: dict) -> dict:
         ]
 
     tc = body.get("tool_choice")
-    if tc == "any":
+    # Anthropic 官方形态是对象 {"type":"auto"|"any"|"tool"}（2026-11-01
+    # 审计 B6：此前只认字符串，{"type":"any"} 三分支全不命中，「必须调用
+    # 工具」静默降级为 auto）。字符串分支保留作宽容兜底。
+    if isinstance(tc, dict):
+        ttype = tc.get("type")
+        if ttype == "any":
+            out["tool_choice"] = "required"
+        elif ttype == "tool":
+            out["tool_choice"] = {
+                "type": "function",
+                "function": {"name": tc.get("name") or ""},
+            }
+        elif ttype in ("auto", "none"):
+            out["tool_choice"] = ttype
+    elif tc == "any":
         out["tool_choice"] = "required"
-    elif isinstance(tc, dict) and tc.get("type") == "tool":
-        out["tool_choice"] = {
-            "type": "function",
-            "function": {"name": tc.get("name") or ""},
-        }
     elif tc in ("auto", "none"):
         out["tool_choice"] = tc
     return out
@@ -270,8 +292,13 @@ class AnthropicStreamTranslator:
         self._text_parts: list[str] = []
         # 当前 tool_use 块的调用 id（OpenAI 流式把 id 放在 tool_call 对象上；
         # id 变化 = 新调用，必须切新 content_block，否则第 2 个起全部并进
-        # 第 1 块（2026-10-30 审计 GW-1）
-        self._tool_id = "" 
+        # 第 1 块（2026-10-30 审计 GW-1）。GW-1 首修只改了 feed 的触发条件，
+        # _switch 的同类短路未处理，并行第二条仍整体丢失（2026-11-01 审计
+        # A1 运行时复现）——_switch 现感知 tool→tool 换 id）
+        self._tool_id = ""
+        # 最近一次见到的 (id, name)，args 被其它块打断后重开时用
+        # （否则重开的 tool_use 块无名，客户端按 name 查工具必败）
+        self._last_tool_meta: dict = {}
         self._errored = False
 
     # ── 内部：确保 message_start 已发 ──
@@ -301,7 +328,15 @@ class AnthropicStreamTranslator:
     def _switch(self, want: str, tool_meta: dict | None = None) -> list[str]:
         out: list[str] = []
         if self._type == want:
-            return out
+            # 例外：tool_use → tool_use 且 id 变化（并行调用）——必须闭合
+            # 旧块开新块；其余同类切换是 no-op（2026-11-01 审计 A1）
+            if not (
+                want == "tool_use"
+                and (tool_meta or {}).get("id")
+                and self._tool_id
+                and tool_meta["id"] != self._tool_id
+            ):
+                return out
         if self._type is not None:
             if self._type == "thinking":
                 # thinking 块闭合前必须发 signature_delta（Claude 系客户端依赖）
@@ -339,6 +374,8 @@ class AnthropicStreamTranslator:
             )
         )
         self._type = want
+        if want == "tool_use":
+            self._tool_id = block["id"]
         return out
 
     def _delta(self, delta: dict) -> str:
@@ -381,6 +418,17 @@ class AnthropicStreamTranslator:
             fn = tc.get("function") or {}
             tid = str(tc.get("id") or fn.get("id") or "")
             name = str(fn.get("name") or "")
+            if tid:
+                prev = self._last_tool_meta
+                if prev.get("id") == tid:
+                    # 同一调用的后续分片常不带 name：合并保留，别抹掉
+                    self._last_tool_meta = {
+                        "id": tid, "name": name or prev.get("name") or ""
+                    }
+                else:
+                    self._last_tool_meta = {"id": tid, "name": name}
+            elif name:
+                self._last_tool_meta = {"id": "", "name": name}
             if tid and tid != self._tool_id:
                 events += self._switch("tool_use", {"id": tid, "name": name})
                 self._tool_id = tid
@@ -390,7 +438,10 @@ class AnthropicStreamTranslator:
             args = fn.get("arguments")
             if args:
                 if self._type != "tool_use":
-                    events += self._switch("tool_use", {})
+                    # args 被其它块（思考/正文穿插）打断后恢复：用记住的
+                    # meta 重开，否则重开的块无名无 id，客户端无法配对
+                    # （2026-11-01 审计 D8）
+                    events += self._switch("tool_use", dict(self._last_tool_meta))
                 events.append(
                     self._delta({"type": "input_json_delta", "partial_json": args})
                 )

@@ -168,7 +168,11 @@ def create_admin_router(
         return {
             "ok": True,
             "token": toks.issue(),
-            "default_password": hmac.compare_digest(expect, "admin"),
+            # 必须 encode：str 对 str 的 compare_digest 遇非 ASCII 密码
+            # 抛 TypeError → 正确密码也 500，面板永久锁死（2026-11-01 审计）
+            "default_password": hmac.compare_digest(
+                str(expect).encode("utf-8"), b"admin"
+            ),
         }
 
     @router.post("/logout")
@@ -321,7 +325,14 @@ def create_admin_router(
             )
             return {"ok": True, "status": status, "profile": profile}
         except Exception as exc:  # noqa: BLE001
-            await run_in_threadpool(store.set_account_health, account_id, "expired")
+            from .gateway import _classify_error
+
+            # 手动检测的失败≠凭证过期：网络层失败（DNS/代理/超时/TLS）此前
+            # 一律标 expired，两级选号会把好号集体打成兜底号（2026-11-01
+            # 审计）。与网关运行时同口径：只有 auth 类才动 health，其余
+            # 保持原状（账号照常参与轮询，等下次检查/真实请求再验证）。
+            if _classify_error(exc) == "auth":
+                await run_in_threadpool(store.set_account_health, account_id, "expired")
             return {"ok": False, "error": str(exc)[:300]}
 
     @router.post("/accounts/check-all")
@@ -341,6 +352,15 @@ def create_admin_router(
         if g:
             return g
         acc_del = await run_in_threadpool(store.get_account, account_id)
+        # qwen 账号删除前停掉它的隐藏中继：否则孤儿 WebView2 常驻、relay
+        # worker 继续对已删 id 空转（2026-11-01 审计）
+        if acc_del and acc_del.get("provider") == "qwen":
+            try:
+                from .qwen_relay import stop_relay
+
+                await run_in_threadpool(stop_relay, account_id)
+            except Exception:  # noqa: BLE001
+                pass
         await run_in_threadpool(store.delete_account, account_id)
         await run_in_threadpool(
             registry.refresh, acc_del.get("provider") if acc_del else None

@@ -104,11 +104,38 @@ def main() -> None:
     log_handler = _open_log(log_dir)
     log_path = log_handler.baseFilename
     log_dir = os.path.dirname(log_path)
-    log_sink = open(log_path, "a", encoding="utf-8", buffering=1)
+
+    class _LogSink:
+        """windowed exe 的 stdout/stderr 兜底：把 print 写进**轮转 handler**
+        的当前流，而不是再开一个常驻句柄——两个句柄同时持有日志文件时
+        Windows 不允许重命名，doRollover 永远 PermissionError，maxBytes
+        形同虚设、日志无限增长（2026-11-01 审计）。走 handler 流则轮转后
+        自动跟进新文件。"""
+
+        def __init__(self, handler):
+            self._h = handler
+
+        def write(self, s):
+            if not s:
+                return
+            try:
+                st = self._h.stream
+                if st is not None and not st.closed:
+                    st.write(s if s.endswith("\n") else s + "\n")
+                    self._h.flush()
+            except Exception:
+                pass
+
+        def flush(self):
+            try:
+                self._h.flush()
+            except Exception:
+                pass
+
     if sys.stdout is None:
-        sys.stdout = log_sink
+        sys.stdout = _LogSink(log_handler)
     if sys.stderr is None:
-        sys.stderr = log_sink
+        sys.stderr = _LogSink(log_handler)
 
     root = logging.getLogger()
     root.setLevel(logging.INFO)
