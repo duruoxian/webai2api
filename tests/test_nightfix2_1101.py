@@ -42,6 +42,14 @@ TOOLS = [
 # ── D-4：工具名归一匹配 ──────────────────────────────────────────
 
 
+def test_resolve_tool_name_deterministic_on_variant_pairs():
+    allowed = {"foo-bar", "foo_bar"}
+    results = {tool_bridge.resolve_tool_name("FooBar", allowed) for _ in range(50)}
+    assert len(results) == 1, f"变体一对多必须确定性地选同一个: {results}"
+    assert tool_bridge.resolve_tool_name("bash", {"Bash", "bash"}) == "bash"
+    assert tool_bridge.resolve_tool_name("Bash", {"Bash", "bash"}) == "Bash"
+
+
 def test_resolve_tool_name_variants():
     allowed = {"bash", "read_file"}
     assert tool_bridge.resolve_tool_name("bash", allowed) == "bash"
@@ -91,7 +99,7 @@ def _json_frame(obj: dict) -> bytes:
 
 
 class _KimiHandler(BaseHTTPRequestHandler):
-    rounds: list = []  # [(bytes, has_end, cut_mid: bool)]
+    rounds: list = []  # [(bytes, has_end, cut_mid: bool) | (bytes, has_end, cut_mid, rst)]
     call_no = 0
 
     def log_message(self, *a):
@@ -101,7 +109,9 @@ class _KimiHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         self.rfile.read(length)
         idx = min(type(self).call_no, len(type(self).rounds) - 1)
-        body, has_end, cut_mid = type(self).rounds[idx]
+        round_spec = type(self).rounds[idx]
+        body, has_end, cut_mid = round_spec[0], round_spec[1], round_spec[2]
+        rst = round_spec[3] if len(round_spec) > 3 else False
         type(self).call_no += 1
         self.send_response(200)
         self.send_header("Content-Type", "application/connect+json")
@@ -110,6 +120,17 @@ class _KimiHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         if has_end:
             self.wfile.write(_frame(0x02, b"{}"))
+        elif rst:
+            # SO_LINGER(1,0)：close 时直接发 RST 而不是 FIN——客户端读流
+            # 抛 ConnectionResetError（真·读流异常型断流）
+            import struct as _struct
+            self.wfile.flush()
+            self.connection.setsockopt(
+                __import__("socket").SOL_SOCKET,
+                __import__("socket").SO_LINGER,
+                _struct.pack("ii", 1, 0),
+            )
+            self.close_connection = True
         elif cut_mid:
             # 故意不发完 Content-Length 声称的字节就关连接：
             # http.client 会抛 IncompleteRead（读流异常型断流）
@@ -221,6 +242,20 @@ def test_kimi_read_error_degrades_to_continuation(kimi_server):
     assert "续写接上了" in content
     assert out["choices"][0]["finish_reason"] == "stop"
     assert _KimiHandler.call_no == 2, "续写请求必须发出"
+
+
+def test_kimi_zero_frame_death_empty_with_length(kimi_server):
+    """建连成功但零帧就死（实测 RST 在 http.client read(amt) 也表现为干净
+    EOF）：走空响应弃会话重试（真实上游换新会话可救），终态空消息必须带
+    finish=length（绝不谎报 stop），且确实发起了重试（2 次上游请求）。"""
+    _KimiHandler.rounds = [(b"", False, False, True)]
+    out = _client(kimi_server).chat_completion({
+        "model": "kimi-k2.6",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert out["choices"][0]["message"]["content"] == ""
+    assert out["choices"][0]["finish_reason"] == "length"
+    assert _KimiHandler.call_no == 2, "空响应必须触发弃会话重试"
 
 
 # ── K-5：GLM 主轮读流异常降级 ────────────────────────────────────

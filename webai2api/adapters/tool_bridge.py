@@ -217,10 +217,13 @@ def resolve_tool_name(name: str, allowed: set) -> str:
     n = _norm_tool_name(name)
     if not n:
         return ""
-    for k in allowed:
-        if _norm_tool_name(k) == n:
-            return k
-    return ""
+    cands = sorted(k for k in allowed if _norm_tool_name(k) == n)
+    if not cands:
+        return ""
+    # 归一形一对多（声明清单同时有 foo-bar/foo_bar 这类变体对）时取
+    # 确定性结果：优先与输入逐字相同者，其次最短、再字典序——否则结果
+    # 随 PYTHONHASHSEED 在进程间漂移（2026-11-01 复审）
+    return min(cands, key=lambda k: (k != name, len(k), k))
 
 
 def tool_name_by_id(messages: list) -> dict:

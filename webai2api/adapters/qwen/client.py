@@ -1169,7 +1169,9 @@ class QwenWebClient:
                 if tools and not calls
                 else text
             )
-            if calls or visible.strip() or reasoning.strip() or not finish_seen:
+            # not finish_seen 只保护「已见部分输出」的截断；完全零输出
+            # （含首帧未到就断）弃会话重试（2026-11-01 复审）
+            if calls or visible.strip() or reasoning.strip():
                 break
             if attempt == 0:
                 self.logger.warning(
@@ -1390,12 +1392,10 @@ class QwenWebClient:
                 if tools
                 else []
             )
-            if (
-                calls
-                or visible_all.strip()
-                or sent_reasoning.strip()
-                or not finish_seen
-            ):
+            if calls or visible_all.strip() or sent_reasoning.strip():
+                # not finish_seen 只保护「已见部分输出」的截断（按 length
+                # 交付）；完全零输出（含首帧未到就断）弃会话重试
+                # （2026-11-01 复审）
                 break
             if attempt == 0:
                 self.logger.warning(

@@ -618,10 +618,13 @@ class DeepSeekWebClient:
             return owned, False
 
     def _release_conn(self, conn, shared: bool) -> None:
-        if shared and conn is self._http_conn:
+        if shared:
+            # 身份判断必须在锁内：锁外判断通过后、拿锁前若发生换槽/删除，
+            # 会把新租约的 _conn_busy 清掉（释放侧竞态，2026-11-01 复审）
             with self._conn_lock:
-                self._conn_busy = False
-        elif not shared:
+                if conn is self._http_conn:
+                    self._conn_busy = False
+        else:
             try:
                 conn.close()
             except Exception:
@@ -2416,28 +2419,13 @@ class DeepSeekWebClient:
     # Anti rate-limit
     # ═══════════════════════════════════════════════════════
 
-    def _anti_rate_limit_pause(self, context: str = "") -> None:
+    def _min_interval_wait(self, context: str = "") -> None:
+        """同账号两次上游请求之间的硬性最小间隔（防突发）。
+
+        锁内只做时间戳预约，sleep 放在锁外，避免串行化其它请求。
+        每次真实上游命中（含 _open_chat_stream 的续写/nudge/重试子轮——
+        这些子轮不经过 acquire 停顿点）都会预约下一个时刻。
         """
-        防风控：在每次真正打到上游的聊天请求前随机延迟。
-
-        触发点：_open_chat_stream() 的入口。这样天然覆盖：
-          - 非流式 / 流式
-          - 缓存命中 (mode=cached) / 全量重放 (mode=fresh)
-          - rate limit 重试、context length 重试
-          - 工具链的每一轮（工具调用走的是同一条 chat 通道）
-        """
-        # getattr 防御式读取：桩测试的精简 config 没有这些字段时按「禁用」
-        # 处理（真实 AppConfig 是 dataclass，字段恒在）
-        if not getattr(self.config, "anti_rate_limit_enabled", False):
-            return
-
-        min_d = max(0.0, float(getattr(self.config, "anti_rate_limit_min_delay", 0) or 0))
-        max_d = float(getattr(self.config, "anti_rate_limit_max_delay", 0) or 0)
-        if max_d <= 0:
-            return
-
-        # 同账号两次上游请求之间的硬性最小间隔（防突发）
-        # 锁内只做时间戳预约，sleep 放在锁外，避免串行化其它请求。
         min_interval = float(getattr(self.config, "min_request_interval", 0.0) or 0.0)
         if min_interval > 0:
             with self._last_upstream_lock:
@@ -2452,6 +2440,26 @@ class DeepSeekWebClient:
                     f" ({context})" if context else "",
                 )
                 time.sleep(wait)
+
+    def _anti_rate_limit_pause(self, context: str = "") -> None:
+        """
+        防风控随机延迟：在 request_queue.acquire 之前调用（不占并发槽位
+        睡觉——20~60s 长停顿若在持槽后执行，max_concurrency=1 时会连锁
+        QueueTimeout，2026-11-01 审计/复审）。每次上游尝试（首请求+限流
+        重试）各停顿一次；续写/nudge 子轮由 _open_chat_stream 入口的
+        _min_interval_wait 兜底硬性间隔。
+        """
+        # getattr 防御式读取：桩测试的精简 config 没有这些字段时按「禁用」
+        # 处理（真实 AppConfig 是 dataclass，字段恒在）
+        if not getattr(self.config, "anti_rate_limit_enabled", False):
+            return
+
+        min_d = max(0.0, float(getattr(self.config, "anti_rate_limit_min_delay", 0) or 0))
+        max_d = float(getattr(self.config, "anti_rate_limit_max_delay", 0) or 0)
+        if max_d <= 0:
+            return
+
+        self._min_interval_wait(context)
 
         # 长尾分布：绝大多数请求短延迟，少量请求出现 20~60s 的长停顿
         chance = float(getattr(self.config, "long_pause_chance", 0.02) or 0.0)
@@ -2542,7 +2550,10 @@ class DeepSeekWebClient:
         }
 
     def _open_chat_stream(self, resolved: dict):
-        # 防风控停顿已上移到 request_queue.acquire 之前（不占并发槽位睡觉）
+        # 子轮（断流续写/nudge/空响应重试）不经过 acquire 停顿点：这里兜底
+        # 硬性最小间隔，杜绝主请求→子轮背靠背连打上游（2026-11-01 复审）。
+        # 长尾随机停顿仍只在 acquire 前（不占槽睡觉）。
+        self._min_interval_wait(context=f"mode={resolved.get('mode', '')}")
         self._bump("upstream")
         ds_payload = resolved["ds_payload"]
         mode = resolved["mode"]
@@ -3087,6 +3098,7 @@ class DeepSeekWebClient:
                 with self._proxy_sessions_lock:
                     for sid in batch:
                         self._proxy_sessions.discard(sid)
+                        self._proxy_created.pop(sid, None)
             except Exception as exc:  # noqa: BLE001
                 result["failed"] += len(batch)
                 self.logger.warning(
@@ -3133,6 +3145,7 @@ class DeepSeekWebClient:
 
             with self._proxy_sessions_lock:
                 self._proxy_sessions.discard(session_id)
+                self._proxy_created.pop(session_id, None)
 
             self.logger.info("已删除 DeepSeek 会话 session_id=%s", session_id)
             self._bump("session_deleted")

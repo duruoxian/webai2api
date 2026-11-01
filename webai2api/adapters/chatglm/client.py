@@ -1025,8 +1025,9 @@ class ChatGlmWebClient:
 
         def _drain(resp) -> bool:
             """消费一个上游 SSE 流直到 finish/断流，返回是否见到 finish 帧。"""
-            nonlocal conv_id
+            nonlocal conv_id, saw_any_event
             for event in self._iter_events(resp):
+                saw_any_event = True
                 if not isinstance(event, dict):
                     continue
                 if event.get("conversation_id"):
@@ -1046,6 +1047,7 @@ class ChatGlmWebClient:
                 }
             return False
 
+        saw_any_event = False
         try:
             try:
                 try:
@@ -1056,6 +1058,10 @@ class ChatGlmWebClient:
                     # 上游中途 RST/超时/截断：当作断流交给自动续写，而不是
                     # 把已输出的流变报错（对齐 deepseek/kimi 的降级语义；
                     # 2026-11-01 审计 K-5）。连接建立阶段异常不在此列。
+                    # 首帧未到就断是网络错误（换号可救），照旧上抛——吞掉
+                    # 会变成空消息+finish=length（2026-11-01 复审）。
+                    if not saw_any_event:
+                        raise
                     self.logger.warning("上游读流中断（当作断流，尝试自动续写）: %s", exc)
             finally:
                 try:

@@ -918,8 +918,10 @@ class KimiWebClient:
             # 正常结束的两种形态：done 事件，或 0x02 结束帧（可能不带 done）。
             # 两者都没出现才算断流——否则正常回答会被误续写。
             finished = False
+            saw_any_frame = False
             try:
                 for flag, raw in _iter_connect_frames(resp):
+                    saw_any_frame = True
                     if flag == 0x02:
                         finished = True
                         err = _connect_error(raw)
@@ -956,6 +958,11 @@ class KimiWebClient:
                 # 已输出的流变报错（对齐 deepseek 的降级语义；2026-11-01
                 # 审计 K-5）。连接建立阶段异常不在此列（_open_chat 照旧
                 # 上抛走换号）；state.error 的上游明确报错也照旧上抛。
+                # 首帧未到就断（WAF 挑战后 RST/代理瞬断）是网络错误不是
+                # 断流——吞掉会变成空消息+finish=length，还绕过空响应重试
+                # 与网关换号（2026-11-01 复审），照旧上抛。
+                if not saw_any_frame:
+                    raise
                 self.logger.warning("上游读流中断（当作断流，尝试自动续写）: %s", exc)
             finally:
                 try:
@@ -1229,7 +1236,10 @@ class KimiWebClient:
             calls = _parse_tool_calls(text, tools) if tools else []
             # 客户端可见输出 = 剥掉工具标记后的正文（思考算有输出）
             visible = _strip_tool_block(text) if tools and not calls else text
-            if calls or visible.strip() or reasoning.strip() or not finish_seen:
+            # not finish_seen 只保护「已见部分输出」的截断（按 length 交付，
+            # 不重试）；完全零输出（含首帧未到就断的流）无论结束与否都
+            # 值得弃会话重试（2026-11-01 复审）
+            if calls or visible.strip() or reasoning.strip():
                 break
             if attempt == 0:
                 self.logger.warning(
@@ -1449,12 +1459,10 @@ class KimiWebClient:
                 if tools
                 else []
             )
-            if (
-                calls
-                or visible_all.strip()
-                or sent_reasoning.strip()
-                or not finish_seen
-            ):
+            if calls or visible_all.strip() or sent_reasoning.strip():
+                # not finish_seen 只保护「已见部分输出」的截断（按 length
+                # 交付）；完全零输出（含首帧未到就断）弃会话重试
+                # （2026-11-01 复审）
                 break
             if attempt == 0:
                 self.logger.warning(
