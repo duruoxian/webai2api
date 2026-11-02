@@ -134,7 +134,7 @@ def _make_app(tmp_path: Path, picks: list):
 
     registry.pick = _pick  # type: ignore[assignment]
     registry.pick_by_id = _pick  # type: ignore[assignment]
-    client = TestClient(app, client=("127.0.0.1", 50000))
+    client = TestClient(app, base_url="http://127.0.0.1:8800", client=("127.0.0.1", 50000))
     r = client.post("/admin/api/login", json={"password": "admin"})
     tok = r.json()["token"]
     r = client.post(

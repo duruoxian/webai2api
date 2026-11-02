@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import os
 import queue
@@ -53,6 +54,17 @@ def read_state(acc_id: str) -> dict:
         return json.loads(state_path(acc_id).read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def relay_token(acc_id: str) -> str:
+    """读指定账号中继的鉴权 token（未启动/旧状态文件返回空串）。
+
+    中继虽只绑 127.0.0.1，但本机任意进程都能连：/chat 可烧账号额度、
+    /delete 能删云端会话、/shutdown 能杀中继——因此 /delete /chat
+    /shutdown 都要求 X-Relay-Token（token 写进 relay_state，只有合法
+    读状态文件的调用方拿得到）。/health 保持开放（不泄敏感信息）。
+    """
+    return str(read_state(acc_id).get("token") or "")
 
 
 def write_state(acc_id: str, data: dict) -> None:
@@ -520,6 +532,26 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _authorized(self) -> bool:
+        want = str(getattr(self.server, "relay_token", "") or "")
+        if not want:
+            # 旧版中继进程/测试桩没有 token：放行保持兼容
+            return True
+        got = self.headers.get("x-relay-token") or ""
+        return hmac.compare_digest(str(got), want)
+
+    def _read_body(self, limit: int = 2_000_000):
+        """读 JSON 请求体，带体积上限（防本机进程无限制打爆内存）。"""
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > limit:
+            self._send_json({"error": "payload too large"}, 413)
+            return None
+        try:
+            return json.loads(self.rfile.read(length) or b"{}")
+        except Exception as exc:
+            self._send_json({"error": f"bad json: {exc}"}, 400)
+            return None
+
     def _send_json(self, obj: dict, status: int = 200) -> None:
         raw = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -538,16 +570,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
     def do_POST(self):
+        if not self._authorized():
+            self._send_json({"error": "unauthorized"}, 403)
+            return
         if self.path.startswith("/shutdown"):
             self._send_json({"ok": True})
             self.runtime.stop.set()
             return
         if self.path.startswith("/delete"):
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-                req = json.loads(self.rfile.read(length) or b"{}")
-            except Exception as exc:
-                self._send_json({"error": f"bad json: {exc}"}, 400)
+            req = self._read_body()
+            if req is None:
                 return
             chat_id = str(req.get("chat_id") or "").strip()
             if not chat_id:
@@ -588,11 +620,8 @@ class _Handler(BaseHTTPRequestHandler):
         if not self.path.startswith("/chat"):
             self._send_json({"error": "not found"}, 404)
             return
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-            req = json.loads(self.rfile.read(length) or b"{}")
-        except Exception as exc:
-            self._send_json({"error": f"bad json: {exc}"}, 400)
+        req = self._read_body()
+        if req is None:
             return
         req_id = uuid.uuid4().hex
         q: queue.Queue = queue.Queue(maxsize=2000)
@@ -673,6 +702,8 @@ def _run_webview(acc_id: str, quiet: bool = False) -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     server.daemon_threads = True
     _Handler.runtime = runtime
+    token = uuid.uuid4().hex + uuid.uuid4().hex
+    server.relay_token = token
     port = server.server_port
     threading.Thread(target=server.serve_forever, daemon=True).start()
     write_state(acc_id, {
@@ -680,6 +711,7 @@ def _run_webview(acc_id: str, quiet: bool = False) -> None:
         "port": port,
         "provider": "qwen",
         "started_at": time.time(),
+        "token": token,
     })
 
     def _wait_ready(timeout: float) -> bool:
@@ -799,7 +831,10 @@ def stop_relay(acc_id: str, timeout: float = 5.0) -> None:
             import urllib.request
             urllib.request.urlopen(
                 urllib.request.Request(
-                    f"http://127.0.0.1:{port}/shutdown", data=b"{}", method="POST"),
+                    f"http://127.0.0.1:{port}/shutdown",
+                    data=b"{}",
+                    method="POST",
+                    headers={"X-Relay-Token": str(st.get("token") or "")}),
                 timeout=2)
         except Exception:
             pass

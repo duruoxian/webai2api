@@ -66,7 +66,8 @@ def _mask_key(value: str) -> str:
     if not value:
         return "(empty)"
     if len(value) <= 12:
-        return f"{value!r} (len={len(value)})"
+        # 短值同样不能原样进日志（截断/异常 key 会全量暴露）
+        return f"(len={len(value)})"
     return f"{value[:8]}...{value[-4:]} (len={len(value)})"
 
 
@@ -618,9 +619,9 @@ def create_gateway_router(
         try:
             await run_in_threadpool(store.touch_key, key_row["id"])
         except Exception as exc:  # noqa: BLE001
-            _quota_release(key_row["id"], reserve)
-            logger.error("touch_key 失败: %s", exc)
-            return _error(500, "内部错误：状态更新失败", "internal_error")
+            # 记账性操作失败不该挡对话（此前直接 500，SQLite busy 时用户
+            # 侧偶发「状态更新失败」）：记日志继续走请求（2026-11-02 审查）
+            logger.warning("touch_key 失败（不影响本次请求）: %s", exc)
         base = dict(
             api_key_id=key_row["id"],
             api_key_name=key_row["name"],
@@ -679,13 +680,16 @@ def create_gateway_router(
                     )
             if resp is None:
                 _quota_release(key_row["id"], reserve)
-                await run_in_threadpool(
-                    store.log_usage,
-                    status=f"error:{type(last_exc).__name__}",
-                    **base,
-                    latency_ms=int((time.perf_counter() - started) * 1000),
-                    error_code=_err_code(last_exc),
-                )
+                try:
+                    await run_in_threadpool(
+                        store.log_usage,
+                        status=f"error:{type(last_exc).__name__}",
+                        **base,
+                        latency_ms=int((time.perf_counter() - started) * 1000),
+                        error_code=_err_code(last_exc),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("失败路径记账异常（不影响错误响应）: %s", exc)
                 code, msg = (
                     _friendly_error(last_exc) if last_exc else (502, "上游服务异常")
                 )
@@ -706,15 +710,20 @@ def create_gateway_router(
                 or (msg0.get("reasoning_content") or "").strip()
                 or msg0.get("tool_calls")
             )
-            await run_in_threadpool(
-                store.log_usage,
-                prompt_tokens=p,
-                completion_tokens=c,
-                total_tokens=t,
-                **base,
-                latency_ms=int((time.perf_counter() - started) * 1000),
-                error_code="empty_response" if empty_hit else "",
-            )
+            try:
+                await run_in_threadpool(
+                    store.log_usage,
+                    prompt_tokens=p,
+                    completion_tokens=c,
+                    total_tokens=t,
+                    **base,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    error_code="empty_response" if empty_hit else "",
+                )
+            except Exception as exc:  # noqa: BLE001
+                # 对话已成功、token 已消耗：记账失败绝不能把 200 变成 500
+                #（客户端会重试导致双倍消耗；2026-11-02 审查）
+                logger.warning("非流式记账失败（响应正常返回）: %s", exc)
             return JSONResponse(resp)
 
         # ── 流式 ──
@@ -809,65 +818,58 @@ def create_gateway_router(
                         yield "data: [DONE]\n\n"
                         break
                     line = item
-                    if line.startswith("data:") and "usage" in line:
-                        try:
-                            data = json.loads(line[5:].strip() or "{}")
-                            u = data.get("usage") or {}
-                            if u:
+                    if line.startswith("data:"):
+                        # 所有 data 行统一解析一次再分流。此前用 `"usage" in
+                        # line` 子串预分流：正文/错误文案里带 "usage" 字样的
+                        # 块会走错分支——内容不进 out_parts（completion 低估）、
+                        # 错误块漏记账（2026-10-30 审计遗留，2026-11-02 修复）。
+                        body = line[5:].strip()
+                        obj = None
+                        if body and body != "[DONE]":
+                            try:
+                                obj = json.loads(body)
+                            except Exception:
+                                obj = None
+                        if isinstance(obj, dict):
+                            # 流内（前缀成功之后）的错误块：不可重试（已在
+                            # 下发），但必须记账并给账号冷却，不能当成功
+                            if obj.get("error"):
+                                emsg = str(
+                                    (obj["error"] or {}).get("message")
+                                    or "上游流内错误"
+                                )
+                                status = "error:upstream_stream"
+                                stream_err = emsg[:120]
+                                logger.warning("流内上游错误块: %s", emsg)
+                            u = obj.get("usage")
+                            if isinstance(u, dict) and u:
                                 prompt_t = int(u.get("prompt_tokens") or prompt_t)
                                 completion_t = int(
                                     u.get("completion_tokens") or completion_t
                                 )
                                 total_t = int(u.get("total_tokens") or total_t)
-                        except Exception:
-                            pass
-                    elif line.startswith("data:"):
-                        # 攒输出文本，供上游不给 usage 时估算 completion
-                        # （正文与 reasoning_content 都要攒：思考同样是计费输出）
-                        body = line[5:].strip()
-                        if body and body != "[DONE]" and len(out_parts) < 200000:
-                            try:
-                                obj = json.loads(body)
-                            except Exception:
-                                obj = None
-                            if isinstance(obj, dict):
-                                # 流内（前缀成功之后）的错误块：不可重试（已在
-                                # 下发），但必须记账并给账号冷却，不能当成功
-                                if obj.get("error"):
-                                    emsg = str(
-                                        (obj["error"] or {}).get("message")
-                                        or "上游流内错误"
+                            else:
+                                # 攒输出文本，供上游不给 usage 时估算 completion
+                                #（正文与 reasoning_content 都要攒：思考同样是
+                                # 计费输出）；条数上限只约束内容攒积
+                                for ch in obj.get("choices") or []:
+                                    d = ch.get("delta") or {}
+                                    piece = (
+                                        d.get("content")
+                                        or d.get("reasoning_content")
+                                        or ""
                                     )
-                                    status = "error:upstream_stream"
-                                    stream_err = emsg[
-                                        :120
-                                    ]  # 落库 error_code 带真实原因（此前恒空）
-                                    logger.warning("流内上游错误块: %s", emsg)
-                                u = obj.get("usage")
-                                if isinstance(u, dict) and u:
-                                    prompt_t = int(
-                                        u.get("prompt_tokens") or prompt_t
-                                    )
-                                    completion_t = int(
-                                        u.get("completion_tokens")
-                                        or completion_t
-                                    )
-                                    total_t = int(u.get("total_tokens") or total_t)
-                                else:
-                                    for ch in obj.get("choices") or []:
-                                        d = ch.get("delta") or {}
-                                        piece = (
-                                            d.get("content")
-                                            or d.get("reasoning_content")
-                                            or ""
-                                        )
-                                        if piece:
-                                            out_parts.append(str(piece))
-                                        if ch.get("finish_reason"):
-                                            last_finish = str(ch["finish_reason"])
+                                    if piece and len(out_parts) < 200000:
+                                        out_parts.append(str(piece))
+                                    if ch.get("finish_reason"):
+                                        last_finish = str(ch["finish_reason"])
                     yield line
-            except asyncio.CancelledError:
-                # 客户端断开：通知上游线程停止拉取，避免继续消耗额度
+            except (asyncio.CancelledError, GeneratorExit):
+                # 客户端断开：通知上游线程停止拉取，避免继续消耗额度。
+                # 两条断开路径都要接：任务被取消时在 await 点抛 CancelledError；
+                # 取消落在 yield 点时生成器由 aclose() 收尾、抛的是
+                # GeneratorExit——此前只捕前者，断开没被发现，producer 会把
+                # 上游流拉完（白耗额度）且 status 记成 ok（2026-11-02 审查）。
                 cancelled.set()
                 status = "cancelled"
                 raise
@@ -932,6 +934,7 @@ def create_gateway_router(
             AnthropicStreamTranslator,
             anthropic_error,
             anthropic_to_openai,
+            normalize_error_type,
             openai_to_anthropic,
         )
 
@@ -998,7 +1001,9 @@ def create_gateway_router(
             elif err_type == "upstream_error":
                 err_type = "api_error"
             aerr = anthropic_error(
-                resp.status_code, err_type, str(oai.get("message") or "上游错误")
+                resp.status_code,
+                normalize_error_type(err_type),
+                str(oai.get("message") or "上游错误"),
             )
             return JSONResponse(status_code=aerr[0], content=aerr[1])
 
@@ -1009,18 +1014,29 @@ def create_gateway_router(
         # 流式：把 OpenAI SSE 块流翻译成 Anthropic 事件流
         async def agen():
             tr = AnthropicStreamTranslator(model)
-            async for line in _iter_sse_lines(resp):
-                body_txt = line[5:].strip()
-                if not body_txt or body_txt == "[DONE]":
-                    continue
-                try:
-                    obj = json.loads(body_txt)
-                except Exception:
-                    continue
-                for ev in tr.feed(obj):
+            try:
+                async for line in _iter_sse_lines(resp):
+                    body_txt = line[5:].strip()
+                    if not body_txt or body_txt == "[DONE]":
+                        continue
+                    try:
+                        obj = json.loads(body_txt)
+                    except Exception:
+                        continue
+                    for ev in tr.feed(obj):
+                        yield ev
+                for ev in tr.finish():
                     yield ev
-            for ev in tr.finish():
-                yield ev
+            finally:
+                # 外层被客户端断开（GeneratorExit）时显式关闭内层生成器：
+                # 否则内层 gen 悬在 yield 点等 GC，用量记账延迟且断开可能
+                # 不被发现（2026-11-02 审查）
+                inner_close = getattr(resp.body_iterator, "aclose", None)
+                if callable(inner_close):
+                    try:
+                        await inner_close()
+                    except Exception:  # noqa: BLE001
+                        pass
 
         return StreamingResponse(agen(), media_type="text/event-stream")
 
@@ -1038,6 +1054,7 @@ async def _stream_with_retry(
     tried: set[str] = set()
     last_exc: Exception | None = None
     for attempt in range(MAX_ACCOUNT_TRIES):
+        it = None
         try:
             it = ac.client.stream_chat_completion(payload)
             prefix = await run_in_threadpool(_take_until_content, it)
@@ -1048,6 +1065,15 @@ async def _stream_with_retry(
             _sticky_set(conv, ac.account["id"])
             return _ChainPrefix(prefix, it), ac, base, last_exc
         except Exception as exc:  # noqa: BLE001
+            # 换号重试前显式关掉废弃的生成器：带内错误抛出时它还悬在
+            # yield 点，等 GC 收尾才释放上游连接（2026-11-02 审查）
+            if it is not None:
+                close = getattr(it, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:  # noqa: BLE001
+                        pass
             last_exc = exc
             logger.warning(
                 "流式请求失败(账号 %s, 第%d次): %s",

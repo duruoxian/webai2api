@@ -119,8 +119,20 @@ class Proxy:
             stype, self.host, self.port, rdns=True,
             username=self.username or None, password=self.password or None,
         )
-        conn.sock.settimeout(conn.timeout)
+        # 裸构造的连接 timeout 是 stdlib 哨兵对象（socket._GLOBAL_DEFAULT_TIMEOUT），
+        # 直接 settimeout 会 TypeError；生产路径恒为数值
+        to = getattr(conn, "timeout", None)
+        if isinstance(to, (int, float)):
+            conn.sock.settimeout(to)
         conn.sock.connect((target_host, target_port))
+        # https 目标必须在这里立刻套 TLS：sock 预先赋值后，http.client 的
+        # send() 会因 self.sock 非空跳过 connect()，而 HTTPSConnection 的
+        # TLS 握手恰恰只在 connect() 里做——不 wrap 的话请求明文打 443
+        # （2026-11-02 审查，stdlib 源码实锤；SNI 用真实目标主机名）。
+        if isinstance(conn, http.client.HTTPSConnection):
+            server_hostname = (target_host or conn.host or "").split(":")[0]
+            conn.sock = conn._context.wrap_socket(
+                conn.sock, server_hostname=server_hostname)
 
 
 def parse_proxy(value: str) -> Proxy | None:

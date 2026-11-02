@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import fnmatch
 import os
 import urllib.request
 
@@ -158,6 +159,17 @@ def system_proxy_for(host: str) -> str:
         item = item.strip().lower().lstrip(".")
         if not item or item == "<local>":
             continue
+        if "*" in item or "?" in item:
+            # Windows ProxyOverride 常见通配写法：127.*、*.foo.com。
+            # *.foo.com 与「精确/后缀匹配 foo.com」语义一致（IE 对
+            # 前导 *. 同时匹配裸域与子域），归一后复用下面的判断；
+            # 其余形态（127.*）直接 fnmatch。
+            cand = item.lstrip("*").lstrip(".")
+            if fnmatch.fnmatch(host_l, item) or (
+                cand and (host_l == cand or host_l.endswith("." + cand))
+            ):
+                return ""
+            continue
         if host_l == item or host_l.endswith("." + item):
             return ""
     return proxy_url
@@ -171,7 +183,11 @@ def apply_system_proxy(conn, host: str) -> bool:
     px = parse_proxy(url)
     if px is None:
         return False
-    px.apply(conn, host)
+    # 目标端口按连接类型推断（http→80、https→443），与 netutil 同口径
+    import http.client as _hc
+
+    target_port = 443 if isinstance(conn, _hc.HTTPSConnection) else 80
+    px.apply(conn, host, target_port)
     return True
 
 

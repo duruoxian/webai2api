@@ -256,8 +256,30 @@ def openai_to_anthropic(resp: dict, model: str = "") -> dict:
 
 def anthropic_error(status: int, err_type: str, message: str):
     """Anthropic 错误格式（与 OpenAI 的 {"error":...} 结构不同）。"""
-    body = {"type": "error", "error": {"type": err_type, "message": message}}
+    body = {"type": "error", "error": {"type": normalize_error_type(err_type), "message": message}}
     return status, body
+
+
+_ANTHROPIC_ERROR_TYPES = {
+    "invalid_request_error",
+    "authentication_error",
+    "permission_error",
+    "not_found_error",
+    "request_too_large",
+    "rate_limit_error",
+    "api_error",
+    "overloaded_error",
+}
+
+
+def normalize_error_type(err_type: str) -> str:
+    """收敛到 Anthropic 合法 error.type 集合。
+
+    OpenAI 侧的 internal_error / upstream_error / unavailable 等自造
+    type 原样透传会被严格客户端判为畸形错误（2026-11-02 审查）。
+    """
+    t = str(err_type or "").strip()
+    return t if t in _ANTHROPIC_ERROR_TYPES else "api_error"
 
 
 def openai_error_to_anthropic(payload: dict) -> dict:
@@ -266,7 +288,7 @@ def openai_error_to_anthropic(payload: dict) -> dict:
     return {
         "type": "error",
         "error": {
-            "type": err.get("type") or "api_error",
+            "type": normalize_error_type(err.get("type") or "api_error"),
             "message": err.get("message") or "上游错误",
         },
     }
@@ -461,6 +483,22 @@ class AnthropicStreamTranslator:
         if self._errored:
             return []
         events = self._start_events()
+        if self._index < 0:
+            # 全程零内容块：补一个空 text 块再收尾——与非流式空回复补空
+            # text 一致；message_stop 前没有任何 content_block_start 会被
+            # 严格客户端判为畸形流（2026-11-02 审查）
+            self._index = 0
+            self._type = "text"
+            events.append(
+                _sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                )
+            )
         if self._type is not None:
             if self._type == "thinking":
                 events.append(

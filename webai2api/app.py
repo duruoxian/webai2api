@@ -94,8 +94,8 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
     try:
         from .qwen_relay import start_memory_guard
         start_memory_guard(store, logger)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("内存看护启动失败（不影响服务）: %s", exc)
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception):
@@ -130,6 +130,18 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
 
     app.state.recent_errors = recent_errors
 
+    def _is_local_client(host: str) -> bool:
+        """归一化本机判断：覆盖 IPv4-mapped IPv6（::ffff:127.0.0.1）等形态。"""
+        import ipaddress
+
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return host == "localhost"
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        return ip.is_loopback
+
     @app.middleware("http")
     async def _guard_admin(request: Request, call_next):
         # 面板只允许本机访问：经由隧道 / 反代进来的请求一律拒绝，
@@ -142,7 +154,17 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
                 or request.headers.get("x-forwarded-for")
             )
             client = request.client.host if request.client else ""
-            if via_proxy or client not in ("127.0.0.1", "::1", "localhost"):
+            # Host 白名单防 DNS 重绑定：浏览器把攻击域名解析到 127.0.0.1 后
+            # 请求源与面板同源，客户端 IP 校验拦不住——Host 必须也是本机
+            #（2026-11-02 审查；API 路径不带此限制，不影响局域网/反代接入）
+            host_hdr = (request.headers.get("host") or "").lower()
+            host_name = host_hdr.rsplit(":", 1)[0] if "@" not in host_hdr else ""
+            local_host = host_name in ("127.0.0.1", "::1", "[::1]", "localhost")
+            if (
+                via_proxy
+                or not _is_local_client(client)
+                or not local_host
+            ):
                 return JSONResponse(
                     status_code=403,
                     content={"error": {"message": "管理面板仅允许本机访问",
@@ -160,7 +182,8 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
     async def health():
         acs = registry.available()
         return {
-            "status": "ok",
+            # 账号池全空时降级为 degraded：监控/脚本不能只看 200 就当服务可用
+            "status": "ok" if acs else "degraded",
             "version": __version__,
             "accounts_available": len(acs),
         }

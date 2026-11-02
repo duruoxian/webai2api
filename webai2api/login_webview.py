@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -203,7 +204,12 @@ def _login_state_dir() -> Path:
 
 
 def write_state(acc_id: str, status: str, message: str = "") -> None:
-    p = _login_state_dir() / f"{acc_id}.json"
+    safe = str(acc_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_\-]+", safe):
+        # 拼进状态文件路径：含 ../ 或路径分隔符会写到 login_state 之外
+        #（--login 参数一路传到这里，2026-11-02 审查）
+        raise ValueError(f"非法账号 id: {acc_id!r}")
+    p = _login_state_dir() / f"{safe}.json"
     tmp = p.with_suffix(".tmp")
     tmp.write_text(
         json.dumps({"status": status, "message": message}, ensure_ascii=False),

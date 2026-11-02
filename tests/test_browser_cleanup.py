@@ -76,7 +76,7 @@ def test_cleanup_endpoint_auth_and_result(tmp_path, monkeypatch):
     store = Store(tmp_path / "data" / "webai2api.db")
     logger = logging.getLogger("test.cleanup.endpoint")
     app = build_app(store, ProviderRegistry(store, logger), logger)
-    client = TestClient(app, client=("127.0.0.1", 50000))
+    client = TestClient(app, base_url="http://127.0.0.1:8800", client=("127.0.0.1", 50000))
 
     r = client.post("/admin/api/browser/cleanup")
     assert r.status_code in (401, 403), "未登录必须被拦截"

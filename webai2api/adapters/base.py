@@ -239,6 +239,16 @@ class GenericClientPool:
 
     def refresh(self) -> None:
         with self._lock:
+            # 先逐个释放旧客户端再清空：直接 clear() 会让持久连接/千问隐藏
+            # 中继等资源脱离 dispose 路径，每次面板改账号都泄漏一批
+            #（_sync 的重建路径有 dispose，refresh 绕过了它——2026-11-02 审查）
+            for old in self._clients.values():
+                try:
+                    dispose_client(old.client)
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.warning(
+                        "释放旧客户端失败（%s）: %s", old.account.get("name"), exc
+                    )
             self._clients.clear()
             self._last_sync = 0.0
             self._sync()

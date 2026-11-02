@@ -56,10 +56,13 @@ def open_conn(
     if mode == EGRESS_CUSTOM:
         from ..proxy import ProxyConfigError, parse_proxy
 
+        # 隧道/socks 的目标端口按真实 scheme：http→80、https→443（此前
+        # 写死 443，http:// 目标（自建/测试环境）会被隧道到错误端口）
+        target_port = 80 if scheme == "http" else 443
         try:
             px = parse_proxy(proxy or "")
             if px is not None:
-                px.apply(conn, bare_host)
+                px.apply(conn, bare_host, target_port)
                 if logger:
                     logger.info("出口: 自定义代理 %s", px.describe())
             else:

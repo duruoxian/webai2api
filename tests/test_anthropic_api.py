@@ -393,7 +393,7 @@ def _make_client(tmp_path, fake):
 
     registry.pick = lambda *a, **k: _AC()  # type: ignore[assignment]
     registry.pick_by_id = lambda *a, **k: _AC()  # type: ignore[assignment]
-    return TestClient(app, client=("127.0.0.1", 50000))
+    return TestClient(app, base_url="http://127.0.0.1:8800", client=("127.0.0.1", 50000))
 
 
 def _make_key(client) -> str:

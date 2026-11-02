@@ -197,8 +197,13 @@ class ConversationCache:
             return
         with self._lock:
             if len(self._cache) >= self._config.session_cache_max_size:
-                oldest = min(self._cache.items(), key=lambda kv: kv[1][1])[0]
-                self._cache.pop(oldest, None)
+                # 淘汰必须跳过本次要写的 key：它若恰好是最旧条目（cache 满
+                # 且长期未命中后被直接续写），被淘汰会导致 turns/tokens 归零、
+                # 会话提前轮换（2026-11-02 审查）
+                victims = [kv for kv in self._cache.items() if kv[0] != key]
+                if victims:
+                    oldest = min(victims, key=lambda kv: kv[1][1])[0]
+                    self._cache.pop(oldest, None)
             prev = self._cache.get(key)
             same = bool(prev and prev[0] == session_id)
             turns = (prev[2] + 1) if same else 1

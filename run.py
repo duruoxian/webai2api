@@ -17,8 +17,13 @@ HOST = "127.0.0.1"
 
 
 def _default_port() -> int:
-    if os.environ.get("WEBAI2API_PORT"):
-        return int(os.environ["WEBAI2API_PORT"])
+    raw = os.environ.get("WEBAI2API_PORT")
+    if raw:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            # import 期执行：非法配置直接崩会连报错机会都没有
+            print(f"WEBAI2API_PORT={raw!r} 不是合法端口，回退 8800", file=sys.stderr)
     return 8800
 
 

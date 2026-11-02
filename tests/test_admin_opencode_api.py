@@ -73,7 +73,7 @@ def client(_app_singleton) -> TestClient:
     # 面板中间件只放行 request.client 属于本机回环的请求；TestClient 的 client
     # 是 "testclient"，会一律 403（见 test_panel_middleware_rejects_non_loopback）。
     # 这里仅改 TestClient 的默认参数，不修改 app.py 源码，用来测 API 本身。
-    return TestClient(app, client=("127.0.0.1", 50000))
+    return TestClient(app, base_url="http://127.0.0.1:8800", client=("127.0.0.1", 50000))
 
 
 def _login(client: TestClient, password: str = "admin") -> str:

@@ -366,15 +366,33 @@ class HealthMonitor:
                     new_token or None, new_refresh or None)
                 results.append({"id": account["id"], "status": status})
             except urllib.error.HTTPError as exc:
-                status = "expired" if exc.code in (401, 403) else f"http_{exc.code}"
-                self.store.set_account_health(account["id"], status)
-                results.append({"id": account["id"], "status": status})
+                self._record_failure(account, exc, f"http_{exc.code}", results)
             except Exception as exc:  # noqa: BLE001
-                self.store.set_account_health(account["id"], "error")
-                results.append({"id": account["id"], "status": "error",
-                                "error": str(exc)[:200]})
+                self._record_failure(account, exc, "error", results)
                 self.logger.warning("健康检查失败 %s: %s", account.get("name"), exc)
         return results
+
+    def _record_failure(self, account: dict, exc: Exception,
+                        fallback: str, results: list) -> None:
+        """周期检查的失败落库口径与手动检查对齐（2026-11-02）：
+
+        失败 ≠ 凭证过期——403 可能是风控、超时/DNS/代理失败只是网络抖动，
+        此前一律写 expired/error，一次抖动就把好号踢出轮询（兜底层最长
+        一个检查周期）。与 admin_api 手动检查同款：只有 auth 类才写
+        expired，其余保持 health 原状，等下次检查或真实请求再验证。
+        """
+        from .gateway import _classify_error
+
+        if _classify_error(exc) == "auth":
+            self.store.set_account_health(account["id"], "expired")
+            results.append({"id": account["id"], "status": "expired"})
+            return
+        results.append({
+            "id": account["id"],
+            "status": fallback,
+            "health_kept": True,
+            "error": str(exc)[:200],
+        })
 
     def _run(self) -> None:
         # 启动后稍等，避免和首次登录/初始化抢资源

@@ -43,7 +43,7 @@ def client(tmp_path_factory):
     registry = ProviderRegistry(store, logging := __import__("logging").getLogger("t"))
     app = build_app(store, registry, logging)
     store.add_account("chatglm", "契约账号", {"auth_token": "tok"})
-    c = TestClient(app, client=("127.0.0.1", 50000))
+    c = TestClient(app, base_url="http://127.0.0.1:8800", client=("127.0.0.1", 50000))
     r = c.post("/admin/api/login", json={"password": "admin"})
     tok = r.json()["token"]
     c.headers.update({TOKEN_HDR: tok})

@@ -627,13 +627,25 @@ class QwenWebClient:
                 f"http://127.0.0.1:{port}/delete",
                 data=raw,
                 method="POST",
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Relay-Token": self._relay_token(),
+                },
             )
             with urllib.request.urlopen(req, timeout=35) as resp:
                 data = json.loads(resp.read().decode("utf-8", "replace") or "{}")
             return bool(data.get("ok"))
         except Exception:  # noqa: BLE001
             return False
+
+    def _relay_token(self) -> str:
+        """中继鉴权 token（旧版中继状态文件没有 token 字段，返回空串即可）。"""
+        try:
+            from ...qwen_relay import relay_token
+
+            return relay_token(self.config.account_id)
+        except Exception:  # noqa: BLE001
+            return ""
 
     # ── SSE 解析 ───────────────────────────────────────
     @staticmethod
@@ -776,7 +788,11 @@ class QwenWebClient:
             url,
             data=raw,
             method="POST",
-            headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                "X-Relay-Token": self._relay_token(),
+            },
         )
         try:
             resp = urllib.request.urlopen(req, timeout=self.config.request_timeout)
