@@ -26,6 +26,7 @@ from .paths import user_data_dir
 from .store import Store
 
 _QWEN_URL = "https://chat.qwen.ai/"
+_RELAY_STREAM_TIMEOUT = 600  # 单次 /chat 流最长等待（秒），到点推 error 帧断开
 
 
 def _jwt_exp(token: str) -> int:
@@ -542,7 +543,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _read_body(self, limit: int = 2_000_000):
         """读 JSON 请求体，带体积上限（防本机进程无限制打爆内存）。"""
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = max(0, int(self.headers.get("Content-Length") or 0))
+        except ValueError:
+            self._send_json({"error": "bad content-length"}, 400)
+            return None
         if length > limit:
             self._send_json({"error": "payload too large"}, 413)
             return None
@@ -640,7 +645,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
-        deadline = time.time() + 600
+        deadline = time.time() + _RELAY_STREAM_TIMEOUT
+        ended = False
         try:
             while time.time() < deadline:
                 try:
@@ -662,7 +668,20 @@ class _Handler(BaseHTTPRequestHandler):
                     ("data: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode("utf-8"))
                 self.wfile.flush()
                 if kind in ("done", "error"):
+                    ended = True
                     break
+            if not ended and not self.runtime.stop.is_set():
+                # 超时到点：先推 error 帧再断开。此前静默退出循环，客户端
+                # 只看到流断掉、无任何语义（2026-11-02 审查）
+                err = json.dumps(
+                    {
+                        "type": "error",
+                        "message": f"中继超时({_RELAY_STREAM_TIMEOUT}s)，上游未给完成信号",
+                    },
+                    ensure_ascii=False,
+                )
+                self.wfile.write(("data: " + err + "\n\n").encode("utf-8"))
+                self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:

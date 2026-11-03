@@ -19,6 +19,7 @@ import hashlib
 import json
 import mimetypes
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -58,6 +59,9 @@ class FileUploader:
         self.pow_solver = pow_solver
         self.logger = logger
         self._cache: dict[str, str] = {}   # url-hash → file_id
+        # 并发请求与 FileParseError 清理线程都会读写 _cache：加锁防丢条目/
+        # 重复上传的良性竞态（2026-11-02 复审）
+        self._cache_lock = threading.Lock()
 
     # ── 公共入口 ─────────────────────────────────────────
 
@@ -89,7 +93,8 @@ class FileUploader:
         cache_key = hashlib.sha256(
             image_url.encode("utf-8", "ignore")
         ).hexdigest()
-        cached = self._cache.get(cache_key)
+        with self._cache_lock:
+            cached = self._cache.get(cache_key)
         if cached:
             self.logger.info("FileUpload | cache HIT | file_id=%s", cached)
             return cached
@@ -181,8 +186,9 @@ class FileUploader:
         return file_id
 
     def clear_cache(self) -> int:
-        n = len(self._cache)
-        self._cache.clear()
+        with self._cache_lock:
+            n = len(self._cache)
+            self._cache.clear()
         return n
 
     # ── 内部 ────────────────────────────────────────────
@@ -297,10 +303,11 @@ class FileUploader:
             return str(exc)
 
     def _cache_put(self, key: str, value: str) -> None:
-        if len(self._cache) >= _MAX_URL_CACHE:
-            try:
-                oldest = next(iter(self._cache))
-                del self._cache[oldest]
-            except StopIteration:
-                pass
-        self._cache[key] = value
+        with self._cache_lock:
+            if len(self._cache) >= _MAX_URL_CACHE:
+                try:
+                    oldest = next(iter(self._cache))
+                    del self._cache[oldest]
+                except StopIteration:
+                    pass
+            self._cache[key] = value

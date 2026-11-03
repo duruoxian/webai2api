@@ -88,11 +88,16 @@ class Proxy:
         真实主机（被 TUN/Clash 以 400 拒绝），或直接明文打到代理。
 
         http 代理 + HTTPS 目标 → set_tunnel（CONNECT）。
-        https 代理 → 需要 TLS 套壳，本实现按 http 处理（多数供应商兼容）。
-        socks → 需要 PySocks；用其 monkeypatch 方式包装 socket。
+        https 代理 → 手工三步：与代理建 TLS → 在 TLS 里发 CONNECT →
+        （https 目标）再对目标包一层 TLS。stdlib 的 set_tunnel 流程是
+        「明文 CONNECT 再 wrap」，套不到 https 代理上。
+        socks → 需要 PySocks；socks 建连后对 https 目标当场 wrap TLS。
         """
         if self.scheme.startswith("socks"):
             self._apply_socks(conn, target_host, target_port)
+            return
+        if self.scheme == "https":
+            self._apply_https(conn, target_host, target_port, timeout)
             return
         # 关键：连接指向代理，而非目标主机
         conn.host = self.host
@@ -104,6 +109,58 @@ class Proxy:
         if auth:
             headers["Proxy-Authorization"] = auth
         conn.set_tunnel(target_host, target_port, headers=headers)
+
+    def _apply_https(self, conn: http.client.HTTPConnection,
+                     target_host: str, target_port: int,
+                     timeout: int | None = None) -> None:
+        """https 代理：先与代理建立 TLS，再在 TLS 内发 CONNECT 隧道。
+
+        sock 预先赋给 conn 后 http.client 的 send() 会跳过 connect()，
+        与 socks 路径同一机制；https 目标在此对隧道再包一层目标 TLS
+        （SNI=目标主机名）。
+        """
+        import socket as _socket
+        import ssl as _ssl
+
+        to = timeout if timeout is not None else getattr(conn, "timeout", None)
+        to = to if isinstance(to, (int, float)) else None
+        raw = _socket.create_connection((self.host, self.port), timeout=to)
+        if to is not None:
+            raw.settimeout(to)
+        sock = _ssl.create_default_context().wrap_socket(
+            raw, server_hostname=self.host)
+        headers = {"Host": f"{self.host}:{self.port}",
+                   "Proxy-Connection": "keep-alive"}
+        auth = self.auth_header()
+        if auth:
+            headers["Proxy-Authorization"] = auth
+        req = (
+            f"CONNECT {target_host}:{target_port} HTTP/1.1\r\n"
+            + "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+            + "\r\n"
+        )
+        sock.sendall(req.encode("latin-1"))
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            chunk = sock.recv(4096)
+            if not chunk:
+                sock.close()
+                raise ProxyConfigError("https 代理 CONNECT 无响应")
+            resp += chunk
+            if len(resp) > 65536:
+                sock.close()
+                raise ProxyConfigError("https 代理 CONNECT 响应异常")
+        status_line = resp.split(b"\r\n", 1)[0].decode("latin-1", "replace")
+        parts = status_line.split()
+        if len(parts) < 2 or not parts[1].startswith("2"):
+            sock.close()
+            raise ProxyConfigError(f"https 代理 CONNECT 被拒: {status_line[:120]}")
+        if target_port == 443:
+            conn.sock = _ssl.create_default_context().wrap_socket(
+                sock, server_hostname=target_host)
+        else:
+            # http 目标：直接用明文隧道
+            conn.sock = sock
 
     def _apply_socks(self, conn: http.client.HTTPConnection,
                      target_host: str, target_port: int) -> None:

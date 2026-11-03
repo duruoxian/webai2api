@@ -59,6 +59,28 @@ def infer_provider(model: str | None) -> str:
             return prov
     return DEFAULT_PROVIDER
 
+
+def model_capabilities(model: str | None) -> dict:
+    """模型真实能力声明（/v1/models 元数据与 opencode 配置生成器共用一份）。
+
+    能力只描述「网关真支持」：图片上行仅 deepseek/chatglm 有上传链路
+    （kimi/qwen 未实现，声明了客户端就会真的发图、图片被静默丢弃——
+    1.18 事故）；除明确的非思考模型外都按可输出思考处理。
+    """
+    mid = (model or "").strip().lower()
+    prov = infer_provider(model)
+    no_reasoning = mid in ("deepseek-chat", "deepseek-v4-flash")
+    vision = prov in ("deepseek", "chatglm")
+    return {
+        "input": ["image", "text"] if vision else ["text"],
+        "output": ["text"],
+        "reasoning": {"supported": not no_reasoning},
+    }
+
+
+def model_limits(model: str | None) -> dict:
+    return dict(DEFAULT_LIMITS.get(infer_provider(model), DEFAULT_LIMITS["deepseek"]))
+
 # 兼容旧引用
 MODELS = [
     {"id": mid, "object": "model", "owned_by": f"{prov}-web"}
@@ -98,18 +120,29 @@ class ProviderRegistry:
             for mid in PROVIDER_MODELS.get(prov, []):
                 if mid not in seen:
                     seen.add(mid)
-                    out.append({"id": mid, "object": "model", "owned_by": f"{prov}-web"})
+                    out.append(self._model_entry(mid, prov))
         # 2) 用量里实际出现过的模型（说明真的在用）
         try:
             for row in self.store.list_used_models(limit=100):
                 mid = (row.get("model") or "").strip()
                 if len(mid) >= 3 and mid not in seen:
                     seen.add(mid)
-                    prov = infer_provider(mid)
-                    out.append({"id": mid, "object": "model", "owned_by": f"{prov}-web"})
+                    out.append(self._model_entry(mid, infer_provider(mid)))
         except Exception:
             pass
         return out or MODELS
+
+    @staticmethod
+    def _model_entry(mid: str, prov: str) -> dict:
+        # 附带真实能力/额度元数据：客户端可据此自动配置，不再依赖
+        # 静态写死（OpenAI schema 之外的字段客户端会忽略，加字段安全）
+        return {
+            "id": mid,
+            "object": "model",
+            "owned_by": f"{prov}-web",
+            "capabilities": model_capabilities(mid),
+            "limit": model_limits(mid),
+        }
 
     def pool_for_model(self, model: str | None) -> GenericClientPool:
         m = (model or "").strip().lower()

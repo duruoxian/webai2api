@@ -9,7 +9,7 @@ from webai2api.adapters.kimi.client import KimiWebClient, _build_headers as kimi
 from webai2api.adapters.kimi.config import KimiConfig, _stable_device_id as kimi_dev
 from webai2api.adapters.qwen.client import QwenWebClient, _build_headers as qwen_headers
 from webai2api.adapters.qwen.config import QwenConfig, _stable_device_id as qwen_dev
-from webai2api.admin_api import _build_opencode_snippet
+from webai2api.opencode_config import _build_opencode_snippet
 from webai2api.providers import infer_provider, DEFAULT_LIMITS
 
 

@@ -42,7 +42,9 @@ def _graceful_exit() -> None:
     try:
         from webai2api.paths import user_data_dir
         from webai2api.store import Store
-        Store(user_data_dir() / "webai2api.db").checkpoint()
+        _st = Store(user_data_dir() / "webai2api.db")
+        _st.checkpoint()
+        _st.close()
     except Exception:
         pass
     os._exit(0)
@@ -63,13 +65,19 @@ def _find_free_port(preferred: int) -> int:
         return s.getsockname()[1]
 
 
-def _wait_port(port: int, timeout: float = 20.0) -> bool:
-    """轮询等待服务端口可连接。"""
+def _wait_port(port: "int | dict", timeout: float = 20.0) -> bool:
+    """轮询等待服务端口可连接。
+
+    port 可传 dict（如 main 里的 port_holder）：每轮重读最新端口——
+    绑定失败换端口重试后，主线程不能在死端口上白等满 timeout
+    （2026-11-02 复审）。
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
+        p = port["port"] if isinstance(port, dict) else port
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(0.5)
-            if s.connect_ex((HOST, port)) == 0:
+            if s.connect_ex((HOST, p)) == 0:
                 return True
         time.sleep(0.2)
     return False
@@ -257,36 +265,54 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("千问中继预热初始化失败: %s", exc)
 
+    import asyncio
+
+    import uvicorn
+
+    # 端口可能因绑定竞态被 _run_server 换掉：URL/端口文件统一在服务就绪后写
+    port_holder = {"port": port}
+
+    def _run_server() -> None:
+        # TOCTOU 兜底：_find_free_port 探测与真正绑定之间端口可能被抢；
+        # uvicorn 绑定失败会在事件循环里 SystemExit(1)，一并捕获换端口重试
+        p = port_holder["port"]
+        for _ in range(4):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(
+                    uvicorn.Server(
+                        uvicorn.Config(app, host=HOST, port=p,
+                                       log_level="info", loop="asyncio")
+                    ).serve()
+                )
+                return
+            except (OSError, SystemExit) as exc:
+                logger.error("端口 %s 绑定失败(%s)，尝试换端口", p, exc)
+                p = _find_free_port(p + 1)
+                port_holder["port"] = p
+            except Exception as exc:  # noqa: BLE001
+                logger.error("服务启动异常: %s", exc, exc_info=True)
+                return
+            finally:
+                loop.close()
+
+    threading.Thread(target=_run_server, name="uvicorn", daemon=True).start()
+
+    if not _wait_port(port_holder):
+        logger.error("服务在超时时间内未就绪")
+
+    port = port_holder["port"]
     base_url = f"http://{HOST}:{port}/v1"
     admin_url = f"http://{HOST}:{port}/admin"
+    logger.info("服务地址 %s", base_url)
 
-    # 把实际端口写到 exe 同级文件，方便用户/脚本查看
+    # 把实际端口写到 exe 同级文件，方便用户/脚本查看（就绪后写才是最终端口）
     try:
         with open(os.path.join(log_dir, "current_port.txt"), "w", encoding="utf-8") as f:
             f.write(f"{port}\n{base_url}\n")
     except Exception:
         pass
-
-    import asyncio
-
-    import uvicorn
-
-    config = uvicorn.Config(app, host=HOST, port=port, log_level="info", loop="asyncio")
-    server = uvicorn.Server(config)
-
-    def _run_server() -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(server.serve())
-        except Exception as exc:  # noqa: BLE001
-            logger.error("服务启动异常: %s", exc, exc_info=True)
-
-    threading.Thread(target=_run_server, name="uvicorn", daemon=True).start()
-    logger.info("服务地址 %s", base_url)
-
-    if not _wait_port(port):
-        logger.error("服务在超时时间内未就绪")
 
     # 主线程打开原生窗口
     # 托盘（可选，设置里开关）

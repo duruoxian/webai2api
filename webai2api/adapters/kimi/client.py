@@ -725,10 +725,11 @@ class KimiWebClient:
             ]
         return body
 
-    def _throttle(self) -> None:
-        """防风控节奏：硬性最小间隔 + 长尾延迟（大多数短、少量长停顿）。"""
+    def _throttle_wait(self) -> float:
+        """计算防风控应等待秒数并登记起跑（不睡眠），见 GLM 同名拆分。"""
         if not self.config.anti_rate_limit_enabled:
-            return
+            return 0.0
+        total = 0.0
         min_interval = float(getattr(self.config, "min_request_interval", 0.0) or 0.0)
         if min_interval > 0:
             with self._last_call_lock:
@@ -737,12 +738,12 @@ class KimiWebClient:
                 self._last_call_at = slot
             wait = slot - time.time()
             if wait > 0:
-                time.sleep(wait)
+                total += wait
 
         lo = max(0.0, float(self.config.anti_rate_limit_min_delay))
         hi = max(lo, float(self.config.anti_rate_limit_max_delay))
         if hi <= 0:
-            return
+            return total
 
         chance = float(getattr(self.config, "long_pause_chance", 0.02) or 0.0)
         if chance > 0 and random.random() < chance:
@@ -754,7 +755,8 @@ class KimiWebClient:
             delay = random.lognormvariate(math.log(mid), 0.6)
         delay = min(max(delay, lo), max(1.0, hi * 3))
         self.logger.info("AntiRateLimit | sleep=%.2fs before upstream request", delay)
-        time.sleep(delay)
+        return total + delay
+
 
     # ── 上游会话管理（面板「会话管理」用）──────────────
     def list_upstream_sessions(self, max_pages: int = 20) -> list[dict]:
@@ -881,7 +883,9 @@ class KimiWebClient:
             self._bump("miss")
         parent = self._cached_last_msg(conv_key) if cached else ""
 
-        self._throttle()
+        _wait = self._throttle_wait()
+        if _wait > 0:
+            yield from tool_bridge.keepalive_sleep(_wait)
         self._bump("upstream")
 
         model = str(payload.get("model") or self.config.default_model)
@@ -1200,6 +1204,9 @@ class KimiWebClient:
         )
         text = reasoning = ""
         for ev in self._stream_events(retry):
+            if isinstance(ev, str):
+                # keepalive 心跳帧（SSE 注释行）：内部消费直接丢弃
+                continue
             text, reasoning = ev["text"], ev["reasoning"]
         calls = _parse_tool_calls(text, tools)
         if not calls:
@@ -1229,6 +1236,9 @@ class KimiWebClient:
             finish_seen = True
             chat_id = ""
             for ev in self._stream_events(payload):
+                if isinstance(ev, str):
+                    # keepalive 心跳帧（SSE 注释行）：内部消费直接丢弃
+                    continue
                 text, reasoning = ev["text"], ev["reasoning"]
                 chat_id = str(ev.get("chat_id") or chat_id)
                 if ev.get("__done__"):
@@ -1345,6 +1355,10 @@ class KimiWebClient:
             text = reasoning = ""
             try:
                 for ev in self._stream_events(payload):
+                    if isinstance(ev, str):
+                        # keepalive 心跳帧原样透传（SSE 注释行，客户端不可见）
+                        yield ev
+                        continue
                     text, reasoning = ev["text"], ev["reasoning"]
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning("Kimi 流式请求失败: %s", exc)
@@ -1376,15 +1390,18 @@ class KimiWebClient:
             tail = rs.close_think()
             if tail:
                 yield chunk({"content": tail})
+            # 逐片下发全部调用（与非流式口径一致）：模型违规输出多个调用
+            # 时只发第一个会静默丢调用（2026-11-02 复审对齐 GLM）
             yield chunk(
                 {
                     "tool_calls": [
                         {
-                            "index": 0,
-                            "id": calls[0]["id"],
+                            "index": i,
+                            "id": c["id"],
                             "type": "function",
-                            "function": calls[0]["function"],
+                            "function": c["function"],
                         }
+                        for i, c in enumerate(calls)
                     ]
                 }
             )
@@ -1427,6 +1444,10 @@ class KimiWebClient:
             chat_id = ""
             try:
                 for ev in self._stream_events(payload):
+                    if isinstance(ev, str):
+                        # keepalive 心跳帧原样透传（SSE 注释行，客户端不可见）
+                        yield ev
+                        continue
                     if ev.get("__done__"):
                         finish_seen = bool(ev.get("finish_seen", True))
                     chat_id = str(ev.get("chat_id") or chat_id)
@@ -1484,15 +1505,18 @@ class KimiWebClient:
             tail = rs.close_think()
             if tail:
                 yield chunk({"content": tail})
+            # 逐片下发全部调用（与非流式口径一致）：模型违规输出多个调用
+            # 时只发第一个会静默丢调用（2026-11-02 复审对齐 GLM）
             yield chunk(
                 {
                     "tool_calls": [
                         {
-                            "index": 0,
-                            "id": calls[0]["id"],
+                            "index": i,
+                            "id": c["id"],
                             "type": "function",
-                            "function": calls[0]["function"],
+                            "function": c["function"],
                         }
+                        for i, c in enumerate(calls)
                     ]
                 }
             )
@@ -1518,11 +1542,12 @@ class KimiWebClient:
                     {
                         "tool_calls": [
                             {
-                                "index": 0,
-                                "id": calls[0]["id"],
+                                "index": i,
+                                "id": c["id"],
                                 "type": "function",
-                                "function": calls[0]["function"],
+                                "function": c["function"],
                             }
+                            for i, c in enumerate(calls)
                         ]
                     }
                 )

@@ -793,10 +793,15 @@ class ChatGlmWebClient:
             "meta_data": meta,
         }
 
-    def _throttle(self) -> None:
-        """防风控节奏：硬性最小间隔 + 长尾延迟（大多数短、少量长停顿）。"""
+    def _throttle_wait(self) -> float:
+        """计算防风控应等待的秒数并登记起跑时刻（不睡眠）。
+
+        拆出纯计算版：流式生成器里用 keepalive 分片睡 + 发 SSE 注释帧，
+        非流式调用方仍走 _throttle() 整段睡。
+        """
         if not self.config.anti_rate_limit_enabled:
-            return
+            return 0.0
+        total = 0.0
         # 同账号两次上游请求的硬性最小间隔
         min_interval = float(getattr(self.config, "min_request_interval", 0.0) or 0.0)
         if min_interval > 0:
@@ -806,12 +811,12 @@ class ChatGlmWebClient:
                 self._last_call_at = slot
             wait = slot - time.time()
             if wait > 0:
-                time.sleep(wait)
+                total += wait
 
         lo = max(0.0, float(self.config.anti_rate_limit_min_delay))
         hi = max(lo, float(self.config.anti_rate_limit_max_delay))
         if hi <= 0:
-            return
+            return total
 
         # 长尾：少量请求出现 20~60s 长停顿，其余按对数正态分布
         chance = float(getattr(self.config, "long_pause_chance", 0.02) or 0.0)
@@ -824,7 +829,8 @@ class ChatGlmWebClient:
             delay = random.lognormvariate(math.log(mid), 0.6)
         delay = min(max(delay, lo), max(1.0, hi * 3))
         self.logger.info("AntiRateLimit | sleep=%.2fs before upstream request", delay)
-        time.sleep(delay)
+        return total + delay
+
 
     # ── 会话清理（供后台清理线程调用） ─────────────────
     def cleanup_stale_sessions(self) -> None:
@@ -892,7 +898,11 @@ class ChatGlmWebClient:
             tools = []
         is_silent = "silent" in model
 
-        self._throttle()
+        # 流内可能已向客户端吐过内容（续写轮重入）：停顿分片睡并发 SSE
+        # 注释帧，避免客户端读超时（: 开头行所有 SSE 客户端不可见）
+        _wait = self._throttle_wait()
+        if _wait > 0:
+            yield from tool_bridge.keepalive_sleep(_wait)
         self._bump("upstream")
         token = self._access()
         # 命中会话缓存则复用 conversation_id（与 DeepSeek 的多轮增量行为一致）；
@@ -1183,9 +1193,14 @@ class ChatGlmWebClient:
             if self.config.session_cache_enabled:
                 # store key 与客户端多轮回传的查询 key 一致（含本轮 assistant 指纹）
                 calls = all_calls or _parse_tool_calls(text, tools)
+                # store 锚点对齐交付侧的「思考顶正文」：正文空而答案在思考
+                # 里时，客户端回传的 assistant.content 是思考文本，锚的还是
+                # 空 text 会让指纹必 miss、每轮新建上游会话（镜像 kimi
+                # reply_for_store，2026-11-02 复审）
+                text_for_store = text if text.strip() else reasoning
                 asst = {
                     "role": "assistant",
-                    "content": None if calls else text,
+                    "content": None if calls else text_for_store,
                     "tool_calls": calls or None,
                 }
                 store_key = tool_bridge.conv_fingerprint(
@@ -1356,6 +1371,9 @@ class ChatGlmWebClient:
         text = reasoning = ""
         native: list = []
         for ev in self._stream_events(retry):
+            if isinstance(ev, str):
+                # keepalive 心跳帧（SSE 注释行）：内部消费直接丢弃
+                continue
             text, reasoning = ev["text"], ev["reasoning"]
             native = ev.get("tool_calls") or native
         calls = native or _parse_tool_calls(text, tools)
@@ -1380,6 +1398,9 @@ class ChatGlmWebClient:
             finish_seen = True
             conv_id = ""
             for ev in self._stream_events(payload):
+                if isinstance(ev, str):
+                    # keepalive 心跳帧（SSE 注释行）：内部消费直接丢弃
+                    continue
                 text, reasoning = ev["text"], ev["reasoning"]
                 native = ev.get("tool_calls") or native
                 if ev.get("__done__"):
@@ -1488,6 +1509,10 @@ class ChatGlmWebClient:
             native: list = []
             try:
                 for ev in self._stream_events(payload):
+                    if isinstance(ev, str):
+                        # keepalive 心跳帧原样透传（SSE 注释行，客户端不可见）
+                        yield ev
+                        continue
                     text, reasoning = ev["text"], ev["reasoning"]
                     native = ev.get("tool_calls") or native
             except Exception as exc:  # noqa: BLE001
@@ -1574,6 +1599,10 @@ class ChatGlmWebClient:
             rel_tail = ""
             try:
                 for ev in self._stream_events(payload):
+                    if isinstance(ev, str):
+                        # keepalive 心跳帧原样透传（SSE 注释行，客户端不可见）
+                        yield ev
+                        continue
                     native = ev.get("tool_calls") or native
                     if ev.get("__done__"):
                         finish_seen = bool(ev.get("finish_seen", True))

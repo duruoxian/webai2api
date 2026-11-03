@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from webai2api import admin_api as api
+from webai2api import opencode_config as api
 from webai2api.app import build_app
 from webai2api.providers import ProviderRegistry
 from webai2api.store import Store

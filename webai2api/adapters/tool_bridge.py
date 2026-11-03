@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 
 __all__ = [
@@ -56,6 +57,27 @@ __all__ = [
     "DeltaToolBuffer",
     "DSML_TOOL_CALLS_OPEN",
 ]
+
+
+def keepalive_sleep(seconds: float, step: float = 1.0):
+    """生成器内的长停顿：分片睡眠，每片先发一帧 SSE 注释行。
+
+    SSE 规范里 ':' 开头是注释，EventSource/httpx-sse 等所有兼容客户端
+    不可见；网关 `_chunk_has_payload` 也不当作内容（不影响换号判定）。
+    用在「可能已向客户端吐过内容」的续写轮停顿——不发帧客户端只见流
+    冻结，opencode/Claude Code 这类客户端有读超时断连的风险
+    （2026-11-02 优化）。
+    """
+    if seconds <= 0:
+        return
+    step = max(float(step), 0.05)  # step<=0 会 0 秒空转、帧数无界（2026-11-02 复审）
+    end = time.time() + seconds
+    while True:
+        left = end - time.time()
+        if left <= 0:
+            return
+        yield ": keepalive\n\n"
+        time.sleep(min(step, left))
 
 
 def assistant_fingerprint(msg: dict) -> str:

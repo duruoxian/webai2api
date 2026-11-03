@@ -419,10 +419,9 @@ def run_webview_login(acc_id: str) -> None:
     )
 
     done = {"v": False}
-    # 新建账号（还没有凭证）时必须确保是全新会话；
-    # 已有凭证的账号允许复用 profile（方便刷新 token）。
-    fresh = not (acc.get("auth_token") or "").strip()
     # 同平台其它账号已用的凭证，抓到就说明是旧会话残留
+    #（「全新账号清残留」分支已删：条件恒假——fresh 蕴含 auth_token 为空，
+    # 而比较对象 token 恒非空；残留由一次性 profile 兜底，2026-11-02 复审）
     other_tokens = {
         (a.get("auth_token") or "").strip()
         for a in store.list_accounts(provider)
@@ -487,19 +486,6 @@ def run_webview_login(acc_id: str) -> None:
                     write_state(acc_id, "waiting", "检测到旧账号会话，已清除，请登录新账号…")
                 time.sleep(1.5)
                 continue
-            # 全新账号：如果抓到的还是旧的残留 cookie，先清掉再等用户重新登录
-            if fresh and token == (acc.get("auth_token") or ""):
-                try:
-                    window.evaluate_js(
-                        "document.cookie.split(';').forEach(c=>{"
-                        "const n=c.split('=')[0].trim();"
-                        "document.cookie=n+'=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';});"
-                        "try{localStorage.clear()}catch(e){}"
-                    )
-                except Exception:
-                    pass
-                time.sleep(1.5)
-                continue
             # 给 WebView2 一点时间把 cookie 落盘
             time.sleep(1.2)
             fields: dict = {
@@ -510,7 +496,9 @@ def run_webview_login(acc_id: str) -> None:
             }
             # 记录登录时真实浏览器画像（WebView2/Edge 的 UA 与 platform），
             # 供后续 API 请求复用，避免同一 token 出现两套 UA。
-            ua = (creds.get("ua") or "").strip()
+            # 三段提取 JS 返回的键名是 "u"（非 "ua"）——此前恒取空串，
+            # profile.ua 从不落库、API 请求回退默认 UA（2026-11-02 复审）
+            ua = (creds.get("u") or "").strip()
             platform = (creds.get("p") or "").strip()
             if ua or platform:
                 try:

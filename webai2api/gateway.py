@@ -31,6 +31,14 @@ from .store import Store
 
 router = APIRouter()
 
+# /v1 请求体上限：request.json() 无界读入内存，本机异常进程可以一 POST
+# 打爆网关（中继层已有同类上限；历史对话超长的合法请求远够用）
+MAX_BODY_BYTES = 32 * 1024 * 1024
+
+# _take_until_content 的心跳帧独立预算（≈10 分钟的每秒心跳）：防心跳-only
+# 的挂死流在线程池里无限循环（见函数 docstring）
+_KEEPALIVE_BUDGET = 600
+
 
 def _fresh_router() -> "APIRouter":
     """每次 build_app 都用全新 router：模块级单例在多个 app 实例共存时
@@ -123,7 +131,7 @@ def _friendly_error(exc: Exception) -> tuple[int, str]:
         return 429, "请求过于频繁，已被上游限流，请稍后重试"
     if has("timeout", "timed out", "超时"):
         return 504, "上游响应超时，请重试或换用其他模型"
-    if has("connection", "connect", "network", "unreachable", "ssl", "握手"):
+    if has("connection", "connect", "network", "网络", "unreachable", "ssl", "握手"):
         return 503, "无法连接上游服务，请检查网络后重试"
     if has("余额", "quota", "insufficient", "额度"):
         return 402, "账号额度不足"
@@ -262,6 +270,7 @@ def _classify_error(exc: Exception | None) -> str:
         "connection",
         "connect",
         "network",
+        "网络",
         "unreachable",
         "ssl",
         "握手",
@@ -420,48 +429,6 @@ def _sticky_set(ck: str, account_id: str) -> None:
             _STICKY.popitem(last=False)
 
 
-# ── 额度预占：并发请求不会同时挤过同一个额度检查 ──
-_QUOTA_INFLIGHT: dict[str, tuple[int, float]] = {}
-_QUOTA_LOCK = threading.Lock()
-_QUOTA_STALE = 30 * 60
-
-
-def _quota_sweep() -> None:
-    """清理异常路径（客户端秒断、进程内异常）遗留的预占。调用方需持锁。"""
-    now = time.time()
-    for kid in [k for k, (_, ts) in _QUOTA_INFLIGHT.items() if now - ts > _QUOTA_STALE]:
-        _QUOTA_INFLIGHT.pop(kid, None)
-
-
-def _quota_inflight(key_id: str) -> int:
-    with _QUOTA_LOCK:
-        _quota_sweep()
-        item = _QUOTA_INFLIGHT.get(key_id)
-        return item[0] if item else 0
-
-
-def _quota_reserve(key_id: str, amount: int) -> None:
-    amount = max(0, int(amount))
-    if not amount:
-        return
-    with _QUOTA_LOCK:
-        _quota_sweep()
-        cur = _QUOTA_INFLIGHT.get(key_id, (0, 0.0))[0]
-        _QUOTA_INFLIGHT[key_id] = (cur + amount, time.time())
-
-
-def _quota_release(key_id: str, amount: int) -> None:
-    amount = max(0, int(amount))
-    if not amount:
-        return
-    with _QUOTA_LOCK:
-        cur = _QUOTA_INFLIGHT.get(key_id, (0, 0.0))[0] - amount
-        if cur > 0:
-            _QUOTA_INFLIGHT[key_id] = (cur, time.time())
-        else:
-            _QUOTA_INFLIGHT.pop(key_id, None)
-
-
 MAX_ACCOUNT_TRIES = 5
 
 
@@ -517,6 +484,15 @@ def create_gateway_router(
         if not key_row.get("enabled"):
             return _error(403, "该 API Key 已被禁用", "permission_error")
 
+        if internal is None:
+            # 体积检查必须先于读 body：request.json() 会全量进内存
+            cl = request.headers.get("content-length") or ""
+            try:
+                if cl and int(cl) > MAX_BODY_BYTES:
+                    return _error(413, f"请求体过大（上限 {MAX_BODY_BYTES // 1048576}MB）",
+                                  "request_too_large")
+            except ValueError:
+                pass
         try:
             payload = dict(internal) if internal is not None else await request.json()
         except Exception:
@@ -531,48 +507,13 @@ def create_gateway_router(
         # 内部字段（下划线前缀）：仅本进程使用，translator 白名单取字段不会转发到上游。
         payload["_wapi_key_id"] = key_row["id"]
 
-        if key_row.get("expires_at") and float(key_row["expires_at"]) < time.time():
-            return _error(403, "该 API Key 已过期", "permission_error")
-
-        daily_quota = int(key_row.get("quota_daily") or 0)
-        monthly_quota = int(key_row.get("quota_monthly") or 0)
-        # 预占额度：并发请求在「检查通过但还没记账」的窗口里不会同时挤过去。
-        # 预占量取「估算输入」与「剩余额度」的较小值，保证最后一个请求仍能放行。
-        reserve = 0
-        if daily_quota or monthly_quota:
-            used_today, used_month = await run_in_threadpool(
-                store.key_quota_status, key_row["id"]
-            )
-            inflight = _quota_inflight(key_row["id"])
-            left_day = (daily_quota - used_today - inflight) if daily_quota else None
-            left_month = (
-                (monthly_quota - used_month - inflight) if monthly_quota else None
-            )
-            if left_day is not None and left_day <= 0:
-                return _error(
-                    429,
-                    f"该 Key 今日额度已用完（{used_today}/{daily_quota} tokens）",
-                    "rate_limit_error",
-                )
-            if left_month is not None and left_month <= 0:
-                return _error(
-                    429,
-                    f"该 Key 本月额度已用完（{used_month}/{monthly_quota} tokens）",
-                    "rate_limit_error",
-                )
-            lefts = [x for x in (left_day, left_month) if x is not None]
-            reserve = max(1, min(_estimate_prompt(payload), min(lefts)))
-            _quota_reserve(key_row["id"], reserve)
-
         allowed_accs, allowed_models = _key_scope(key_row)
         if allowed_models and str(model).strip().lower() not in allowed_models:
-            _quota_release(key_row["id"], reserve)
             return _error(403, f"该 API Key 无权使用模型 {model}", "permission_error")
 
         started = time.perf_counter()
         want_acc = request.headers.get("x-account-id", "").strip()
         if want_acc and allowed_accs and want_acc not in allowed_accs:
-            _quota_release(key_row["id"], reserve)
             return _error(403, "该 API Key 无权使用指定账号", "permission_error")
         conv = _conv_key(payload, key_row["id"])
         sticky = ""
@@ -597,11 +538,9 @@ def create_gateway_router(
                 )
             )
         except Exception as exc:  # noqa: BLE001
-            _quota_release(key_row["id"], reserve)
             logger.error("选号失败: %s", exc)
             return _error(500, "内部错误：账号池异常", "internal_error")
         if ac is None:
-            _quota_release(key_row["id"], reserve)
             cds = registry.cooldowns()
             wait = max(cds.values()) if cds else 0
             if wait:
@@ -679,7 +618,6 @@ def create_gateway_router(
                         provider=ac.account["provider"],
                     )
             if resp is None:
-                _quota_release(key_row["id"], reserve)
                 try:
                     await run_in_threadpool(
                         store.log_usage,
@@ -701,7 +639,6 @@ def create_gateway_router(
                 c = _estimate_completion(payload, _response_text(resp))
             if not t:
                 t = p + c
-            _quota_release(key_row["id"], reserve)
             # P0 埋点：上游正常结束但正文/思考/调用全空 → 记 empty_response，
             # 攒「没输出」的发生率数据（客户端层已带弃会话重试，这里是重试仍空）
             msg0 = (resp.get("choices") or [{}])[0].get("message") or {}
@@ -745,20 +682,24 @@ def create_gateway_router(
         )
         ttft_ms = int((time.perf_counter() - t_pick) * 1000)
         if first_chunk is None:
-            _quota_release(key_row["id"], reserve)
             # 对齐非流式路径：全部账号失败也要记 usage_log，否则面板的
-            # 流式失败统计整段缺失（2026-10-30 审计 P2-4）
-            await run_in_threadpool(
-                store.log_usage,
-                status=f"error:{type(stream_last_exc).__name__}"
-                if stream_last_exc
-                else "error:RuntimeError",
-                **base,
-                latency_ms=int((time.perf_counter() - t_pick) * 1000),
-                error_code=_err_code(stream_last_exc)
-                if stream_last_exc
-                else "all_accounts_failed",
-            )
+            # 流式失败统计整段缺失（2026-10-30 审计 P2-4）。
+            # 记账失败不能吞掉友好错误响应（2026-11-02 复审补齐：这是
+            # 全文件最后一处未包护栏的记账调用）
+            try:
+                await run_in_threadpool(
+                    store.log_usage,
+                    status=f"error:{type(stream_last_exc).__name__}"
+                    if stream_last_exc
+                    else "error:RuntimeError",
+                    **base,
+                    latency_ms=int((time.perf_counter() - t_pick) * 1000),
+                    error_code=_err_code(stream_last_exc)
+                    if stream_last_exc
+                    else "all_accounts_failed",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("流式全失败路径记账异常: %s", exc)
             code, msg = (
                 _friendly_error(stream_last_exc)
                 if stream_last_exc
@@ -819,18 +760,22 @@ def create_gateway_router(
                         break
                     line = item
                     if line.startswith("data:"):
-                        # 所有 data 行统一解析一次再分流。此前用 `"usage" in
-                        # line` 子串预分流：正文/错误文案里带 "usage" 字样的
-                        # 块会走错分支——内容不进 out_parts（completion 低估）、
-                        # 错误块漏记账（2026-10-30 审计遗留，2026-11-02 修复）。
-                        body = line[5:].strip()
-                        obj = None
-                        if body and body != "[DONE]":
-                            try:
-                                obj = json.loads(body)
-                            except Exception:
-                                obj = None
-                        if isinstance(obj, dict):
+                        # 拆多事件帧再逐条解析（与 _chunk_has_payload 同口径：
+                        # 上游可能把多个 data: 一次性刷进同一 chunk，整帧只
+                        # 解析一次会漏掉后续事件的 usage/finish/内容）。
+                        # 所有事件统一解析再分流。此前用 `"usage" in line`
+                        # 子串预分流：正文/错误文案里带 "usage" 字样的块会
+                        # 走错分支（2026-10-30 审计遗留，2026-11-02 修复）。
+                        for ev in _split_sse_events(line):
+                            body = ev[5:].strip()
+                            obj = None
+                            if body and body != "[DONE]":
+                                try:
+                                    obj = json.loads(body)
+                                except Exception:
+                                    obj = None
+                            if not isinstance(obj, dict):
+                                continue
                             # 流内（前缀成功之后）的错误块：不可重试（已在
                             # 下发），但必须记账并给账号冷却，不能当成功
                             if obj.get("error"):
@@ -874,7 +819,6 @@ def create_gateway_router(
                 status = "cancelled"
                 raise
             finally:
-                _quota_release(key_row["id"], reserve)
                 # 上游没给 usage 时用估算兜底，保证面板/客户端都有数
                 if not prompt_t:
                     prompt_t = _estimate_prompt(payload)
@@ -945,6 +889,20 @@ def create_gateway_router(
                 401, "authentication_error", "缺少或无效的 API Key"
             )
             return JSONResponse(status_code=status, content=content)
+
+        # 体积检查必须先于读 body（与 /v1/chat/completions 同口径）——
+        # 此前 413 只包在 _chat_core 的 external 分支里，Anthropic 路径
+        # 恒走 internal 分支，未认证 POST 可无限大 body 全量进内存
+        cl = request.headers.get("content-length") or ""
+        try:
+            if cl and int(cl) > MAX_BODY_BYTES:
+                status, content = anthropic_error(
+                    413, "request_too_large",
+                    f"请求体过大（上限 {MAX_BODY_BYTES // 1048576}MB）",
+                )
+                return JSONResponse(status_code=status, content=content)
+        except ValueError:
+            pass
 
         try:
             abody = await request.json()
@@ -1209,9 +1167,20 @@ def _take_until_content(it, limit: int = 200):
     带内错误块（上游凭证失效/风控/限流等）直接抛出——2026-10-30 审计发现
     错误块此前被 _event_has_payload 当「有内容」，导致流式换号链被整体绕过、
     失败账号 mark_ok 并粘住会话。抛出后走 _apply_failure 正常分类。
+
+    预算语义（2026-11-02 复审定稿）：两个计数器**任一打满都返回 prefix
+    继续**（与旧 for 版打满后的行为一致——前缀非空即视为成功，客户端
+    照常收流），而不是判「无内容」换号：
+    - limit：非注释、无内容的块数上限（空 role/心跳之外的异常前奏）
+    - _KEEPALIVE_BUDGET：SSE 注释行（``: keepalive``）的独立帧数上限。
+      心跳不计入 limit（deepseek 429 重试每轮最多 ~60 帧，累积会挤占
+      正常预算），但必须有独立上限，否则心跳-only 的挂死流会在这个
+      线程池调用里无限循环、prefix 无界增长。
     """
     prefix: list[str] = []
-    for _ in range(limit):
+    seen = 0
+    keepalives = 0
+    while seen < limit and keepalives < _KEEPALIVE_BUDGET:
         try:
             line = next(it)
         except StopIteration:
@@ -1222,6 +1191,10 @@ def _take_until_content(it, limit: int = 200):
         prefix.append(line)
         if _chunk_has_payload(line):
             return prefix
+        if line.startswith(":"):
+            keepalives += 1
+        else:
+            seen += 1
     return prefix or None
 
 

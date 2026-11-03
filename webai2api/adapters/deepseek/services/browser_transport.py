@@ -13,7 +13,7 @@ curl_cffi 用 BoringSSL 复刻 Chrome 的 ClientHello，握手特征与真实 Ch
 
 1. **绝不引入新的失败面**：curl_cffi 缺失/导入失败/请求异常时，调用方
    `_urlopen` 自动回退到原 `http.client` 路径，行为与改造前完全一致。
-2. **只换传输，不换语义**：返回对象的 `status / headers / read() / getcode()`
+2. **只换传输，不换语义**：返回对象的 `status / headers / read()`
    与 urllib 响应兼容，上层代码零改动。
 3. **响应体一次性读尽**：与原有 `_BufferedResponse` 一致，连接归还池。
 4. **错误兼容**：HTTP >= 400 抛 `urllib.error.HTTPError`，传输异常抛
@@ -128,12 +128,6 @@ class _BufferedResponse:
 
     def read(self, *args):
         return self._body
-
-    def getcode(self):
-        return self.status
-
-    def geturl(self):
-        return self.url
 
     def __enter__(self):
         return self

@@ -61,7 +61,12 @@ from .translator import (
     convert_deepseek_to_openai_chunk,
     extract_images_from_messages,
 )
-from ...tool_bridge import SEAM_WINDOW, SeamTrimmer as _SeamTrimmer, is_forced_tool_choice
+from ...tool_bridge import (
+    SEAM_WINDOW,
+    SeamTrimmer as _SeamTrimmer,
+    is_forced_tool_choice,
+    keepalive_sleep,
+)
 from .citation_utils import CitationStripper, strip_citation_marks
 
 # ── 重试策略 ────────────────────────────────────────────────────
@@ -735,11 +740,6 @@ class DeepSeekWebClient:
             def read(self, *args):
                 return self._body
 
-            def getcode(self):
-                return self.status
-
-            def geturl(self):
-                return self.url
 
             def __enter__(self):
                 return self
@@ -1687,6 +1687,10 @@ class DeepSeekWebClient:
             return self._stream_forced(payload)
 
         resolved = self._resolve_conversation(payload)
+        # 注意：本函数是「普通函数 return 生成器」契约——这里不能出现
+        # yield（会把整个函数变成惰性生成器，return 值被丢弃、流变空）。
+        # 此处停顿在首字节之前，无需 keepalive；带心跳的停顿在下面真正的
+        # 流内重试循环里。
         self._anti_rate_limit_pause(context="pre-acquire:stream")
         lease = self.request_queue.acquire(f"stream:{payload.get('model', 'unknown')}")
         # 一次 completion 内所有 chunk 共享同一个 id（OpenAI 规范）。
@@ -2159,6 +2163,10 @@ class DeepSeekWebClient:
                             # 这段幽灵文本（2026-11-01 审计 D-4）
                             full_text = ""
                             full_reasoning = ""
+                            # 陈旧 finish 一并清场：首轮正常 stop 后触发空响应
+                            # 重试时，不清则重试轮哪怕被掐流也会被上一轮的
+                            # "stop" 判成正常收尾（2026-11-02 复审）
+                            upstream_finish_reason = None
                             try:
                                 retry_resp, retry_session = self._open_chat_stream(
                                     current_resolved
@@ -2355,17 +2363,22 @@ class DeepSeekWebClient:
                             exc,
                         )
                         # 先释放槽位再 sleep：60 秒的空等不应占着并发槽位，
-                        # 睡醒后重新排队拿槽位。
+                        # 睡醒后重新排队拿槽位。心跳停顿与重新排队放在
+                        # finally 之外：GeneratorExit（客户端断连）落在心跳
+                        # yield 上时绝不能再 acquire/重新排队——yield 写在
+                        # finally 里还会让 close() 路径执行到 acquire
+                        #（2026-11-02 复审）。
                         lease.release()
-                        try:
-                            time.sleep(RATE_LIMIT_COOLDOWN_SECONDS)
-                        finally:
-                            self._anti_rate_limit_pause(
-                                context="pre-acquire:stream-retry"
-                            )
-                            lease = self.request_queue.acquire(
-                                f"stream:{payload.get('model', 'unknown')}"
-                            )
+                        lease = None
+                        time.sleep(RATE_LIMIT_COOLDOWN_SECONDS)
+                        _rw = self._anti_rate_limit_wait(
+                            context="pre-acquire:stream-retry"
+                        )
+                        if _rw > 0:
+                            yield from keepalive_sleep(_rw)
+                        lease = self.request_queue.acquire(
+                            f"stream:{payload.get('model', 'unknown')}"
+                        )
                         # 继续 while True；current_session_id 已由 _open_chat_stream 回写
 
                     finally:
@@ -2375,7 +2388,10 @@ class DeepSeekWebClient:
                             except Exception:
                                 pass
             finally:
-                lease.release()
+                # 429 重试中段会把 lease 置 None 再重取；客户端在停顿期断连时
+                # 生成器带 None 收尾，不能对 None release（2026-11-02 复审）
+                if lease is not None:
+                    lease.release()
 
         return generate()
 
@@ -2419,6 +2435,24 @@ class DeepSeekWebClient:
     # Anti rate-limit
     # ═══════════════════════════════════════════════════════
 
+    def _min_interval_slot(self, context: str = "") -> float:
+        """登记下一次上游命中的硬性间隔时刻，返回应等待秒数（不睡眠）。"""
+        min_interval = float(getattr(self.config, "min_request_interval", 0.0) or 0.0)
+        if min_interval <= 0:
+            return 0.0
+        with self._last_upstream_lock:
+            now = time.time()
+            slot = max(now, self._last_upstream_at + min_interval)
+            self._last_upstream_at = slot
+        wait = slot - time.time()
+        if wait > 0:
+            self.logger.info(
+                "AntiRateLimit | min-interval sleep=%.2fs%s",
+                wait,
+                f" ({context})" if context else "",
+            )
+        return max(0.0, wait)
+
     def _min_interval_wait(self, context: str = "") -> None:
         """同账号两次上游请求之间的硬性最小间隔（防突发）。
 
@@ -2426,40 +2460,28 @@ class DeepSeekWebClient:
         每次真实上游命中（含 _open_chat_stream 的续写/nudge/重试子轮——
         这些子轮不经过 acquire 停顿点）都会预约下一个时刻。
         """
-        min_interval = float(getattr(self.config, "min_request_interval", 0.0) or 0.0)
-        if min_interval > 0:
-            with self._last_upstream_lock:
-                now = time.time()
-                slot = max(now, self._last_upstream_at + min_interval)
-                self._last_upstream_at = slot
-            wait = slot - time.time()
-            if wait > 0:
-                self.logger.info(
-                    "AntiRateLimit | min-interval sleep=%.2fs%s",
-                    wait,
-                    f" ({context})" if context else "",
-                )
-                time.sleep(wait)
+        wait = self._min_interval_slot(context)
+        if wait > 0:
+            time.sleep(wait)
 
-    def _anti_rate_limit_pause(self, context: str = "") -> None:
-        """
-        防风控随机延迟：在 request_queue.acquire 之前调用（不占并发槽位
-        睡觉——20~60s 长停顿若在持槽后执行，max_concurrency=1 时会连锁
-        QueueTimeout，2026-11-01 审计/复审）。每次上游尝试（首请求+限流
-        重试）各停顿一次；续写/nudge 子轮由 _open_chat_stream 入口的
-        _min_interval_wait 兜底硬性间隔。
+    def _anti_rate_limit_wait(self, context: str = "") -> float:
+        """计算防风控总停顿秒数（含硬性间隔登记），不睡眠。
+
+        拆出纯计算版：流式生成器用 keepalive_sleep 分片睡 + 发 SSE 注释帧
+        （续写轮重入时客户端可能已收到内容，整段睡会读超时）；非流式调用
+        方仍走 _anti_rate_limit_pause 整段睡。
         """
         # getattr 防御式读取：桩测试的精简 config 没有这些字段时按「禁用」
         # 处理（真实 AppConfig 是 dataclass，字段恒在）
         if not getattr(self.config, "anti_rate_limit_enabled", False):
-            return
+            return 0.0
 
         min_d = max(0.0, float(getattr(self.config, "anti_rate_limit_min_delay", 0) or 0))
         max_d = float(getattr(self.config, "anti_rate_limit_max_delay", 0) or 0)
         if max_d <= 0:
-            return
+            return 0.0
 
-        self._min_interval_wait(context)
+        total = self._min_interval_slot(context)
 
         # 长尾分布：绝大多数请求短延迟，少量请求出现 20~60s 的长停顿
         chance = float(getattr(self.config, "long_pause_chance", 0.02) or 0.0)
@@ -2476,7 +2498,19 @@ class DeepSeekWebClient:
             delay,
             f" ({context})" if context else "",
         )
-        time.sleep(delay)
+        return total + delay
+
+    def _anti_rate_limit_pause(self, context: str = "") -> None:
+        """
+        防风控随机延迟：在 request_queue.acquire 之前调用（不占并发槽位
+        睡觉——20~60s 长停顿若在持槽后执行，max_concurrency=1 时会连锁
+        QueueTimeout，2026-11-01 审计/复审）。每次上游尝试（首请求+限流
+        重试）各停顿一次；续写/nudge 子轮由 _open_chat_stream 入口的
+        _min_interval_wait 兜底硬性间隔。
+        """
+        wait = self._anti_rate_limit_wait(context)
+        if wait > 0:
+            time.sleep(wait)
 
     # ═══════════════════════════════════════════════════════
     # Internal: request pipeline

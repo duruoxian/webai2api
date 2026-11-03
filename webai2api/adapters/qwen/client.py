@@ -553,10 +553,11 @@ class QwenWebClient:
             body["web_search"] = "auto"
         return body
 
-    def _throttle(self) -> None:
-        """防风控节奏：硬性最小间隔 + 长尾延迟（大多数短、少量长停顿）。"""
+    def _throttle_wait(self) -> float:
+        """计算防风控应等待秒数并登记起跑（不睡眠），见 GLM 同名拆分。"""
         if not self.config.anti_rate_limit_enabled:
-            return
+            return 0.0
+        total = 0.0
         min_interval = float(getattr(self.config, "min_request_interval", 0.0) or 0.0)
         if min_interval > 0:
             with self._last_call_lock:
@@ -565,12 +566,12 @@ class QwenWebClient:
                 self._last_call_at = slot
             wait = slot - time.time()
             if wait > 0:
-                time.sleep(wait)
+                total += wait
 
         lo = max(0.0, float(self.config.anti_rate_limit_min_delay))
         hi = max(lo, float(self.config.anti_rate_limit_max_delay))
         if hi <= 0:
-            return
+            return total
 
         chance = float(getattr(self.config, "long_pause_chance", 0.02) or 0.0)
         if chance > 0 and random.random() < chance:
@@ -582,7 +583,8 @@ class QwenWebClient:
             delay = random.lognormvariate(math.log(mid), 0.6)
         delay = min(max(delay, lo), max(1.0, hi * 3))
         self.logger.info("AntiRateLimit | sleep=%.2fs before upstream request", delay)
-        time.sleep(delay)
+        return total + delay
+
 
     # ── 会话清理（供后台清理线程调用） ─────────────────
     def cleanup_stale_sessions(self) -> None:
@@ -774,7 +776,9 @@ class QwenWebClient:
             "auto_search": bool(self.config.search_enabled),
             "base_url": self.config.base_url,
         }
-        self._throttle()
+        _wait = self._throttle_wait()
+        if _wait > 0:
+            yield from tool_bridge.keepalive_sleep(_wait)
         self._bump("upstream")
         try:
             port = self._ensure_relay()
@@ -982,6 +986,10 @@ class QwenWebClient:
                     headers={
                         "Content-Type": "application/json",
                         "Accept": "text/event-stream",
+                        # 中继现在强制鉴权：续写请求漏带头会 403、被下方
+                        # except 吞成「按截断返回」——续写功能整体失效且
+                        # 无任何 surfaced 报错（2026-11-02 复审 P1）
+                        "X-Relay-Token": self._relay_token(),
                     },
                 )
                 try:
@@ -1020,6 +1028,11 @@ class QwenWebClient:
             prev_parent = (
                 self._cached_response_id(self._conv_key(payload)) or ""
             )
+            if not anchor_seen and chat_id != cached:
+                # 重建会话（旧 chat 失效换新）后没拿到新锚点：旧 parent 属于
+                # 旧会话，连同新 chat_id 存进去会让下轮 parent 跨会话污染、
+                # 上下文静默丢失——存空从新会话根开始（2026-11-02 复审）
+                prev_parent = ""
             self._store_conv(
                 store_key,
                 chat_id,
@@ -1053,7 +1066,9 @@ class QwenWebClient:
         if not cached:
             self._bump("miss")
 
-        self._throttle()
+        _wait = self._throttle_wait()
+        if _wait > 0:
+            yield from tool_bridge.keepalive_sleep(_wait)
         self._bump("upstream")
         url = self.config.chat_url
         if cached:
@@ -1145,6 +1160,9 @@ class QwenWebClient:
         )
         text = reasoning = ""
         for ev in self._stream_events(retry):
+            if isinstance(ev, str):
+                # keepalive 心跳帧（SSE 注释行）：内部消费直接丢弃
+                continue
             text, reasoning = ev["text"], ev["reasoning"]
         calls = _parse_tool_calls(text, tools)
         if not calls:
@@ -1170,6 +1188,9 @@ class QwenWebClient:
             finish_seen = True
             chat_id = ""
             for ev in self._stream_events(payload):
+                if isinstance(ev, str):
+                    # keepalive 心跳帧（SSE 注释行）：内部消费直接丢弃
+                    continue
                 text, reasoning = ev["text"], ev["reasoning"]
                 chat_id = str(ev.get("chat_id") or chat_id)
                 if ev.get("__done__"):
@@ -1292,6 +1313,10 @@ class QwenWebClient:
             text = reasoning = ""
             try:
                 for ev in self._stream_events(payload):
+                    if isinstance(ev, str):
+                        # keepalive 心跳帧原样透传（SSE 注释行，客户端不可见）
+                        yield ev
+                        continue
                     text, reasoning = ev["text"], ev["reasoning"]
             except Exception as exc:  # noqa: BLE001
                 self.logger.warning("Qwen 流式请求失败: %s", exc)
@@ -1375,6 +1400,10 @@ class QwenWebClient:
             chat_id = ""
             try:
                 for ev in self._stream_events(payload):
+                    if isinstance(ev, str):
+                        # keepalive 心跳帧原样透传（SSE 注释行，客户端不可见）
+                        yield ev
+                        continue
                     if ev.get("__done__"):
                         finish_seen = bool(ev.get("finish_seen", True))
                     chat_id = str(ev.get("chat_id") or chat_id)

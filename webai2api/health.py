@@ -184,8 +184,15 @@ def _kimi_refresh(account: dict, timeout: int = 15) -> tuple[str, str]:
     try:
         with _open_account(account, req, timeout) as r:
             data = json.load(r)
-    except Exception:  # noqa: BLE001
-        return "", ""
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            # 凭证被拒 → 返回空串，上层走「请重新登录」口径
+            return "", ""
+        raise RuntimeError(f"kimi refresh 上游失败: HTTP {exc.code}") from exc
+    except Exception as exc:  # noqa: BLE001
+        # 网络故障不许包装成「凭证过期」：上抛后 _classify_error 归 network，
+        # 周期检查才不会把好号标成 expired（2026-11-02 审查）
+        raise RuntimeError(f"kimi refresh 网络失败: {exc}") from exc
     return (str(data.get("access_token") or ""),
             str(data.get("refresh_token") or ""))
 
@@ -261,8 +268,13 @@ def _qwen_refresh(account: dict, timeout: int = 15) -> str:
     try:
         with _open_account(account, req, timeout) as r:
             data = json.load(r)
-    except Exception:  # noqa: BLE001
-        return ""
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return ""
+        raise RuntimeError(f"qwen refresh 上游失败: HTTP {exc.code}") from exc
+    except Exception as exc:  # noqa: BLE001
+        # 网络故障上抛（对齐 _kimi_refresh，2026-11-02 审查）
+        raise RuntimeError(f"qwen refresh 网络失败: {exc}") from exc
     inner = data.get("data") if isinstance(data.get("data"), dict) else {}
     return str(inner.get("access_token") or "")
 
@@ -353,27 +365,38 @@ class HealthMonitor:
         self._stop.set()
 
     def check_all(self, only_stale: bool = False) -> list[dict]:
-        results = []
+        from concurrent.futures import ThreadPoolExecutor
+
+        eligible = []
         for account in self.store.list_accounts():
             if not account.get("enabled"):
                 continue
             if only_stale and time.time() - float(account.get("checked_at") or 0) < self.interval:
                 continue
-            try:
-                status, profile, new_token, new_refresh = check_account(account)
-                self.store.set_account_health(
-                    account["id"], status, profile,
-                    new_token or None, new_refresh or None)
-                results.append({"id": account["id"], "status": status})
-            except urllib.error.HTTPError as exc:
-                self._record_failure(account, exc, f"http_{exc.code}", results)
-            except Exception as exc:  # noqa: BLE001
-                self._record_failure(account, exc, "error", results)
-                self.logger.warning("健康检查失败 %s: %s", account.get("name"), exc)
-        return results
+            eligible.append(account)
+        if not eligible:
+            return []
+        # 并发检查：单账号 15s 超时下串行要 N×15s，check-all 按钮体感明显；
+        # store 共享连接自带锁，落库线程安全。executor.map 保持结果顺序
+        workers = min(4, len(eligible))
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="health") as ex:
+            return list(ex.map(self._check_one, eligible))
 
-    def _record_failure(self, account: dict, exc: Exception,
-                        fallback: str, results: list) -> None:
+    def _check_one(self, account: dict) -> dict:
+        try:
+            status, profile, new_token, new_refresh = check_account(account)
+            self.store.set_account_health(
+                account["id"], status, profile,
+                new_token or None, new_refresh or None)
+            return {"id": account["id"], "status": status}
+        except urllib.error.HTTPError as exc:
+            return self._record_failure(account, exc, f"http_{exc.code}")
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("健康检查失败 %s: %s", account.get("name"), exc)
+            return self._record_failure(account, exc, "error")
+
+    def _record_failure(self, account: dict, exc: Exception, fallback: str) -> dict:
         """周期检查的失败落库口径与手动检查对齐（2026-11-02）：
 
         失败 ≠ 凭证过期——403 可能是风控、超时/DNS/代理失败只是网络抖动，
@@ -385,14 +408,13 @@ class HealthMonitor:
 
         if _classify_error(exc) == "auth":
             self.store.set_account_health(account["id"], "expired")
-            results.append({"id": account["id"], "status": "expired"})
-            return
-        results.append({
+            return {"id": account["id"], "status": "expired"}
+        return {
             "id": account["id"],
             "status": fallback,
             "health_kept": True,
             "error": str(exc)[:200],
-        })
+        }
 
     def _run(self) -> None:
         # 启动后稍等，避免和首次登录/初始化抢资源

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from webai2api import admin_api as api
+from webai2api import opencode_config as api
 
 SPAN = api._find_provider_span
 

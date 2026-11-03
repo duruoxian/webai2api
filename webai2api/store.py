@@ -1,11 +1,13 @@
 """SQLite 存储层：账号、API Key、用量记录、设置。
 
-单文件数据库（默认 <项目>/data/webai2api.db），线程安全（每次操作独立连接）。
+单文件数据库（默认 <项目>/data/webai2api.db），线程安全（进程内共享
+单连接 + RLock 串行化，见 _conn）。
 """
 from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -40,11 +42,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     enabled      INTEGER NOT NULL DEFAULT 1,
     accounts     TEXT NOT NULL DEFAULT '[]',
     models       TEXT NOT NULL DEFAULT '[]',
-    owner        TEXT NOT NULL DEFAULT '',
     note         TEXT NOT NULL DEFAULT '',
-    expires_at   REAL NOT NULL DEFAULT 0,
-    quota_daily  INTEGER NOT NULL DEFAULT 0,
-    quota_monthly INTEGER NOT NULL DEFAULT 0,
     created_at   REAL NOT NULL,
     last_used_at REAL
 );
@@ -111,6 +109,9 @@ class Store:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # 进程内共享单连接：跨线程复用（RLock 串行化），见 _conn
+        self._db_lock = threading.RLock()
+        self._db: sqlite3.Connection | None = None
         with self._conn() as c:
             c.executescript(SCHEMA)
             # 旧库升级：给 api_keys 补上「可用账号 / 可用模型」范围
@@ -119,13 +120,8 @@ class Store:
                 c.execute("ALTER TABLE api_keys ADD COLUMN accounts TEXT NOT NULL DEFAULT '[]'")
             if "models" not in cols:
                 c.execute("ALTER TABLE api_keys ADD COLUMN models TEXT NOT NULL DEFAULT '[]'")
-            for col, ddl in (("owner", "TEXT NOT NULL DEFAULT ''"),
-                             ("note", "TEXT NOT NULL DEFAULT ''"),
-                             ("expires_at", "REAL NOT NULL DEFAULT 0"),
-                             ("quota_daily", "INTEGER NOT NULL DEFAULT 0"),
-                             ("quota_monthly", "INTEGER NOT NULL DEFAULT 0")):
-                if col not in cols:
-                    c.execute(f"ALTER TABLE api_keys ADD COLUMN {col} {ddl}")
+            if "note" not in cols:
+                c.execute("ALTER TABLE api_keys ADD COLUMN note TEXT NOT NULL DEFAULT ''")
             ucols = {r["name"] for r in c.execute("PRAGMA table_info(usage_log)")}
             for col, ddl in (("latency_ms", "INTEGER NOT NULL DEFAULT 0"),
                              ("first_token_ms", "INTEGER NOT NULL DEFAULT 0"),
@@ -224,13 +220,48 @@ class Store:
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path, timeout=15)
-        conn.row_factory = sqlite3.Row
+        """共享单连接 + RLock 串行化。
+
+        此前每操作新建/关闭连接：高频 log_usage 开销大，且 WAL/
+        synchronous 等 PRAGMA 只在当时的连接上生效、随连接关闭丢失
+        （每次操作回退 synchronous=FULL）。共享连接让 PRAGMA 常驻生效，
+        也免去反复 open/close。RLock 允许同线程嵌套 _conn()。
+        异常路径必须显式 rollback：连接不再关闭，残留事务会污染下一个
+        操作（此前靠 close 隐式回滚）。
+        """
+        self._db_lock.acquire()
         try:
-            yield conn
-            conn.commit()
+            if self._db is None:
+                conn = sqlite3.connect(
+                    self.db_path, timeout=15, check_same_thread=False
+                )
+                conn.row_factory = sqlite3.Row
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA synchronous=NORMAL")
+                except Exception:  # noqa: BLE001
+                    pass
+                self._db = conn
+            yield self._db
+            self._db.commit()
+        except BaseException:
+            try:
+                if self._db is not None:
+                    self._db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
         finally:
-            conn.close()
+            self._db_lock.release()
+
+    def close(self) -> None:
+        """关闭共享连接（run.py 退出前的 checkpoint 之后调用）。"""
+        with self._db_lock:
+            if self._db is not None:
+                try:
+                    self._db.close()
+                finally:
+                    self._db = None
 
     # ── 账号 ──────────────────────────────────────────
     def list_accounts(self, provider: str | None = None) -> list[dict]:
@@ -357,11 +388,7 @@ class Store:
     def update_key(self, key_id: str, *, name: str | None = None,
                    accounts: list[str] | None = None,
                    models: list[str] | None = None,
-                   owner: str | None = None,
-                   note: str | None = None,
-                   expires_at: float | None = None,
-                   quota_daily: int | None = None,
-                   quota_monthly: int | None = None) -> None:
+                   note: str | None = None) -> None:
         sets, vals = [], []
         if name is not None:
             sets.append("name=?")
@@ -372,21 +399,9 @@ class Store:
         if models is not None:
             sets.append("models=?")
             vals.append(json.dumps(models, ensure_ascii=False))
-        if owner is not None:
-            sets.append("owner=?")
-            vals.append(owner)
         if note is not None:
             sets.append("note=?")
             vals.append(note)
-        if expires_at is not None:
-            sets.append("expires_at=?")
-            vals.append(float(expires_at))
-        if quota_daily is not None:
-            sets.append("quota_daily=?")
-            vals.append(max(0, int(quota_daily)))
-        if quota_monthly is not None:
-            sets.append("quota_monthly=?")
-            vals.append(max(0, int(quota_monthly)))
         if not sets:
             return
         vals.append(key_id)
@@ -648,22 +663,6 @@ class Store:
             ).fetchall()
         return {r["api_key_id"]: {"today": int(r["today"] or 0),
                                   "month": int(r["month"] or 0)} for r in rows}
-
-    def key_quota_status(self, key_id: str) -> tuple[int, int]:
-        """返回 (今日已用, 本月已用) tokens。"""
-        import datetime as _dt
-        now = _dt.datetime.now()
-        today0 = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        month0 = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
-        with self._conn() as c:
-            row = c.execute(
-                "SELECT "
-                "COALESCE(SUM(CASE WHEN ts>=? THEN total_tokens ELSE 0 END),0) today, "
-                "COALESCE(SUM(CASE WHEN ts>=? THEN total_tokens ELSE 0 END),0) month "
-                "FROM usage_log WHERE api_key_id=?",
-                (today0, month0, key_id),
-            ).fetchone()
-        return int(row["today"] or 0), int(row["month"] or 0)
 
     def export_usage(self, since_ts: float | None = None,
                      until_ts: float | None = None, status: str = "",

@@ -181,11 +181,14 @@ def build_app(store: Store, registry: ProviderRegistry, logger: logging.Logger) 
     @app.get("/health")
     async def health():
         acs = registry.available()
+        # 按可服务口径统计：available() 含冷却/坏号，全池冷却时若只看总数
+        # 会假报健康（2026-11-02 复审）
+        ready = sum(1 for c in acs if c.healthy())
         return {
-            # 账号池全空时降级为 degraded：监控/脚本不能只看 200 就当服务可用
-            "status": "ok" if acs else "degraded",
+            # 账号池全空或全冷却时降级为 degraded：监控/脚本不能只看 200 就当服务可用
+            "status": "ok" if ready else "degraded",
             "version": __version__,
-            "accounts_available": len(acs),
+            "accounts_available": ready,
         }
 
     # 面板静态页（2026-10-28 用户拍板：lite 面板冻结退役，只有开发端 index.html）

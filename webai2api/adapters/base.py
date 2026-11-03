@@ -222,7 +222,18 @@ class GenericClientPool:
             if not a.get("enabled"):
                 continue
             cached = self._clients.get(a["id"])
-            if cached and cached.account.get("updated_at") == a.get("updated_at"):
+            if (
+                cached
+                and cached.account.get("updated_at") == a.get("updated_at")
+                and (cached.account.get("health") or "") == (a.get("health") or "")
+                and bool(cached.account.get("enabled")) == bool(a.get("enabled"))
+                and (cached.account.get("auth_token") or "") == (a.get("auth_token") or "")
+            ):
+                # updated_at 是 time.time()，Windows 粒度 ~15.6ms：同 tick 内
+                # 的两次写完全相等，只比它会漏掉 health/enabled 的真实变化
+                #（test_pick_recovers_after_health_reset 实测撞线，2026-11-02）。
+                # auth_token 也要比：set_account_health 写轮换出的新 token 时
+                # 不碰 updated_at，不比则池子一直拿死 token（2026-11-02 复审）
                 continue
             try:
                 cfg = self._build_config(self.store, a)

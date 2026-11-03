@@ -25,7 +25,7 @@ import pytest
 from webai2api.adapters.chatglm.client import ChatGlmWebClient
 from webai2api.adapters.chatglm.config import GlmConfig
 from webai2api.adapters.chatglm.uploader import extract_image_urls
-from webai2api.admin_api import _build_opencode_snippet
+from webai2api.opencode_config import _build_opencode_snippet
 
 
 def red_png(w=48, h=48) -> str:
